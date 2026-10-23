@@ -138,28 +138,31 @@ impl Ee {
                 self.count_base = v;
                 self.count_since = self.steps;
                 self.recompute_timer();
+                self.resched();
             }
             COMPARE => {
                 self.cop0[COMPARE] = v;
                 // Writing Compare clears the timer interrupt.
                 self.cop0[CAUSE] &= !(1 << 15);
                 self.recompute_timer();
+                self.resched();
             }
             STATUS => {
                 self.cop0[STATUS] = v;
-                self.next_event = 0;
+                self.resched();
             }
             CAUSE => {
                 // Only the software interrupt bits IP0 and IP1 and IV can be written.
                 let keep = self.cop0[CAUSE] & !0x0080_0300;
                 self.cop0[CAUSE] = keep | (v & 0x0080_0300);
-                self.next_event = 0;
+                self.resched();
             }
             _ => self.cop0[r] = v,
         }
     }
 
     /// Opcode 0x10: `mfc0`, `mtc0`, `bc0*` and the CO functions (`tlb*`, `eret`, `ei`, `di`).
+    #[inline(never)]
     pub(crate) fn cop0_op(&mut self, w: u32, rs: usize, rt: usize, rd: usize, funct: u32) {
         if rs & 0x10 != 0 {
             match funct {
@@ -176,11 +179,11 @@ impl Ee {
                     };
                     self.npc = target;
                     self.npc_next = Some(target.wrapping_add(4));
-                    self.next_event = 0;
+                    self.resched();
                 }
                 0x38 => {
                     self.cop0[STATUS] |= 1 << 16;
-                    self.next_event = 0;
+                    self.resched();
                 }
                 0x39 => self.cop0[STATUS] &= !(1 << 16),
                 _ => self.unimpl(w, "cop0 co"),

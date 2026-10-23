@@ -28,6 +28,7 @@ fn b_map(a: [u8; 16], b: [u8; 16], f: impl Fn(u8, u8) -> u8) -> u128 {
 }
 
 impl Ee {
+    #[inline(never)]
     pub(crate) fn mmi(&mut self, w: u32, rs: usize, rt: usize, rd: usize, sa: u32, funct: u32) {
         let (a, b) = (self.gpr[rs], self.gpr[rt]);
         let (wa, wb) = (words(a), words(b));

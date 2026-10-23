@@ -275,12 +275,14 @@ impl Ee {
         }
     }
 
+    #[inline(never)]
     fn trap(&mut self, cond: bool) {
         if cond {
             self.raise(Exception::Trap);
         }
     }
 
+    #[inline(never)]
     fn special(&mut self, w: u32, rs: usize, rt: usize, rd: usize, sa: u32, funct: u32) {
         let (a, b) = (self.g(rs), self.g(rt));
         let (a32, b32) = (a as u32, b as u32);
@@ -391,6 +393,7 @@ impl Ee {
         }
     }
 
+    #[inline(never)]
     fn cop1(&mut self, w: u32, fmt: usize, ft: usize, fs: usize, fd: usize, funct: u32) {
         const C: u32 = 1 << 23;
         match fmt {

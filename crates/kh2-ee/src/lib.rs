@@ -46,10 +46,27 @@
 //! DMAC lines, 7 is the Count/Compare timer, which the core raises itself). A pending interrupt is
 //! taken between instructions when Status has IE and EIE set, EXL and ERL clear, and the matching
 //! IM bit set, exactly as `ei` and `mtc0` leave it. With an exception handler installed it
-//! receives [`Exception::Interrupt`]; without one the core jumps to the interrupt vector
-//! (0x80000200, or 0xBFC00400 with Status.BEV) where a hook can stand in for the kernel. `eret`,
+//! receives [`Exception::Interrupt`]; without one the core jumps to the vector (0x80000200 when
+//! Cause.IV is set, else 0x80000180; 0xBFC00400 and 0xBFC00380 with Status.BEV) where a hook can
+//! stand in for the kernel. The state a program starts in has IE and every IM bit set and EIE
+//! clear, so nothing is taken until the program executes `ei`. `eret`,
 //! `ei`, `di` and `mfc0`/`mtc0` work on the registers in `ee.cop0`. Count advances by one per
 //! executed instruction ([inferred] model; the hardware counts bus cycles).
+//!
+//! A branch whose target is the instruction right after its delay slot cannot be told from a
+//! fall-through, so an exception in such a delay slot records EPC at the slot with BD clear
+//! (re-running the slot gives the same result).
+//!
+//! # Instruction set
+//!
+//! The whole of the R5900 core, MMI (except `PHMADH`, `PHMSBH` and `PDIVBW`, which the game does
+//! not use and which stay [`Fault::Unimplemented`]), COP1 (single precision), COP0 and the COP2
+//! macro instructions of VU0 execute, including the MAC, status and clip flags, the R register
+//! and VU0 data memory access. `vcallms`/`vcallmsr` (microprograms) do not. VU0 denormal results
+//! are stored unflushed unless [`Ee::flush_denormals`] is set (the flags are set either way);
+//! denormal operands are never flushed. A scan of every function of the executable and the four
+//! overlays (`tests/coverage.rs`, needs the private function sheets) finds no word that fails to
+//! decode.
 //!
 //! # Hardware registers
 //!
@@ -118,6 +135,10 @@ pub enum Fault {
     Exception { pc: u32, exc: Exception },
     /// A handler was reached again while it was still running.
     Reentrant { pc: u32 },
+    /// Internal marker (never returned): the instruction completed but the run loop must look at
+    /// timers and interrupts before the next one.
+    #[doc(hidden)]
+    Reschedule,
 }
 
 /// Why [`Ee::run`] returned.
@@ -354,7 +375,18 @@ impl Ee {
         [0; N]
     }
 
+    #[inline(always)]
     pub fn write(&mut self, addr: u32, bytes: &[u8]) {
+        let a = (addr & 0x1FFF_FFFF) as usize;
+        if a + bytes.len() <= RAM && self.watch.is_none() {
+            self.ram[a..a + bytes.len()].copy_from_slice(bytes);
+            return;
+        }
+        self.write_slow(addr, bytes);
+    }
+
+    #[cold]
+    fn write_slow(&mut self, addr: u32, bytes: &[u8]) {
         if let Some((lo, hi)) = self.watch
             && addr < hi
             && addr + bytes.len() as u32 > lo
@@ -366,11 +398,6 @@ impl Ee {
             self.ram[a..a + bytes.len()].copy_from_slice(bytes);
             return;
         }
-        self.write_slow(addr, bytes);
-    }
-
-    #[cold]
-    fn write_slow(&mut self, addr: u32, bytes: &[u8]) {
         if (SPR_BASE..SPR_BASE + SPR as u32).contains(&addr) {
             let o = (addr - SPR_BASE) as usize;
             if let Some(s) = self.spr.get_mut(o..o + bytes.len()) {
@@ -576,20 +603,31 @@ impl Ee {
                 }
                 self.service_events(end)?;
             }
-            let pc = self.pc;
-            if self.special.has(pc) {
-                if pc == SENTINEL {
-                    return Ok(Stop::Returned);
+            // Run instructions until the next timer or limit deadline, a handler, or a fault.
+            let mut left = self.next_event.saturating_sub(self.steps).max(1);
+            loop {
+                let pc = self.pc;
+                let mut asked = false;
+                if self.special.has(pc) {
+                    if pc == SENTINEL {
+                        return Ok(Stop::Returned);
+                    }
+                    if self.run_special(pc)? {
+                        self.next_event = 0;
+                        break;
+                    }
+                    // A probe ran; it may have asked for a look at the events (it cannot undo that).
+                    asked = self.next_event == 0;
                 }
-                if self.run_special(pc)? {
+                if self.step_inner() {
+                    self.handle_fault()?;
                     self.next_event = 0;
-                    continue;
+                    break;
                 }
-            }
-            self.step();
-            if self.fault.is_some() {
-                self.handle_fault()?;
-                self.next_event = 0;
+                left -= 1;
+                if left == 0 || asked {
+                    break;
+                }
             }
         }
     }
@@ -629,8 +667,17 @@ impl Ee {
     fn handle_fault(&mut self) -> Result<(), Fault> {
         match self.fault.take() {
             Some(Fault::Exception { exc, .. }) => self.dispatch_exception(exc),
+            Some(Fault::Reschedule) | None => Ok(()),
             Some(f) => Err(f),
-            None => Ok(()),
+        }
+    }
+
+    /// Ends the current run-loop chunk after the running instruction, so that timers and
+    /// interrupts are looked at before the next one.
+    pub(crate) fn resched(&mut self) {
+        self.next_event = 0;
+        if self.fault.is_none() {
+            self.fault = Some(Fault::Reschedule);
         }
     }
 
@@ -641,8 +688,8 @@ impl Ee {
         self.skip_delay = false;
         self.exec(word);
         match self.fault.take() {
+            Some(Fault::Reschedule) | None => Ok(()),
             Some(f) => Err(f),
-            None => Ok(()),
         }
     }
 
@@ -682,27 +729,45 @@ impl Ee {
         self.r32(pc)
     }
 
+    /// Executes the instruction at `pc`.
     pub fn step(&mut self) {
+        self.step_inner();
+    }
+
+    /// Executes one instruction; returns true if a fault or exception is pending (the program
+    /// counter then stays on the faulting instruction, except for [`Fault::Reschedule`]).
+    #[inline(always)]
+    fn step_inner(&mut self) -> bool {
         self.steps += 1;
-        let pc = self.pc;
+        let (pc, old_npc) = (self.pc, self.npc);
+        // A failed fetch leaves a fault and the word 0 (a nop); the check after `exec` catches it.
         let w = self.fetch(pc);
-        if self.fault.is_some() {
-            return;
-        }
         self.npc_next = None;
         self.skip_delay = false;
         self.exec(w);
-        if self.fault.is_some() {
-            // The instruction did not complete; the program counter stays on it.
-            return;
-        }
+        let npc = self.npc;
         if self.skip_delay {
-            self.pc = self.npc.wrapping_add(4);
+            self.pc = npc.wrapping_add(4);
             self.npc = self.pc.wrapping_add(4);
         } else {
-            let next = self.npc_next.unwrap_or(self.npc.wrapping_add(4));
-            self.pc = self.npc;
+            let next = self.npc_next.unwrap_or(npc.wrapping_add(4));
+            self.pc = npc;
             self.npc = next;
         }
+        if self.fault.is_some() {
+            return self.after_fault(pc, old_npc);
+        }
+        false
+    }
+
+    #[cold]
+    fn after_fault(&mut self, pc: u32, npc: u32) -> bool {
+        // eret and other completed instructions keep the new program counter; a real fault leaves
+        // the program counter on the instruction.
+        if !matches!(self.fault, Some(Fault::Reschedule)) {
+            self.pc = pc;
+            self.npc = npc;
+        }
+        true
     }
 }

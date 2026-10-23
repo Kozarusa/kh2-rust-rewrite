@@ -6,10 +6,17 @@ use std::time::Instant;
 
 use kh2_ee::Ee;
 
-fn report(label: &str, ee: &Ee, from: u64, t: Instant) {
-    let n = ee.steps - from;
-    let s = t.elapsed().as_secs_f64();
-    println!("{label}: {} instructions in {:.3}s = {:.1} M/s", n, s, n as f64 / s / 1e6);
+/// Runs `f` (which returns the instructions it executed) five times and prints the best rate;
+/// the machine is shared, so the fastest run is the one least disturbed.
+fn best(label: &str, mut f: impl FnMut() -> u64) {
+    let mut top = 0.0f64;
+    let mut n = 0;
+    for _ in 0..5 {
+        let t = Instant::now();
+        n = f();
+        top = top.max(n as f64 / t.elapsed().as_secs_f64() / 1e6);
+    }
+    println!("{label}: {n} instructions, best of 5 = {top:.1} M/s");
 }
 
 fn hook_none(_: &mut Ee) {}
@@ -25,11 +32,13 @@ fn synthetic(hooks: usize) {
         ee.hooks.insert(0x0020_0000 + 4 * k as u32 * 17, hook_none);
     }
     ee.limit = u64::MAX;
-    let (from, t) = (ee.steps, Instant::now());
-    for _ in 0..200 {
-        ee.call(base, &[], &[], 0x01f0_0000).unwrap();
-    }
-    report(&format!("synthetic loop, {hooks} hooks"), &ee, from, t);
+    best(&format!("synthetic loop, {hooks} hooks"), || {
+        let from = ee.steps;
+        for _ in 0..200 {
+            ee.call(base, &[], &[], 0x01f0_0000).unwrap();
+        }
+        ee.steps - from
+    });
 }
 
 fn game(hooks: usize) {
@@ -47,16 +56,18 @@ fn game(hooks: usize) {
     for k in 0..hooks {
         ee.hooks.insert(0x0100_0000 + 4 * k as u32 * 29, hook_none);
     }
-    let (from, t) = (ee.steps, Instant::now());
-    for n in 0..100_000u32 {
-        for (i, x) in [1.0f32, 2.0, 3.0, 1.0].iter().enumerate() {
-            ee.wf32(0x0181_0000 + 4 * i as u32, *x);
+    best(&format!("game FUN_0016cf78 x100000, {hooks} hooks"), || {
+        let from = ee.steps;
+        for n in 0..100_000u32 {
+            for (i, x) in [1.0f32, 2.0, 3.0, 1.0].iter().enumerate() {
+                ee.wf32(0x0181_0000 + 4 * i as u32, *x);
+            }
+            ee.w32(0x0180_0000, 0x0181_0000);
+            ee.wf32(0x0180_0004, (n % 628) as f32 * 0.01);
+            ee.call(0x16cf78, &[0x0180_0000], &[], 0x01ff_0000).unwrap();
         }
-        ee.w32(0x0180_0000, 0x0181_0000);
-        ee.wf32(0x0180_0004, (n % 628) as f32 * 0.01);
-        ee.call(0x16cf78, &[0x0180_0000], &[], 0x01ff_0000).unwrap();
-    }
-    report(&format!("game FUN_0016cf78 x100000, {hooks} hooks"), &ee, from, t);
+        ee.steps - from
+    });
 }
 
 fn main() {

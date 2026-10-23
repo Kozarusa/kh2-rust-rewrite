@@ -106,13 +106,20 @@ impl SyscallTable {
 /// One bit per instruction word of the 32 MB address space: set where a hook or a probe sits.
 pub(crate) struct Special {
     bits: Box<[u64; Self::WORDS]>,
+    /// One byte per 4 KB page: nonzero if any word in the page has a handler. Small enough to stay
+    /// in the first-level cache, so most instructions never touch `bits`.
+    pages: Box<[u8; Self::PAGES]>,
 }
 
 impl Special {
     const WORDS: usize = (crate::RAM / 4) / 64;
+    const PAGES: usize = crate::RAM / 4096;
 
     pub(crate) fn new() -> Special {
-        let mut s = Special { bits: vec![0u64; Self::WORDS].into_boxed_slice().try_into().expect("size") };
+        let mut s = Special {
+            bits: vec![0u64; Self::WORDS].into_boxed_slice().try_into().expect("size"),
+            pages: vec![0u8; Self::PAGES].into_boxed_slice().try_into().expect("size"),
+        };
         // The call sentinel always takes the slow path so that a return ends the run loop.
         s.set(crate::SENTINEL);
         s
@@ -120,17 +127,22 @@ impl Special {
 
     #[inline(always)]
     pub(crate) fn has(&self, pc: u32) -> bool {
+        if self.pages[((pc >> 12) as usize) & (Self::PAGES - 1)] == 0 {
+            return false;
+        }
         let i = ((pc & 0x01FF_FFFF) >> 2) as usize;
         self.bits[(i >> 6) & (Self::WORDS - 1)] >> (i & 63) & 1 != 0
     }
 
     fn set(&mut self, pc: u32) {
+        self.pages[((pc >> 12) as usize) & (Self::PAGES - 1)] = 1;
         let i = ((pc & 0x01FF_FFFF) >> 2) as usize;
         self.bits[(i >> 6) & (Self::WORDS - 1)] |= 1 << (i & 63);
     }
 
     pub(crate) fn rebuild<'a>(&mut self, tables: impl IntoIterator<Item = &'a HookTable>) {
         self.bits.fill(0);
+        self.pages.fill(0);
         self.set(crate::SENTINEL);
         for t in tables {
             for a in t.addresses() {

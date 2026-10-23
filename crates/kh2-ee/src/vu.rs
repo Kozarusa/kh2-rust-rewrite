@@ -170,6 +170,7 @@ impl Ee {
         }
     }
 
+    #[inline(never)]
     pub(crate) fn cop2(&mut self, w: u32, fmt: usize, rt: usize, rd: usize) {
         if w & (1 << 25) == 0 {
             match fmt {

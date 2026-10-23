@@ -1,4 +1,4 @@
-//! The pause menu's Equipment pages, stage M4 (docs/menus.md 2.2 and section 15): page 2 the character's slots
+//! The pause menu's Equipment pages, stage M4 (docs/systems/ui/menus-pause.md 2.2 and docs/systems/ui/menus-equipment.md section 15): page 2 the character's slots
 //! (`FUN_00269580`, built by `FUN_00269028` over the equipment list `FUN_00283be0`), pages 5 to 9 the candidate
 //! list of one category (`FUN_0026a528`, built by `FUN_00269580`'s page switch), page 3 the question before
 //! Auto-Reload goes off (`FUN_0026a960`) and page 4 the notice that an accessory would leave too little AP
@@ -209,7 +209,7 @@ pub fn ap_short(current: u16, max: i32, used: i32, current_ap: i32, new_ap: i32)
 
 // --- the page machine ---------------------------------------------------------------------------------
 
-/// The list results of docs/menus.md 1.7 that the Equipment pages use.
+/// The list results of docs/systems/ui/menus-pause.md 1.7 that the Equipment pages use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Up { fresh: bool },
@@ -556,7 +556,7 @@ const NOTICE_MESSAGE: u32 = 0x422e;
 /// The removal row's text (message 0x8448, "---").
 const EMPTY: u32 = 0x448;
 
-/// The executable's tables the pages read (docs/menus.md section 15).
+/// The executable's tables the pages read (docs/systems/ui/menus-equipment.md section 15).
 #[derive(Clone, Debug, Default)]
 pub struct EquipTables {
     /// 0x3819e8: the row plate of each category; 0x3819f8: of each form bit (0..5, 0xffff for none).

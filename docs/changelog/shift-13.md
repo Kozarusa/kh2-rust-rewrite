@@ -1,0 +1,16 @@
+## Shift 13 (2026-10-15/16)
+
+- **WP-LB1 (lib/bin split).** `kh2-app` is a library plus a thin binary; plugins sit in domain bundles in `plugins.rs`; the ability oracle test calls the real code. Verified by 917 tests. Open: none.
+- **WP-HUDFIX (embedded shader paths).** The lib split moved `embedded_asset!` to the `kh2_app` crate, so five shader lookups failed and the HUD vanished; paths now follow the crate name. Verified by a test and the idle-hud screenshot. Open: none.
+- **WP-JT3 (jump types 4 to 6).** Type 4 flag decision and record words 4 to 6 parsed; types 5 and 6 only log (no menu kind 0xe, no fade-in found). Verified by tests and harness logs. Open: menu 0xe, type 6 fade-in, party words applied.
+- **WP-EN3 (host 1.0 create_object).** Enemy and summon objects are made by host 1.0 (M_EX850, Tinker Bell, Chicken Little's child), remote calls on other objects, 1.8 on another context, the kind-6 appear ramp, a body-separation fix. Verified by tests and harness logs. Open: Tinker Bell link (1.18), P_EX360 hosts, revive Tinker Bell.
+- **WP-FX12a/b/c (shift 12 review fixes).** Customize byte bound proven, Arc tables, journal refresh on open, explicit Cat codes; Genie Drive! in the Items menu, heal and decide tests; wave counter, place_rng test, prize unload, slot validation, fader. Verified by tests. Open: chest-bit caller (no chest object in the app).
+- **WP-RX1 (reaction-34 scenario).** The offer lasts 0.13 s; the scenario pressed once per second. Docs note only; the scenario now presses every 0.05 s.
+- **WP-MN14 (journal pages).** Character page 0xf, page 0xc, Quests and Minigames pages, minigame records saved, page 0 mark for worlds below 0xf. Verified by tests and harness screenshots. Open: Roxas pages, enemy lists, Ansem reports, limits, moogle list.
+- **Drive gauge (user request).** The bar no longer slides in on a mode change (DEVIATIONS.md).
+- **WP-MN15 (journal lists).** Enemy lists with defeated counts, Ansem reports, limits, the Moogle list and mark 0x9a. Verified by tests and journal screenshots. Open: the limit row NEW tag overlaps its text; defeated counts show only while story flag 0x8d0 is set, as in the original.
+- **WP-EN4 (summon hosts).** Tinker Bell link (1.18), P_EX360 hosts, the revive Tinker Bell (coded, never run in a harness), host 1.8 on enemy-made objects. Verified by tests and harness logs. Open: 1.18 link break and routine, hosts 1.100 and 1.128, 1.277 resets, revive fade, FPS limit hosts, Stitch strength, summon stage 4, Genie follow motions.
+- **WP-HK1 (counter hooks).** Limit best count writer, saved reaction use counts, system-tested defeat counting. Verified by tests. Open: real sources for limit hits, ending report rows 1 to 7, chest opening and the party defeat counters 0x404/0x405.
+- **WP-JT4 (menu kind 0xe).** The BATTLE REPORT ending screen for jump type 5, the jump wait, the type 6 fade to black (key close of the ending screen is an app stand-in [inferred]). Verified by tests and a harness screenshot. Open: tests for the type 6 black lift and the key close, the type 6 screen freeze, page 0x15 party switch.
+- **WP-JH1 (journal help bar).** A bar of pieces in the menu frame keeps together at wide and tall windows. Verified by tests and screenshots. Open: the bar is still torn during the page open animation at every window size (a transient), no accept line yet.
+

@@ -1,4 +1,4 @@
-//! The pause menu's Abilities pages, stage M5 (docs/menus.md 2.3 and section 10).
+//! The pause menu's Abilities pages, stage M5 (docs/systems/ui/menus-pause.md 2.3 and docs/systems/ui/menus-status.md section 10).
 //!
 //! Pages (ids of `FUN_002514d0`'s switch): 0xf the character list (`FUN_002790e0`, entry
 //! `FUN_00278aa8`), 0x10 the character's abilities in four groups (`FUN_00279ac0`, entry
@@ -10,7 +10,7 @@
 //! of a Donald or Goofy action ability). The writer of the equipped flag is `FUN_0027d8b8`: bit 15 of
 //! the slot's u16 in the character record (`record + 0x54 + 2 * slot`).
 //!
-//! The whole screen keeps the original's rules; what the app lacks is stated in docs/menus.md
+//! The whole screen keeps the original's rules; what the app lacks is stated in docs/systems/ui/menus-status.md
 //! section 10: the party is Sora alone, so the character list has one row and the drive form and
 //! summon rows of `FUN_00278eb0` are not ported; Donald's and Goofy's action-ability command slots
 //! (the four-row prompt) are not ported either.
@@ -201,7 +201,7 @@ pub fn row_icon(equipped: bool, own: u8, item_type: u8, table: &[(i16, i16, i16)
     table.iter().find(|t| t.0 == item_type as i16).map_or(0xb, |t| t.2 as u8)
 }
 
-/// The tables the page reads from the executable (addresses in the module doc and docs/menus.md 10).
+/// The tables the page reads from the executable (addresses in the module doc and docs/systems/ui/menus-status.md 10).
 #[derive(Clone, Debug, Default)]
 pub struct ExeTables {
     /// 0x382070: the group label messages (bit 15 set; the id is the low 15 bits).
@@ -260,7 +260,7 @@ impl ExeTables {
 // The page machine: which page is up, the cursors, and what a key does there. No Bevy here, so the
 // tests drive it.
 
-/// Sound ids of the menu's system bank (docs/menus.md 9: `PlaySe::number(2000 + id)`): cursor 1,
+/// Sound ids of the menu's system bank (docs/systems/ui/menus-pause-m1.md 9: `PlaySe::number(2000 + id)`): cursor 1,
 /// confirm 2, cancel 4, refused 5.
 pub mod snd {
     pub const CURSOR: u32 = 2001;
@@ -272,7 +272,7 @@ pub mod snd {
 /// Rows the list shows at once (`FUN_002794c8` builds at most nine).
 pub const VISIBLE: usize = 9;
 
-/// The list results of docs/menus.md 1.7 that the Abilities pages use.
+/// The list results of docs/systems/ui/menus-pause.md 1.7 that the Abilities pages use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     /// Up / Down: `fresh` is a new press (wraps), not a held repeat (stops at the ends).
@@ -1172,7 +1172,7 @@ mod tests {
 
     /// Every ability row of the disc as the page shows it when Sora holds it (WP-G8): each becomes a row
     /// of its group with its own name, help text and AP, and is equippable when it costs AP. The test
-    /// prints the inventory of docs/menus.md section 17: id, name, group, AP, bit, and what in the app
+    /// prints the inventory of docs/systems/ui/menus-abilities.md section 17: id, name, group, AP, bit, and what in the app
     /// reads it (growth level, stat block, attack table gate, limit gate, magic lock-on, or nothing yet).
     #[test]
     fn every_ability_row_of_the_disc_is_a_menu_row() {

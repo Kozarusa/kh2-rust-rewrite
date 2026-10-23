@@ -6,7 +6,7 @@
 //! Targets are the BATTLE/TARGET shapes of the other team. Each trigger hits a target once.
 //!
 //! An attack row with the BG Hit flag is also swept against terrain that blocks attacks; touching
-//! it is a `WallHit`, which the owner answers with the generic recoil (see `docs/hit-reaction.md`).
+//! it is a `WallHit`, which the owner answers with the generic recoil (see `docs/systems/combat-effects/hit-reaction.md`).
 //! A swing that already hit a target does not test walls. Victim reactions are decided by the pure
 //! rules in `reaction_rules`; this module holds the data they need and the messages between
 //! detection, victims, effects and sounds.

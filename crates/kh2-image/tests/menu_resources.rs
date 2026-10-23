@@ -1,9 +1,9 @@
 //! Read-only tests against the user's disc (skipped without `KH2_ISO` or `local/iso.txt`): the layout
-//! archives the pause menu, the save menu, the journal and the shop load (docs/menus.md section 1).
+//! archives the pause menu, the save menu, the journal and the shop load (docs/systems/ui/menus-pause.md section 1).
 //!
 //! A `menu/us/*.2ld` is a BAR of two entries: type 29 = IMGZ (the images) and type 28 = LAYD (the layout:
 //! a list of layers, a list of layouts that group layers, and the SEQD sequence files, embedded). The
-//! tests parse the LAYD with the small reader below (its layout is written in docs/menus.md section 1.2),
+//! tests parse the LAYD with the small reader below (its layout is written in docs/systems/ui/menus-pause.md section 1.2),
 //! decode every embedded SEQD and image with `kh2_image`, and print what each file holds. Nothing is
 //! written unless `KH2_MENU_DUMP=<dir>` is set (then the full system message table is written there as
 //! text, outside the repository).
@@ -75,7 +75,7 @@ fn menu_layout_archives_parse_and_are_listed() {
 #[test]
 fn camp_layout_matches_the_numbers_the_doc_quotes() {
     let Some(mut a) = open() else { return };
-    // docs/menus.md section 1.2: camp.2ld has one 256x256 image, two sequences (a 7-group one for the
+    // docs/systems/ui/menus-pause.md section 1.2: camp.2ld has one 256x256 image, two sequences (a 7-group one for the
     // top and bottom bars and a 351-group one for everything else) and ten layers in three layouts.
     let bar = a.read("menu/us/camp.2ld").expect("camp.2ld");
     let two = layd::parse_2ld(&bar).unwrap();
@@ -118,7 +118,7 @@ fn menu_text_ids_found_in_the_message_table() {
     }
     assert_eq!(m.text(0x370f).as_deref(), Some("Equip Abilities."));
     assert_eq!(m.text(0x4539).as_deref(), Some("Journal"));
-    // The summon option (docs/menus.md Config row 4): label and the three value lines.
+    // The summon option (docs/systems/ui/contract.md Config row 4): label and the three value lines.
     assert_eq!(m.text(0x42f7).as_deref(), Some("Summon Effects"));
     assert_eq!(m.text(0x4302).as_deref(), Some("Auto"));
     assert_eq!(m.text(0x4300).as_deref(), Some("Full"));

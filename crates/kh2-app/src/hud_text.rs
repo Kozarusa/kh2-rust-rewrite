@@ -1,5 +1,5 @@
 //! Text for the HUD: the game's fonts and system messages (`msg/us/*.bar`), turned into quads
-//! that `hud_gfx` draws with the sequence quads. See docs/hud.md ("Text") and `kh2_image::text`.
+//! that `hud_gfx` draws with the sequence quads. See docs/systems/ui/hud-panels.md ("Text") and `kh2_image::text`.
 
 use std::collections::HashMap;
 
@@ -78,7 +78,7 @@ impl TextSys {
         Some(TextSys { set, messages, world_messages, places, colors, files: map, icon_file, world, frame_file })
     }
 
-    /// Colour `id` of the font-style table for the current world (0x1a7df8), white if missing. (The atlas texels are the\n    /// palette's own, so 0x80 is a mid grey and white needs 0xff: see docs/hud.md "Text colour".)
+    /// Colour `id` of the font-style table for the current world (0x1a7df8), white if missing. (The atlas texels are the\n    /// palette's own, so 0x80 is a mid grey and white needs 0xff: see docs/systems/ui/hud-panels.md "Text colour".)
     pub fn color(&self, id: u32) -> [u8; 4] {
         self.colors.as_ref().and_then(|c| c.color(id, self.world)).unwrap_or([0xff, 0xff, 0xff, 0x80])
     }

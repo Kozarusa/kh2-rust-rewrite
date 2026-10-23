@@ -1,4 +1,4 @@
-//! The data side of the journal's character and enemy lists (docs/menus.md 20.11, WP-MN15): the list widget's cursor and scroll
+//! The data side of the journal's character and enemy lists (docs/systems/ui/menus-journal-pages.md 20.11, WP-MN15): the list widget's cursor and scroll
 //! rules, the world list of page 0xd, and the reaction-command rows of an enemy's page (0x12 / 0x15).
 //!
 //! The lists of pages 0xd (the worlds), 0xe (a world's characters), 0x11 (the Heartless) and 0x14 (the Nobodies) are ten list

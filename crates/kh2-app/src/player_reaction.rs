@@ -1,6 +1,6 @@
 //! The player's side of reaction commands and clashes: what a target's script asks of Sora while a
 //! reaction command runs (`reaction_cmd::PlayerReactionCmd`), and what an attack-against-attack
-//! clash does to him (`clash::Clash`). See docs/limits-reactions.md and docs/hit-reaction.md.
+//! clash does to him (`clash::Clash`). See docs/systems/drive-limits-summons/contract.md and docs/systems/combat-effects/hit-reaction.md.
 //!
 //! Game rules ported (addresses in `SLUS_210.05`):
 //! - host 1.29 `play_motion_with` (FUN_0017f160): the player's motion queue is cleared (FUN_0017e118)
@@ -413,7 +413,7 @@ fn receive_clashes(
     // Harness: `KH2_CLASH_FORCE_SPARK=<s>,<s>,..` starts the spark-only clash spark (system effect 0xd,
     // `RefactSelf` 2) at each of those times, at the same place as the guard-bounce hook, with no
     // other effect on Sora. Not the original's behaviour: a stand-in for clashes that happen by chance
-    // (see docs/hit-reaction.md "Lifetime of the clash spark").
+    // (see docs/systems/combat-effects/hit-reaction.md "Lifetime of the clash spark").
     let due = spark_times.get_or_insert_with(|| {
         let mut v: Vec<f32> = std::env::var("KH2_CLASH_FORCE_SPARK").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
         v.sort_by(f32::total_cmp);
@@ -429,7 +429,7 @@ fn receive_clashes(
         let (Some(own), Some(other)) = (data.atkp(k.player_atkp), data.atkp(k.enemy_atkp)) else { continue };
         let (own, other) = (ReflectFields::from_atkp(own), ReflectFields::from_atkp(other));
         // FUN_0019aa28: airborne (the mover's bit 1) or range trigger 3 / 30 of Sora's motion; +0x160
-        // bit 0x40: range trigger 24 (docs/hit-reaction.md). The mover's bit 2 reads as clear.
+        // bit 0x40: range trigger 24 (docs/systems/combat-effects/hit-reaction.md). The mover's bit 2 reads as clear.
         let ranges: Vec<u8> = anims.get(s.body).ok().and_then(|a| a.triggers().map(|t| t.active(a.gframe()).map(|r| r.id).collect())).unwrap_or_default();
         let actor = ClashActor::new(!s.motor.grounded, ranges);
         let airborne = actor.fun_0019aa28;

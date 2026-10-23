@@ -41,7 +41,7 @@ Not done yet:
 - Summons: the limit task (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts.
 - Party: the limit scene an accepted Auto Limit offer should start (the limit script runs and Sora, Donald and Goofy play its motions and effects, but other characters' participants, the camera event, the gauge animation and host 7.28 are missing), and the member-swap fade.
 - Game over: the GAMEOVER scene model (WP-GO2), restoring the save body on Continue, and the Load screen's header art. Mickey's rescue is ported only as far as the decision, the chance and the alternate list; it is switched off because Mickey and his heal are not found, so the 11 missions that could offer it show the normal list.
-- Other enemy types (the area survey, docs/area-survey.md, ranks about 75 missing kinds after shift 17) and some area-script group kinds.
+- Other enemy types (the area survey, docs/systems/script-host/area-survey.md, ranks about 75 missing kinds after shift 17) and some area-script group kinds.
 - Journal: the viewer plate's lighting on the model pages.
 - World map: route markers, the cursor's real movement and camera type 4, the other libretto events, voices and the play time.
 - BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.
@@ -111,7 +111,7 @@ Only the USA release is supported. Other discs are refused, because table layout
 | `crates/kh2-app` | The game (`kh2-game`, Bevy 0.19) as a library plus a thin binary, with plugins in domain bundles: areas, skinned characters, Sora, Heartless, combat, camera, HUD |
 | `crates/kh2` | Command-line tool |
 | `crates/kh2-looprec` | Loopback recorder: what the machine plays, as a wav (reference recordings for loudness comparisons) |
-| `docs/` | `METHOD.md` (how we work), `research.md` (sources) |
+| `docs/` | `README.md` (index of the system docs), `METHOD.md` (how we work), `systems/foundations/research.md` (sources), `changelog/` |
 | `tools/` | Process scripts: gate (`verify.ps1`), acceptance (`accept.ps1`), review, merge, PCSX2 and research helpers. Machine paths come from the untracked `local/machine.ps1` (template `tools/machine.example.ps1`) |
 | `agents/` | How the project is worked on: the user's rules, the orchestrator and worker guides, recipes, the user's reported differences, brief templates |
 | `scenarios/` | Diff-rig scenarios (original versus port): save-state names, pad scripts, checkpoints, tolerances; no game data |

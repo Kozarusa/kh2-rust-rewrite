@@ -7,7 +7,7 @@
 //! FUN_0018d6b0 spawns a spark and disables both volumes (volume flag 0x80) except one whose own row says
 //! `RefactSelf` 2, and FUN_0018d430 calls the owner's clash method (+0x6c) for each side: the enemy-style
 //! handler (0x1b2478) plays `ReflectedMotion` with a recoil, the party handler (FUN_001754a0) is the
-//! player's side and lives in `sora.rs`. See docs/limits-reactions.md and docs/hit-reaction.md.
+//! player's side and lives in `sora.rs`. See docs/systems/drive-limits-summons/contract.md and docs/systems/combat-effects/hit-reaction.md.
 //!
 //! What this module does: detects the pairs the way the app detects hits (capsule overlap of
 //! `combat::live_attacks`), disables the volumes by marking their windows as landed so

@@ -1,6 +1,6 @@
 //! Reaction commands (the Triangle prompt): offered by motion range trigger 20 of the object that
 //! gives the reaction, accepted with a key, handed back to the offering object. See
-//! docs/limits-reactions.md for the rules and the gaps.
+//! docs/systems/drive-limits-summons/contract.md for the rules and the gaps.
 //!
 //! Game rules ported (addresses in `SLUS_210.05`):
 //! - FUN_00188030 case 0x14: a range trigger of id 20 that covers the current frame calls
@@ -23,7 +23,7 @@
 //!
 //! The target side is the script: `enemy_ai.rs` delivers `ReactionAccepted` as event 11 to the
 //! target's BDX runtime, and what the script then asks of the *player* comes back here as
-//! [`PlayerReactionCmd`] (consumed by `player_reaction.rs`, see docs/limits-reactions.md).
+//! [`PlayerReactionCmd`] (consumed by `player_reaction.rs`, see docs/systems/drive-limits-summons/contract.md).
 
 use std::collections::HashMap;
 
@@ -286,7 +286,7 @@ pub struct ReactionAccepted {
 }
 
 /// What a target's script asks of the *player* while a reaction command runs: the host calls the
-/// Soldier's command-34 thread makes on the player's context (docs/limits-reactions.md). Written by
+/// Soldier's command-34 thread makes on the player's context (docs/systems/drive-limits-summons/contract.md). Written by
 /// `enemy_ai.rs`; the consumer is the player side, `player_reaction.rs` (paired motion, velocity,
 /// unhittable flag and queued motion are applied to Sora; `Charge` is still not consumed).
 #[allow(dead_code)]
@@ -355,7 +355,7 @@ fn fake_on() -> Option<String> {
 #[derive(Resource)]
 struct FakeOffer(Option<u16>);
 
-/// The collision tables of the enemies and the player's body volume (docs/limits-reactions.md, the
+/// The collision tables of the enemies and the player's body volume (docs/systems/drive-limits-summons/contract.md, the
 /// native source of reaction commands).
 #[derive(Resource, Default)]
 struct Parts {
@@ -931,7 +931,7 @@ mod tests {
     }
 
     /// Every motion set on the disc: print the reaction offers (skips without an ISO). Run with
-    /// `--nocapture` to get the table that docs/limits-reactions.md summarises.
+    /// `--nocapture` to get the table that docs/systems/drive-limits-summons/contract.md summarises.
     #[test]
     fn real_disc_scan() {
         let Some(d) = disc() else { return };
@@ -999,7 +999,7 @@ mod tests {
 
     /// The command table's reaction rows: the 124 rows with CmdAction 1 or 2 whose Execute is their own
     /// id, plus the two rows of the motion offer (455 and 457, CmdAction 0), 126 in all. Their facts
-    /// (docs/limits-reactions.md): all can show in battle (Flags bit 4), 12 wait for the player's trigger
+    /// (docs/systems/drive-limits-summons/contract.md): all can show in battle (Flags bit 4), 12 wait for the player's trigger
     /// window (bit 6), two have an offer cone, three a distance limit, and with the neutral context
     /// every one is available or blocked by its flags, none is "not ported".
     #[test]

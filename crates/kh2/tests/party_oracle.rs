@@ -1,4 +1,4 @@
-//! Oracle checks behind `docs/party.md`: the party rules as the doc states them, compared with the
+//! Oracle checks behind `docs/systems/party/contract.md`: the party rules as the doc states them, compared with the
 //! game's own leaf routines run in kh2-ee on the user's executable. Read-only; skips with a note when
 //! no disc image is configured (KH2_ISO or local/iso.txt).
 //!

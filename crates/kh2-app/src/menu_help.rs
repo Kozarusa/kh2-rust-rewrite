@@ -1,4 +1,4 @@
-//! The Help overlay, page 0x25 (docs/menus.md 2.7 and 16.3).
+//! The Help overlay, page 0x25 (docs/systems/ui/menus-pause.md 2.7 and docs/systems/ui/menus-new-help.md 16.3).
 //!
 //! What the original does (`SLUS_210.05`): a page that has a Help result (-7) calls `FUN_00292088(topic, return page)`:
 //! it stores the return page, `FUN_00292b90(topic)` lists the table entries of that topic (the table at 0x382730: per

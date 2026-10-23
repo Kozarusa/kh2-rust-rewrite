@@ -1,4 +1,4 @@
-//! The pause menu's pages. Stage M1 has page 0, the top list (docs/menus.md 2.1): its entry table,
+//! The pause menu's pages. Stage M1 has page 0, the top list (docs/systems/ui/menus-pause.md 2.1): its entry table,
 //! which rows are shown, and where a row leads. Every table is read from the user's executable at
 //! run time; nothing of it is copied here.
 //!
@@ -16,7 +16,7 @@ pub const TABLE: u32 = 0x0038_08a8;
 pub const ENTRY_SIZE: u32 = 0x24;
 pub const ENTRIES: usize = 8;
 
-/// The page ids of `FUN_00251848`'s jump table at 0x380794 (`docs/menus.md` 1.4; a disc test reads
+/// The page ids of `FUN_00251848`'s jump table at 0x380794 (`docs/systems/ui/menus-pause.md` 1.4; a disc test reads
 /// the table and checks them). `None`: the entry leaves the camp for the Journal scene (kind 3).
 pub const PAGE_OF_ENTRY: [Option<u16>; ENTRIES] = [Some(0x01), Some(0x0f), Some(0x19), Some(0x14), Some(0x17), None, None, Some(0x24)];
 
@@ -108,7 +108,7 @@ pub fn read_table(exe: &Exe) -> Option<Vec<Entry>> {
 }
 
 /// The story flags the menu tests (a set of flag ids). The app has no story: its baseline is a
-/// player who has everything the list gates on (docs/progress.md), so the default sets 0x70..0x73.
+/// player who has everything the list gates on (docs/systems/core-runtime/progress.md), so the default sets 0x70..0x73.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Flags(pub BTreeSet<u16>);
 
@@ -170,7 +170,7 @@ mod tests {
         Entry { idle: [0; 4], selected: [0; 4], name: 0, help: 0, need: need.to_vec(), deny: deny.to_vec() }
     }
 
-    /// The table of docs/menus.md 2.1 with its flag rules, built by hand: Items needs 0x70, Customize
+    /// The table of docs/systems/ui/menus-pause.md 2.1 with its flag rules, built by hand: Items needs 0x70, Customize
     /// 0x72, Party 0x71, the Jiminy Journal 0x73, the Roxas Journal needs 0x73 clear.
     fn table() -> Vec<Entry> {
         vec![

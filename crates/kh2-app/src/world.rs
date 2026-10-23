@@ -494,7 +494,7 @@ mod tests {
     /// 150-unit step across z = 0: a riser (normal -z) and a raised floor (y = 150) for z > 0, all
     /// carrying the attack-blocking flag. Sora spawns at (115, 0, -35) facing +z, 35 units from the
     /// riser, so a swing there crosses the raised floor from above and the cast reports terrain; a
-    /// swing on the low floor facing -z crosses nothing (harness runs in docs/movement.md).
+    /// swing on the low floor facing -z crosses nothing (harness runs in docs/systems/player-camera/contract.md).
     #[test]
     fn tt00_has_an_attack_blocking_step_in_front_of_the_spawn() {
         let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };

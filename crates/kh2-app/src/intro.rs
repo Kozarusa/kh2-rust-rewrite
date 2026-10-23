@@ -1,5 +1,5 @@
 //! The battle intro (WP-I1): the camera track of a mission's start event, played while the start layout runs.
-//! See docs/struggle.md "The intro camera" and docs/camera.md "Event camera".
+//! See docs/systems/world-minigames/struggle.md "The intro camera" and docs/systems/player-camera/camera-event.md "Event camera".
 
 /// One key of an event camera channel (16 bytes, `FUN_0022ab08` / `FUN_0022a9d8`): word 0 is the key type in its
 /// top three bits and the time in its low 29 (signed, 1/512 s), then the value, the incoming and the outgoing
@@ -241,7 +241,7 @@ pub struct Intro {
 /// ahead (z) at head height (y 107), which is where Seifer stands from Roxas at the entry (3.46 m), and
 /// `TR03_MS103`'s record circles (5, 92, 0) at 3.6 m, a head height above the origin. Read as map coordinates the
 /// first shot looks at a wall and the second circles the arena's origin, 10 m from Sora, and under the floor
-/// wherever the ground is above the key's height (the user's report, docs/camera.md "The intro camera"). The
+/// wherever the ground is above the key's height (the user's report, docs/systems/player-camera/camera-event.md "The intro camera"). The
 /// fly-back of opcode 0x31 mode 1 names the player's matrix too (`FUN_0016aa08`, `DAT_0035c998`). The matrix is the
 /// player's place: origin at his feet, z along his facing, y up, x to his left (the handedness of the app's
 /// space, a proper turn of the game's).

@@ -225,7 +225,7 @@ impl PlaySe {
     /// A system sound: entry `sound` of the boot bank `se/se000.seb` (game bank 0). The game's
     /// `FUN_002c14a8(sound, 0)` (interface sounds, the HUD alarm) is `FUN_002be49c(2, sound, ..)`:
     /// the first argument is the driver SLOT 2 that holds `se000.seb`, not a bank number
-    /// ([`kh2_audio::ssl::SYSTEM_BANK`], docs/audio.md "System sounds").
+    /// ([`kh2_audio::ssl::SYSTEM_BANK`], docs/systems/audio/audio.md "System sounds").
     pub fn system(sound: u32) -> PlaySe {
         PlaySe::number(kh2_audio::ssl::SYSTEM_BANK as u32 * 1000 + sound, None)
     }
@@ -943,7 +943,7 @@ pub fn footsteps(
 /// party actor, +0x588 bit 0x80), so the triggers are all there is.
 ///
 /// None of the motion sets of the app's enemy kinds carries a trigger 2 or 19 today (checked with
-/// `kh2 triggers obj/<model>.mset 2`, see `docs/footsteps.md`); the system is the hook for kinds that
+/// `kh2 triggers obj/<model>.mset 2`, see `docs/systems/audio/footsteps.md`); the system is the hook for kinds that
 /// do, and logs a `footstep enemy` line when it plays one.
 #[allow(clippy::too_many_arguments)]
 pub fn enemy_footsteps(

@@ -1,4 +1,4 @@
-//! The Album page (4) of Jiminy's Journal (docs/menus.md 20.9, WP-MN12): a list of the world's pictures, `FUN_002a5a68`.
+//! The Album page (4) of Jiminy's Journal (docs/systems/ui/menus-journal.md 20.9, WP-MN12): a list of the world's pictures, `FUN_002a5a68`.
 //!
 //! `jiminy.bar` entry 2 ("albu", 0xc-byte records) names each picture: +0 the journal world, +1 / +2 two ASCII digits that
 //! end the picture file's name (`jm_photo/<world code><digits>.bin`, read by the viewer page 5, not ported), +6 the story flag

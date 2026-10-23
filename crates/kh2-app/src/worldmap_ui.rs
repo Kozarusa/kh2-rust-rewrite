@@ -1,4 +1,4 @@
-//! The world map's panels, prompts and landing (WP-WM5 and WP-WM6, stages W6 and W7 of docs/worldmap.md).
+//! The world map's panels, prompts and landing (WP-WM5 and WP-WM6, stages W6 and W7 of docs/systems/worldmap-gummi/contract.md).
 //!
 //! What the original does (`SLUS_210.05`): on contact the cursor's handler passes the touched symbol to `FUN_002cca98`,
 //! which makes the world info panel (`FUN_002cf618` -> `FUN_002ce808`) and removes it when the cursor leaves
@@ -23,7 +23,7 @@
 //! grid starting at the frame layer's anchor plus the frame group's x and y), and the episode list a panel (groups 0x5e..0x60)
 //! with up to three rows of group 0x34.
 //!
-//! What stays inferred or not ported, each a gap in docs/worldmap.md: the exact text positions (the original anchors text
+//! What stays inferred or not ported, each a gap in docs/systems/worldmap-gummi/contract.md: the exact text positions (the original anchors text
 //! objects on layers; the offsets here are read off the art), the app keys of the window buttons, the jmemo-driven
 //! plate texts' message table (`FUN_00190c40`: the map's table, the system table and the journal's are tried in that order),
 //! the info panel's level digits and key boxes (`FUN_001bea40`, `FUN_0014c9b0`, the `wmky` table), the two forced events
@@ -319,7 +319,7 @@ pub fn land_destination(records: &[wm::Landing], world: u8, state: u8, localset:
 }
 
 /// `land_destination` for the app's own start: the app's baseline story does not run the new game's flag side effects
-/// (docs/progress.md), so a world's landing key (record byte 1) is 0, a state no `wlds` record has. Then the world's first
+/// (docs/systems/core-runtime/progress.md), so a world's landing key (record byte 1) is 0, a state no `wlds` record has. Then the world's first
 /// record is used [inferred: the original's new game has the key of its first record; with no record at all the original
 /// returns whatever its result buffer held]. Returns the destination and whether the fallback was taken.
 pub fn land_destination_or_first(records: &[wm::Landing], world: u8, state: u8, localset: impl Fn(u8, u16) -> Option<u8>) -> Option<(Dest, bool)> {
@@ -453,7 +453,7 @@ impl Data {
             info!("worldmap: world {world} journal index {index}: plate message ids {ids:#x?}");
         }
         ids.map(|id| {
-            // The fallback message 0x8adc is a placeholder text of the system file (docs/hud.md); the baseline story has no journal flag set, so
+            // The fallback message 0x8adc is a placeholder text of the system file (docs/systems/ui/contract.md); the baseline story has no journal flag set, so
             // the plate stays empty instead of showing it [inferred: the original's story always has a record for a world].
             if id == crate::menu_journal::NO_TEXT {
                 return Vec::new();
@@ -1315,7 +1315,7 @@ fn map_ui(
     let Some(data) = ui.data.as_ref() else { return };
     // The story's lock is taken only to copy what is read; `ExitLocks::locked` takes it again.
     let snap = progress.as_ref().map(|p| Snap::of(&p.story(), &data.epsd, &data.watch));
-    // Contact: the nearest visible symbol within the radius (docs/worldmap.md section 4).
+    // Contact: the nearest visible symbol within the radius (docs/systems/worldmap-gummi/worldmap.md section 4).
     let at = |t: &Transform| Vec2::new(t.translation.x, t.translation.z);
     let symbols: Vec<(u8, Vec2)> = pieces.iter().filter(|(_, _, v)| **v != Visibility::Hidden).filter_map(|(p, t, _)| Some((symbol_world(&data.exe, p.object)?, at(t)))).collect();
     let near = touched(at(sora), &symbols, CONTACT_RADIUS * SCALE);
@@ -1460,7 +1460,7 @@ fn map_ui(
 }
 
 /// The map's menu sounds (`FUN_002d1760(k)` -> `FUN_002c3318(k)`: bank `k / 1000` = 0, entry `k % 1000` = k, `FUN_002c2258`): entries 1 to 5
-/// of the system bank, the same sounds as the pause menu's cursor, confirm, open, cancel and refused (docs/menus.md 1.7). They go through the
+/// of the system bank, the same sounds as the pause menu's cursor, confirm, open, cancel and refused (docs/systems/ui/menus-pause.md 1.7). They go through the
 /// menu's own switch, `menu_sound::play`, which the user has muted (play-test report 2026-10-10): `KH2_SOUNDLOG=1` logs them as muted.
 const SOUND_CURSOR: u32 = 1;
 const SOUND_CONFIRM: u32 = 2;
@@ -1940,7 +1940,7 @@ mod tests {
         assert!(list.rows.iter().any(|r| r.dest == Some(Dest::new(2, 2, point.entrance)) && !r.locked && r.tokens == vec![Token::Glyph(7)] && r.picture.is_some()), "{:?}", list.rows);
     }
 
-    /// The panel art on the disc (docs/worldmap.md section 5): `wm_ws.2ld` has the 11 layouts the mode table names, the sequence the panels use
+    /// The panel art on the disc (docs/systems/worldmap-gummi/worldmap.md section 5): `wm_ws.2ld` has the 11 layouts the mode table names, the sequence the panels use
     /// is the second one, every layer of the used layouts shows a group of it, the text descriptors name groups that exist, `ws_i` draws every
     /// one of the 53 pictures, and the layer a card hangs on is where the grid puts the cards inside the frame.
     #[test]

@@ -1,5 +1,5 @@
 //! Message windows: the framed text boxes of events and dialogue. Rules read from the game's
-//! window classes in a local decompilation of `SLUS_210.05` (docs/hud.md, "Message windows").
+//! window classes in a local decompilation of `SLUS_210.05` (docs/systems/ui/hud-banners-windows.md, "Message windows").
 //!
 //! The frame is a nine-part sprite group of the `md_m` SEQD in `msg/<lang>/fontinfo.bar`, drawn
 //! from the `md_m` IMGD of the current world's message file `msg/<lang>/<world>.bar` (the system

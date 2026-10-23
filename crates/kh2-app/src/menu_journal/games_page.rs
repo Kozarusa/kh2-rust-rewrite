@@ -1,4 +1,4 @@
-//! The node glue of the Quests page (9) and the Minigames page (10) of Jiminy's Journal (docs/menus.md 20.10, WP-MN14):
+//! The node glue of the Quests page (9) and the Minigames page (10) of Jiminy's Journal (docs/systems/ui/menus-journal-pages.md 20.10, WP-MN14):
 //! `FUN_002b5e50` / `FUN_002b4b18` build the page, `FUN_002b6920` / `FUN_002b5698` fill the ten rows in view, `FUN_002b6c20` /
 //! `FUN_002b5aa8` mark them seen. The data and the tests of what a row shows are in `games.rs`.
 

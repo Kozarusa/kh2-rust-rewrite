@@ -1,6 +1,6 @@
 //! Which BDX scripts test an ability bit (host 1.343, `FUN_00170c28`: the bit of the ability block
 //! `FUN_001768a8(object) + bit / 32` that the script pushed). Read-only; skips without a disc.
-//! Behind docs/abilities.md "Ability readers": it lists, per script, the bit pushed before each
+//! Behind docs/systems/combat-effects/abilities.md "Ability readers": it lists, per script, the bit pushed before each
 //! call, so the readers of Leaf Bracer (bit 114) and the other combat bits can be found in data.
 
 use kh2_bdx::{Insn, Program, analyze};
@@ -64,7 +64,7 @@ fn ability_bit_tests_in_scripts() {
     }
     eprintln!("{calls} calls; bits: {:?}", bits.keys().collect::<Vec<_>>());
     assert!(calls > 0, "the scan sees the host calls the CLI scan counts");
-    // docs/abilities.md "Ability readers": Leaf Bracer's bit 114 is the one the scripts read, by
+    // docs/systems/combat-effects/abilities.md "Ability readers": Leaf Bracer's bit 114 is the one the scripts read, by
     // every `CURE_*.mag` script.
     let leaf = bits.get(&114).expect("bit 114 (Leaf Bracer) is read by a script");
     assert!(leaf.iter().all(|l| l.to_ascii_uppercase().contains("CURE")), "bit 114 readers: {leaf:?}");

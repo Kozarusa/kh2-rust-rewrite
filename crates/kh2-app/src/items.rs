@@ -6,7 +6,7 @@
 //! ones (`+0x974`, top pointer `+0x84c`; the HUD at 0x13ca30 draws one page per stacked list).
 //! Method `+0xc` (FUN_001bc2b8) rebuilds the lists, method `+0x10` (FUN_001bbfd8) reads the pad and
 //! method `+0x14` (FUN_001bc0c8) issues the selected command. Everything below cites the routine it
-//! ports; docs/items.md has the whole reading.
+//! ports; docs/systems/ui/items.md has the whole reading.
 //!
 //! The item command: Potion and the other consumables sit in Sora's battle item slots (party record
 //! `+0x34`, `progress::Progress::battle_items`); the Items list shows them merged by command with a
@@ -80,7 +80,7 @@ pub mod cmd_id {
     pub const ATTACK_WISDOM: u16 = 0x16d;
     /// Attack while MP charges with ability bit 107 (FUN_001bc4c8 -> FUN_001768b8).
     pub const ATTACK_CHARGING: u16 = 0x21d;
-    /// Dismiss (FUN_001bc6e0 while the summon state `DAT_01d5e368` is set; docs/summons.md).
+    /// Dismiss (FUN_001bc6e0 while the summon state `DAT_01d5e368` is set; docs/systems/drive-limits-summons/contract.md).
     pub const DISMISS: u16 = 0x13c;
     /// "Drive!" (command 605 = 0x25d, `Execute` 605, `SubMenu` 3): the second deck's third entry while Genie is out
     /// (FUN_001bc6e0 after FUN_001bcf10).

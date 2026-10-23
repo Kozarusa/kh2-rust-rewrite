@@ -1,5 +1,5 @@
 //! The talk table (`libretto-<world>.bar`): what a townsperson says when Sora talks to it
-//! (docs/events.md section 3, "Talk").
+//! (docs/systems/events-movies/npc-savepoints.md section 3, "Talk").
 //!
 //! Rules read in `SLUS_210.05`:
 //!

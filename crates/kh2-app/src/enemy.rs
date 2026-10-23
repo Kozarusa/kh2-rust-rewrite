@@ -5,7 +5,7 @@
 //!
 //! Waves. In an area whose battle script (`ard/<area>.ard`, entry `btl`) loads spawn groups with
 //! enemies the app has, a wave is the next such group: its enemies at the places and with the
-//! spawn records the group gives (tt04: the Dusks, `docs/enemies.md`). Which of the script's
+//! spawn records the group gives (tt04: the Dusks, `docs/systems/script-host/contract.md`). Which of the script's
 //! programs the game runs depends on story progress, which the app does not have, so the groups
 //! take turns in script order. Elsewhere (and with `KH2_AREA_WAVES=0`) a wave is the app's own:
 //! Shadows around Sora, with a Soldier from the second wave on (not from the disc).
@@ -128,7 +128,7 @@ pub const M_EX950: Kind = Kind { name: "M_EX950", enmp: 50, model: "M_EX950", de
 /// `M_EX900` (spawned in 12 areas: eh11, eh25, he09, tt03, tt06, tt07, ..; tt03 b_40 holds one beside two Dusks), called by
 /// its model. Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 to `set_obj_param` (host 2.9, 0x1adf;
 /// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds]. In `KINDS` since WP-EN12a: the dive's
-/// invulnerability (script word +0x18) is cleared by event 17 code 2, delivered from the motion frame triggers (docs/enemies.md "M_EX900").
+/// invulnerability (script word +0x18) is cleared by event 17 code 2, delivered from the motion frame triggers (docs/systems/script-host/enemies-m-ex8-9.md "M_EX900").
 pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
 
 /// `M_EX650` (object 14, `ObjectType` 4; `00objentry` row 14: `NeoStatus` 1019, flags 0, Weight 100, `SpawnLimiter` 10, no spawn objects),
@@ -225,7 +225,7 @@ pub const M_EX920: Kind = Kind { name: "M_EX920", enmp: 47, model: "M_EX920", de
 
 /// `M_EX120` (object 72, `ObjectType` 4; `00objentry` row 72: `NeoStatus` 1035, flags 8, Weight 300, `SpawnLimiter` 9, no spawn objects; a Heartless of the areas al01, al07, al12, al13, mu01, mu03), called by its model.
 /// Its script hands `enmp` row 1 to `set_obj_param` (host 2.9: BDX `M_EX120` R0ef4 at 0x0ef4, called at 0x03d8 with 1 as the first of its eight
-/// values after the object, pushed at 0x03c0, which R0ef4 stores to local+0x20; host 2.9 at 0x0f1b); its `dead` mode plays the death effect, fades and hides in play (soak below in docs/enemies.md).
+/// values after the object, pushed at 0x03c0, which R0ef4 stores to local+0x20; host 2.9 at 0x0f1b); its `dead` mode plays the death effect, fades and hides in play (soak below in docs/systems/script-host/contract.md).
 pub const M_EX120: Kind = Kind { name: "M_EX120", enmp: 1, model: "M_EX120", death_effect: true, status: true };
 
 
@@ -252,11 +252,11 @@ pub const M_AL020_FIRE: Kind = Kind { name: "M_AL020_FIRE", enmp: 5, model: "M_A
 /// Its script hands `enmp` row 6 to `set_obj_param` (host 2.9: BDX `M_AL020_ICEE` R1224 at 0x1224, called at 0x046d with 6 as the first of its eight values after the object, pushed at 0x0455; host 2.9 at 0x124b).
 pub const M_AL020_ICEE: Kind = Kind { name: "M_AL020_ICEE", enmp: 6, model: "M_AL020_ICEE", death_effect: true, status: true };
 
-/// `M_EX130` (object 73, `ObjectType` 21; `00objentry` row 73: `NeoStatus` 1036, `SpawnLimiter` 17, no spawn objects), called by its model; the next kind of docs/area-survey.md (21 areas, bb13 group b_20 holds four beside three `M_EX420`).
+/// `M_EX130` (object 73, `ObjectType` 21; `00objentry` row 73: `NeoStatus` 1036, `SpawnLimiter` 17, no spawn objects), called by its model; the next kind of docs/systems/script-host/area-survey.md (21 areas, bb13 group b_20 holds four beside three `M_EX420`).
 /// Its script (7663 words) hands `enmp` row 2 to `set_obj_param` (host 2.9: BDX `M_EX130` R1b90 at 0x1b90, called at 0x0e9c with 2 as the first of its eight values after the object, pushed at 0x0e87, which R1b90 stores to local+0x20; host 2.9 at 0x1bb7).
 pub const M_EX130: Kind = Kind { name: "M_EX130", enmp: 2, model: "M_EX130", death_effect: true, status: true };
 
-/// `M_EX890` (object 308, `ObjectType` 21; `00objentry` row 308: `NeoStatus` 3003), called by its model; the next kind of docs/area-survey.md (tt29 `KH2_PROGRAMS=7` group b_21 holds four).
+/// `M_EX890` (object 308, `ObjectType` 21; `00objentry` row 308: `NeoStatus` 3003), called by its model; the next kind of docs/systems/script-host/area-survey.md (tt29 `KH2_PROGRAMS=7` group b_21 holds four).
 /// Its script (6901 words) hands `enmp` row 44 to `set_obj_param` (host 2.9: BDX `M_EX890` R18e1 at 0x18e1, called at 0x0b91 with 44 as the first of its eight values after the object, pushed at 0x0b79; host 2.9 at 0x1908).
 pub const M_EX890: Kind = Kind { name: "M_EX890", enmp: 44, model: "M_EX890", death_effect: true, status: true };
 
@@ -264,44 +264,44 @@ pub const M_EX890: Kind = Kind { name: "M_EX890", enmp: 44, model: "M_EX890", de
 /// `obj/M_EX020_RAW.mdlx` is the same size as `obj/M_EX020.mdlx` and `kh2 bdx` lists the same 5333-word script for both, so its `set_obj_param` row is the Shadow's `enmp` 34 (and its row has the Shadow's `NeoStatus` 1001). Only the motion set (4.1 MB, against the Shadow's 365 KB) differs.
 pub const M_EX020_RAW: Kind = Kind { name: "M_EX020_RAW", enmp: 34, model: "M_EX020_RAW", death_effect: true, status: true };
 
-/// `M_EX680` (object 16, `ObjectType` 21; `00objentry` row 16: flags 8, `NeoStatus` 1022, `SpawnLimiter` 17, no spawn objects), called by its model; the next kind of docs/area-survey.md (10 areas; hb04 group b_20 holds one beside two `M_EX420`).
+/// `M_EX680` (object 16, `ObjectType` 21; `00objentry` row 16: flags 8, `NeoStatus` 1022, `SpawnLimiter` 17, no spawn objects), called by its model; the next kind of docs/systems/script-host/area-survey.md (10 areas; hb04 group b_20 holds one beside two `M_EX420`).
 /// Its script (12124 words) hands `enmp` row 66 to `set_obj_param` (host 2.9: BDX `M_EX680` R2d91 at 0x2d91, called at 0x19f4 with 66 as the first of its eight values after the object, pushed at 0x19dc, which R2d91 stores to local+0x20; host 2.9 at 0x2db8).
 pub const M_EX680: Kind = Kind { name: "M_EX680", enmp: 66, model: "M_EX680", death_effect: true, status: true };
 
-/// `M_EX580` (object 10; `00objentry` row 10: `NeoStatus` 1012), called by its model; the next kind of docs/area-survey.md (7 areas, 24 groups; mu01 `KH2_PROGRAMS=1` group b_00 holds one beside three `M_EX020`).
-/// Its script (4331 words) hands `enmp` row 61 to `set_obj_param` (host 2.9; BDX addresses in docs/enemies.md, WP-EN12e).
+/// `M_EX580` (object 10; `00objentry` row 10: `NeoStatus` 1012), called by its model; the next kind of docs/systems/script-host/area-survey.md (7 areas, 24 groups; mu01 `KH2_PROGRAMS=1` group b_00 holds one beside three `M_EX020`).
+/// Its script (4331 words) hands `enmp` row 61 to `set_obj_param` (host 2.9; BDX addresses in docs/systems/script-host/contract.md, WP-EN12e).
 pub const M_EX580: Kind = Kind { name: "M_EX580", enmp: 61, model: "M_EX580", death_effect: true, status: true };
 
-/// `M_EX780` (object 20, `ObjectType` 4; `00objentry` row 20: `NeoStatus` 1039, `SpawnLimiter` 7, no spawn objects), called by its model; the next kind of docs/area-survey.md (lk03 `KH2_PROGRAMS=1` group b_00, kind-2 group 33 with three; shares groups with `M_EX670` and `M_EX720`).
+/// `M_EX780` (object 20, `ObjectType` 4; `00objentry` row 20: `NeoStatus` 1039, `SpawnLimiter` 7, no spawn objects), called by its model; the next kind of docs/systems/script-host/area-survey.md (lk03 `KH2_PROGRAMS=1` group b_00, kind-2 group 33 with three; shares groups with `M_EX670` and `M_EX720`).
 /// Its script (5588 words) hands `enmp` row 81 to `set_obj_param` (host 2.9 at 0x1429 inside R1402, which is called at 0x0aa8 with 81 pushed at 0x0a90, stored to local+0x20 [read at 0x1424]).
 pub const M_EX780: Kind = Kind { name: "M_EX780", enmp: 81, model: "M_EX780", death_effect: true, status: true };
 
-/// `M_EX570` (object 9, `ObjectType` 21; `00objentry` row 9: `NeoStatus` 1011, `SpawnLimiter` 20, no spawn objects), called by its model; the next kind of docs/area-survey.md (mu01 `KH2_PROGRAMS=2` group b_01, kind-2 group 70 with three; stands with `M_EX580` in 9 groups).
+/// `M_EX570` (object 9, `ObjectType` 21; `00objentry` row 9: `NeoStatus` 1011, `SpawnLimiter` 20, no spawn objects), called by its model; the next kind of docs/systems/script-host/area-survey.md (mu01 `KH2_PROGRAMS=2` group b_01, kind-2 group 70 with three; stands with `M_EX580` in 9 groups).
 /// Its script (5178 words) hands `enmp` row 60 to `set_obj_param` (host 2.9 at 0x1277 inside R1250, which is called at 0x0627 with 60 pushed at 0x060f, stored to local+0x20).
 pub const M_EX570: Kind = Kind { name: "M_EX570", enmp: 60, model: "M_EX570", death_effect: true, status: true };
 
 
-/// `M_EX740` (object 124 = 0x7c, `ObjectType` 4; `00objentry` row 124: flags 1, `NeoStatus` 1044, `SpawnLimiter` 7, no spawn objects), called by its model; the next kind of docs/area-survey.md (he16 `KH2_PROGRAMS=a` group b_20, kind-2 group 59 with three beside two `M_EX420`; he15 holds groups of 9 and 15).
+/// `M_EX740` (object 124 = 0x7c, `ObjectType` 4; `00objentry` row 124: flags 1, `NeoStatus` 1044, `SpawnLimiter` 7, no spawn objects), called by its model; the next kind of docs/systems/script-host/area-survey.md (he16 `KH2_PROGRAMS=a` group b_20, kind-2 group 59 with three beside two `M_EX420`; he15 holds groups of 9 and 15).
 /// Its script (5677 words) hands `enmp` row 13 to `set_obj_param` (host 2.9; survey recipe, `cargo run -p kh2 -- bdx M_EX740`).
 pub const M_EX740: Kind = Kind { name: "M_EX740", enmp: 13, model: "M_EX740", death_effect: true, status: true };
 
-/// `M_EX500` (object 2, `ObjectType` 4; `00objentry` row 2: `NeoStatus` 1004), called by its model; the next kind of docs/area-survey.md (he11 `KH2_PROGRAMS=1` group b_00, kind-2 group 71 with three; five Coliseum areas).
+/// `M_EX500` (object 2, `ObjectType` 4; `00objentry` row 2: `NeoStatus` 1004), called by its model; the next kind of docs/systems/script-host/area-survey.md (he11 `KH2_PROGRAMS=1` group b_00, kind-2 group 71 with three; five Coliseum areas).
 /// Its script (7498 words) hands `enmp` row 54 to `set_obj_param` (host 2.9; survey recipe, `cargo run -p kh2 -- bdx M_EX500`); it needs host 1.125 tween_start, added as Approx.
 pub const M_EX500: Kind = Kind { name: "M_EX500", enmp: 54, model: "M_EX500", death_effect: true, status: true };
 
-/// `M_EX710` (object 122 = 0x7a, `ObjectType` 21; `00objentry` row 122: `NeoStatus` 1025), called by its model; the widest kind of docs/area-survey.md (28 areas; tt39 `KH2_PROGRAMS=4` group b_10, kind-2 group 156 with two).
+/// `M_EX710` (object 122 = 0x7a, `ObjectType` 21; `00objentry` row 122: `NeoStatus` 1025), called by its model; the widest kind of docs/systems/script-host/area-survey.md (28 areas; tt39 `KH2_PROGRAMS=4` group b_10, kind-2 group 156 with two).
 /// Its script (6782 words) hands `enmp` row 11 to `set_obj_param` (host 2.9; survey recipe, `cargo run -p kh2 -- bdx M_EX710`).
 pub const M_EX710: Kind = Kind { name: "M_EX710", enmp: 11, model: "M_EX710", death_effect: true, status: true };
 
-/// `M_EX550` (object 7, `ObjectType` 4; `00objentry` row 7: flags 0, `NeoStatus` 1009, `SpawnLimiter` 9, no spawn objects), called by its model; the next kind of docs/area-survey.md (he11 `KH2_PROGRAMS=a` group b_20, kind-2 group 84 with four; dc00, dc02, dc03 and he05 also spawn it).
+/// `M_EX550` (object 7, `ObjectType` 4; `00objentry` row 7: flags 0, `NeoStatus` 1009, `SpawnLimiter` 9, no spawn objects), called by its model; the next kind of docs/systems/script-host/area-survey.md (he11 `KH2_PROGRAMS=a` group b_20, kind-2 group 84 with four; dc00, dc02, dc03 and he05 also spawn it).
 /// Its script (7185 words) hands `enmp` row 58 to `set_obj_param` (host 2.9 at 0x1a02; `cargo run -p kh2 -- bdx M_EX550`).
 pub const M_EX550: Kind = Kind { name: "M_EX550", enmp: 58, model: "M_EX550", death_effect: true, status: true };
 
-/// `M_EX610` (object 1114 = 0x45a, `ObjectType` 4; `00objentry` row 1114: `NeoStatus` 1015), called by its model; the next kind of docs/area-survey.md (hb09, hb16, hb18, tr01, tr04, tr09).
+/// `M_EX610` (object 1114 = 0x45a, `ObjectType` 4; `00objentry` row 1114: `NeoStatus` 1015), called by its model; the next kind of docs/systems/script-host/area-survey.md (hb09, hb16, hb18, tr01, tr04, tr09).
 /// Its script (7410 words) hands `enmp` row 101 to `set_obj_param` (host 2.9: BDX `M_EX610` R1b10 at 0x1b10, called at 0x1024 with 101 as the first of its eight values after the object, pushed at 0x100c, which R1b10 stores to local+0x20; host 2.9 at 0x1b37). It calls no host that the app lacks (survey).
 pub const M_EX610: Kind = Kind { name: "M_EX610", enmp: 101, model: "M_EX610", death_effect: true, status: true };
 
-/// `M_EX590` (object 75, `ObjectType` 4; `00objentry` row 75: `NeoStatus` 1013, `SpawnLimiter` 9, no spawn objects), called by its model; the pot Heartless of al01, bb08, he09, mu02, nm02 and nm06. Its script (6556 words) hands `enmp` row 4 to `set_obj_param` (host 2.9 at 0x07b6, the 4 pushed at 0x07b0). Its fighting members sit in kind-2 groups that start disabled and are enabled by event 0x9b (docs/enemies.md "The enemy M_EX590").
+/// `M_EX590` (object 75, `ObjectType` 4; `00objentry` row 75: `NeoStatus` 1013, `SpawnLimiter` 9, no spawn objects), called by its model; the pot Heartless of al01, bb08, he09, mu02, nm02 and nm06. Its script (6556 words) hands `enmp` row 4 to `set_obj_param` (host 2.9 at 0x07b6, the 4 pushed at 0x07b0). Its fighting members sit in kind-2 groups that start disabled and are enabled by event 0x9b (docs/systems/script-host/enemies-m-ex5.md "The enemy M_EX590").
 pub const M_EX590: Kind = Kind { name: "M_EX590", enmp: 4, model: "M_EX590", death_effect: true, status: true };
 
 /// `M_EX610_RAW` (object 1875, tr03 b_40, 24 members; `00objentry` row 1875: `AnimationName` `M_EX610.mset`), the `M_EX610` body with the base kind's motion set: the rig loader takes the motion-set name from the row (`mset_name`).
@@ -479,7 +479,7 @@ pub struct AreaWaves {
 /// One signal of a spawn group record (8 bytes after the walk paths): `FUN_00198430` registers the group with the trigger
 /// `(event, arg)` when it is set up (`FUN_001975e0`), and the trigger enables the group (action 0, `FUN_00199c70`) or
 /// disables it (action 1, `FUN_00199c48`) when the event is raised (`FUN_001978b0`). The event is `FUN_00197b70`'s first
-/// argument, the argument its second (event 0x4a ignores it). docs/events.md section 2, "Signals".
+/// argument, the argument its second (event 0x4a ignores it). docs/systems/core-runtime/areas.md section 2, "Signals".
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupSignal {
     /// The spawn tag the record is in.
@@ -1643,7 +1643,7 @@ pub fn spawn_waves(
 /// switches its groups (`FUN_001978b0`: action 0 `FUN_00199c70` enables, 1 `FUN_00199c48` disables). M_EX590's fighting
 /// groups wait for event 0x9b: the field objects `F_AL050`, `F_BB070`, `F_HE000`, `F_MU060`, `F_NM070` (and `F_BB040`,
 /// `F_MU040`, `F_MU050`) raise it with argument -1 (host 1.41 pushes 155 and -1 in `R0061`, the handler of their damage event
-/// 6, after a break reaction and progress flag 0x102b) [docs/enemies.md]. The app has no field objects, so the event comes
+/// 6, after a break reaction and progress flag 0x102b) [docs/systems/script-host/contract.md]. The app has no field objects, so the event comes
 /// only from the harness: `KH2_FIRE_EVENT=<hex event>[,<argument>]` raises it once after the groups are set up (the argument
 /// defaults to -1) and applies it to the trigger table alone (the objects' event 10 is not sent).
 pub fn fire_group_triggers(mut events: MessageReader<crate::struggle::GlobalEvent>, mut battle: ResMut<BattleGroups>) {

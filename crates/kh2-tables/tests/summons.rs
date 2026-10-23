@@ -1,4 +1,4 @@
-//! Read-only checks behind `docs/summons.md`: the `sumn` rows, their charm items, commands, summon
+//! Read-only checks behind `docs/systems/drive-limits-summons/contract.md`: the `sumn` rows, their charm items, commands, summon
 //! objects and summon limits, read from the user's own disc ($KH2_ISO or local/iso.txt). Each test
 //! skips, with a note, when the disc is not available. Run with `--nocapture` to print the rows.
 

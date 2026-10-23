@@ -559,7 +559,7 @@ fn region_repeat(poly: &[Vert], rect: [f32; 4]) -> Vec<Vec<Vert>> {
 /// is a rotation by +angle). This stands in for the game's depth-buffer masks (0x13e010): a
 /// square with a corner on the ring's centre, turned by the gauge's angle, plus a fixed rectangle,
 /// written to the depth buffer so the ring is hidden under them; the visible remainder is the
-/// wedge computed here (docs/hud.md, "Party panels").
+/// wedge computed here (docs/systems/ui/hud-notes.md, "Party panels").
 fn wedge(poly: &[Vert], c: [f32; 2], start: f32, sweep: f32) -> Vec<Vec<Vert>> {
     use std::f32::consts::PI;
     if sweep <= 0.0 {

@@ -35,7 +35,7 @@ impl std::error::Error for Error {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryPoint {
-    /// Event id the game uses to start this entry (see docs/bdx.md).
+    /// Event id the game uses to start this entry (see docs/systems/script-host/contract.md).
     pub id: u32,
     /// Code word index of the first instruction.
     pub pc: u32,

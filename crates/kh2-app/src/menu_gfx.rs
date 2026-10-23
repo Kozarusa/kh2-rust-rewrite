@@ -1,5 +1,5 @@
 //! Draws the pause menu's 2D sequences: the `.2ld` image and its sequences (`kh2_image::layd`) and
-//! the menu's text, on a camera of their own above the HUD's. The draw path is the HUD's (docs/hud.md:
+//! the menu's text, on a camera of their own above the HUD's. The draw path is the HUD's (docs/systems/ui/contract.md:
 //! a node plays an animation group, its quads are batched by texture and blend, vertex colours are
 //! multiplied in gamma space) minus the parts the menu does not use (ring wedges, reveals); it is a
 //! copy because `hud_gfx.rs` is private to the HUD module, which other work is editing. The shader is
@@ -166,7 +166,7 @@ pub struct Node {
     pub label_fade: f32,
     /// A frame part (header band, side rails, bottom panels, backdrop) that reaches the 4:3 canvas edges: its box at
     /// rest (x0, y0, x1, y1). The sides of it that touch the canvas edges are carried out to the window's edges
-    /// (`stretch_quads`, docs/menus.md 9.1).
+    /// (`stretch_quads`, docs/systems/ui/menus-pause-m1.md 9.1).
     pub stretch: Option<[f32; 4]>,
     /// Follow-up group: when a group that plays a limited number of times has finished, the node
     /// switches to this group and steps it once (`hud_gfx::HudScene`, 0x138aa8).
@@ -215,11 +215,11 @@ pub struct MenuScene {
     /// Alpha of the black the field is dimmed with (0 = none).
     pub dim: f32,
     /// Alpha of a white fade over the field, drawn even while `hidden` (the knock-out event's screen fade, `FUN_0014a710` flag 1:
-    /// white, docs/menus.md 26.8). It replaces the black dim while it is above the dim's alpha.
+    /// white, docs/systems/ui/menus-gameover.md 26.8). It replaces the black dim while it is above the dim's alpha.
     pub fade: f32,
     /// Draw nothing at all (the menu is closed).
     pub hidden: bool,
-    /// Frames the players advance per 60 Hz tick (the clip's pace, docs/menus.md 1.6).
+    /// Frames the players advance per 60 Hz tick (the clip's pace, docs/systems/ui/menus-pause.md 1.6).
     pub speed: f32,
     acc: f32,
     /// The window's visible area in menu units (x0, y0, x1, y1), set by `draw` (zero until the first frame: the canvas).

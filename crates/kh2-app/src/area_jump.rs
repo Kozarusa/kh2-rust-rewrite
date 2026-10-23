@@ -1,4 +1,4 @@
-//! Exit volumes and the area jump (WP-E1, docs/events.md section 2).
+//! Exit volumes and the area jump (WP-E1, docs/systems/core-runtime/areas.md section 2).
 //!
 //! Every frame the game tests the player against the activator volumes of the loaded spawn
 //! groups (`FUN_001989d8`) and hands a hit to `FUN_00198b30`, which for a kind-1 group (an exit,
@@ -199,7 +199,7 @@ impl AfterEvent {
 }
 
 /// The world map can be entered (the save point's World Map row and jumps to world 0xf). On by default since WP-WM5 (the map has its
-/// panels and the landing, docs/worldmap.md W6, W7); `KH2_WORLDMAP=0` hides the row and refuses the jump (a harness switch, not the
+/// panels and the landing, docs/systems/worldmap-gummi/contract.md W6, W7); `KH2_WORLDMAP=0` hides the row and refuses the jump (a harness switch, not the
 /// original's behaviour).
 pub fn worldmap_enabled() -> bool {
     std::env::var("KH2_WORLDMAP").map_or(true, |v| v != "0")
@@ -273,7 +273,7 @@ impl Dest {
 /// (the exit's world, area and entrance, programs 0xff) before it asks the trigger or starts the jump, and
 /// that a type-3 jump record jumps to (`FUN_0019d9d8`). Initially all 0xff (`FUN_00105420`), which keeps the
 /// current record. Other writers of `0x33e840`, `FUN_00172250` and `FUN_001722c0`, have no direct caller in
-/// the executable (docs/events.md section 4, gaps).
+/// the executable (docs/systems/events-movies/npc-savepoints.md section 4, gaps).
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub struct LastExit(pub Option<Dest>);
 
@@ -441,7 +441,7 @@ pub enum Outcome {
     /// Type 6 (`FUN_00149f38`): the task `FUN_00149eb0` freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades
     /// the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`), waits until it is black and ends; no jump follows.
     /// Nothing that fades it back in was found [gap].
-    /// The freeze is a GS frame copy (`FUN_0014dbe8`) with no counterpart here: the fade runs over the live scene (docs/events.md).
+    /// The freeze is a GS frame copy (`FUN_0014dbe8`) with no counterpart here: the fade runs over the live scene (docs/systems/core-runtime/contract.md).
     FreezeFade,
 }
 

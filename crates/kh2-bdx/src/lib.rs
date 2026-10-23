@@ -1,6 +1,6 @@
 //! BDX: the bytecode scripts KH2 uses for enemy AI (one per enemy object, in the object's MDLX) and
 //! for area logic (`00common.bdx`, area files). Format and instruction set were read from the game's
-//! interpreter on the user's disc; see docs/bdx.md. Nothing here depends on a game engine: the
+//! interpreter on the user's disc; see docs/systems/script-host/contract.md. Nothing here depends on a game engine: the
 //! interpreter talks to the world through the [`Host`] trait.
 
 pub mod disasm;

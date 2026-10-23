@@ -1,4 +1,4 @@
-//! Pure rules of the party members in battle (stage 2 of docs/party.md section 9): the AI class's
+//! Pure rules of the party members in battle (stage 2 of docs/systems/party/party-friend-ai.md section 9): the AI class's
 //! action records and parameter entries as the executable holds them, the range test, the
 //! feasibility test, the anti-repeat rule, the action choice and the style-0 target choice. `party.rs`
 //! runs them; each function names the game routine it ports.

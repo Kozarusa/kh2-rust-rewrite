@@ -1,4 +1,4 @@
-//! The Ansem report page (0x18) and the limit page (0x1e) of Jiminy's Journal (docs/menus.md 20.11, WP-MN15): `FUN_002acfb8` builds it, `FUN_002ad3d0` is its
+//! The Ansem report page (0x18) and the limit page (0x1e) of Jiminy's Journal (docs/systems/ui/menus-journal-pages.md 20.11, WP-MN15): `FUN_002acfb8` builds it, `FUN_002ad3d0` is its
 //! handler, `FUN_002adcb0` draws the text (nine lines from the scroll position, as a character's description shows seven).
 //!
 //! The report is a record of `jiminy.bar` entry 4 (+0 the item that makes it exist, +2 the title message, +4 the text message). The

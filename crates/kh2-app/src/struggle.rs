@@ -1,6 +1,6 @@
 //! The Struggle (WP-7E): the game's mission manager (`DAT_01d5dd20`) reduced to what the Struggle matches of
 //! tt04 use: the two orb counters, the match clock, the mission script that ties them together, and the end.
-//! See docs/struggle.md for the rules and every address.
+//! See docs/systems/world-minigames/struggle.md for the rules and every address.
 //!
 //! What runs here, in the game's terms:
 //! - the mission file `msn/us/<name>.bar` (loaded by `FUN_001b8d80`): its header records (`FUN_001d8d18` with

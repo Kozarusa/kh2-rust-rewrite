@@ -17,6 +17,7 @@ pub mod magic_rules;
 pub mod motor;
 pub mod party_rules;
 pub mod progress;
+pub mod progress_flags;
 pub mod reaction_parts;
 pub mod reaction_rules;
 pub mod rig;

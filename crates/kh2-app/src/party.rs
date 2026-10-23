@@ -1189,13 +1189,13 @@ fn jump_reset(
 /// Donald and Goofy go and Sora fights alone; the bytes stay so until another opcode 0xf (or the Party page)
 /// rewrites them (FUN_001a71c0's record survives area loads).
 fn mission_party(
-    mut starts: MessageReader<crate::struggle::MissionStart>,
+    mut starts: MessageReader<crate::shared::struggle::MissionStart>,
     disc: Res<Disc>,
     area: Res<CurrentArea>,
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
     mgr: Res<Manager>,
-    mut queue: Local<(Vec<crate::struggle::MissionStart>, Option<String>)>,
+    mut queue: Local<(Vec<crate::shared::struggle::MissionStart>, Option<String>)>,
 ) {
     let (pending, owner) = &mut *queue;
     // The preset edits the loaded world's bytes: until `spawn_party` has entered the world for this area (it
@@ -1219,12 +1219,12 @@ fn mission_party(
 /// the queue is dropped when the loaded area changes (a start of the old area must not meet the next area's `btl`
 /// program). `owner` is the area the queue belongs to.
 fn drain_ready(
-    pending: &mut Vec<crate::struggle::MissionStart>,
+    pending: &mut Vec<crate::shared::struggle::MissionStart>,
     owner: &mut Option<String>,
-    new: impl IntoIterator<Item = crate::struggle::MissionStart>,
+    new: impl IntoIterator<Item = crate::shared::struggle::MissionStart>,
     loaded: Option<&str>,
     built_for: Option<&str>,
-) -> Vec<crate::struggle::MissionStart> {
+) -> Vec<crate::shared::struggle::MissionStart> {
     if owner.as_deref() != loaded {
         pending.clear();
         *owner = loaded.map(str::to_string);
@@ -3250,8 +3250,8 @@ mod tests {
         assert!(area_entered(Some("tt04"), Some("tt04")));
     }
 
-    fn start(id: u32) -> crate::struggle::MissionStart {
-        crate::struggle::MissionStart { id, name: String::new(), orb_pool: false, triggers: Vec::new() }
+    fn start(id: u32) -> crate::shared::struggle::MissionStart {
+        crate::shared::struggle::MissionStart { id, name: String::new(), orb_pool: false, triggers: Vec::new() }
     }
 
     /// WP-REG1b: starts wait for the area's party pass, drain in order exactly once, and a change of area drops them.

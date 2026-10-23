@@ -906,7 +906,7 @@ fn height_above_ground(world: &World, m: &Motor) -> f32 {
 }
 
 /// The optional resources of `tick`, in one parameter (Bevy takes 16 system parameters at most).
-type TickOptionals<'a> = (Option<Res<'a, crate::struggle::Mission>>, Option<Res<'a, crate::audio_bgm::BattleFlag>>, Option<Res<'a, crate::summon::SummonState>>);
+type TickOptionals<'a> = (Option<Res<'a, crate::shared::struggle::Mission>>, Option<Res<'a, crate::audio_bgm::BattleFlag>>, Option<Res<'a, crate::summon::SummonState>>);
 
 /// One 60 Hz tick of Sora's controller.
 #[allow(clippy::too_many_arguments)]

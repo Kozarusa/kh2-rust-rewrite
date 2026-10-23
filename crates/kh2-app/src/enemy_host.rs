@@ -22,7 +22,7 @@ use crate::skel::Rig;
 use crate::world::World;
 use crate::SCALE;
 use crate::shared::enemy::{push_mask_edits, AREA_MASK, GROUP_EDITS};
-pub use crate::shared::enemy::{queue_group_edit, set_area_mask, take_group_edits, target_record};
+pub use crate::shared::enemy::{queue_group_edit, target_record};
 
 /// Turn rate in radians per tick when a script passes speed 0 ("the object's own rate"). The game reads
 /// it from the object (+0x11c); where that value comes from was not found, this is the rate the

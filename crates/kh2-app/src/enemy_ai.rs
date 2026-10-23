@@ -391,8 +391,8 @@ fn ai_attach(
 type ScriptWorld<'w, 's> = (
     Res<'w, AiPrograms>,
     Option<Res<'w, crate::shared::abilities::Abilities>>,
-    Option<Res<'w, crate::struggle::Mission>>,
-    MessageReader<'w, 's, crate::struggle::GlobalEvent>,
+    Option<Res<'w, crate::shared::struggle::Mission>>,
+    MessageReader<'w, 's, crate::shared::struggle::GlobalEvent>,
 );
 
 /// One tick of every scripted enemy: deliver events, run the script, carry out what it asked for.
@@ -460,7 +460,7 @@ fn ai_update(
     let mut mail = dispatch_messages(&mut mailbox, &order);
     // Global events (FUN_00197b70 -> FUN_0016b470, object method +0x34): every scripted enemy gets event 10
     // with (event, argument) (WP-7E: the Struggle's result 159 / 160 picks the opponents' `gameset_voice_*`).
-    let globals: Vec<crate::struggle::GlobalEvent> = global_events.read().copied().collect();
+    let globals: Vec<crate::shared::struggle::GlobalEvent> = global_events.read().copied().collect();
     let mission_counters = mission.as_deref().and_then(|m| m.counters());
     let no_prizes = mission.as_deref().is_some_and(|m| m.no_prizes());
     let event_active = mission.as_deref().is_some_and(|m| m.event_active());
@@ -573,7 +573,7 @@ fn ai_update(
         for g in &globals {
             let handled = rt.event(&mut host, 10, &[g.id, g.arg as u32]);
             host.trace.line(host.tag, &format!("event 10: global event {} ({}); handler {}", g.id, g.arg, if handled { "ran" } else { "absent" }));
-            if handled && matches!(g.id, crate::struggle::EV_PLAYER_WON | crate::struggle::EV_PLAYER_LOST) {
+            if handled && matches!(g.id, crate::shared::struggle::EV_PLAYER_WON | crate::shared::struggle::EV_PLAYER_LOST) {
                 info!("bdx {}: event 10 (global event {}) delivered", host.tag, g.id);
             }
         }

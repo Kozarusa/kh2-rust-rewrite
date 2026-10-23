@@ -446,7 +446,7 @@ pub struct AreaGroup {
     pub orb_pool: bool,
     /// The triggers (opcode 0xc) of the area's `btl` program and of the `evt` program with the same id, which
     /// the mission's end looks up (WP-7E2) [inferred: the area record runs the `evt` program of the same number].
-    pub triggers: Vec<crate::struggle::Trig>,
+    pub triggers: Vec<crate::shared::struggle::Trig>,
 }
 
 /// The current area's enemy spawn groups (see the module header).
@@ -559,9 +559,9 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
     };
     let mut out: Vec<AreaGroup> = Vec::new();
     for p in ard.scripts.get("btl").into_iter().flatten() {
-        let mission = crate::struggle::mission_command(p);
+        let mission = crate::shared::struggle::mission_command(p);
         let orb_pool = p.spawns().flat_map(|n| ard.spawns.get(&n).into_iter().flatten().flat_map(|g| &g.entities).map(|e| e.object).collect::<Vec<_>>()).any(|o| {
-            rows.iter().any(|r| r.object_id == o && r.object_type == crate::struggle::ORB_POOL_TYPE.0 && r.sub_type == crate::struggle::ORB_POOL_TYPE.1)
+            rows.iter().any(|r| r.object_id == o && r.object_type == crate::shared::struggle::ORB_POOL_TYPE.0 && r.sub_type == crate::shared::struggle::ORB_POOL_TYPE.1)
         });
         for name in p.spawns() {
             // One entry per (program, group): the mission and triggers are the loading program's.
@@ -572,7 +572,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                 .into_iter()
                 .flatten()
                 .flat_map(|q| q.commands.iter().filter(|c| c.opcode == 0xc).filter_map(|c| kh2_ard::parse_trigger(&c.args)))
-                .map(|t| crate::struggle::Trig::from_ard(&t))
+                .map(|t| crate::shared::struggle::Trig::from_ard(&t))
                 .collect();
             let mut g = AreaGroup { program: p.id, name: name.clone(), parts: Vec::new(), members: Vec::new(), skipped: Vec::new(), player: None, player_yaw: 0.0, mission: mission.clone(), orb_pool, triggers };
             for rec in ard.spawns.get(&name).into_iter().flatten() {
@@ -1307,9 +1307,9 @@ pub fn spawn_waves(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    mut missions: MessageWriter<crate::struggle::MissionStart>,
-    mut events: MessageWriter<crate::struggle::GlobalEvent>,
-    mission: Option<Res<crate::struggle::Mission>>,
+    mut missions: MessageWriter<crate::shared::struggle::MissionStart>,
+    mut events: MessageWriter<crate::shared::struggle::GlobalEvent>,
+    mission: Option<Res<crate::shared::struggle::Mission>>,
 ) {
     let (Some(col), Ok((mut sora_tf, mut sora))) = (collider, sora.single_mut()) else { return };
     let p = *sora_tf;
@@ -1442,7 +1442,7 @@ pub fn spawn_waves(
                 }
                 // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
                 if let Some((id, name)) = &g.mission {
-                    missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
+                    missions.write(crate::shared::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
                 }
             }
             // The members created here are entities from the next tick on: the groups' walk starts then.
@@ -1531,7 +1531,7 @@ pub fn spawn_waves(
                         b.events[i].group.name,
                         hit.map_or(String::new(), |t| format!("; area trigger {t:?} matches (its effects are not applied here)"))
                     );
-                    events.write(crate::struggle::GlobalEvent { id, arg });
+                    events.write(crate::shared::struggle::GlobalEvent { id, arg });
                 }
             }
         }
@@ -1578,7 +1578,7 @@ pub fn spawn_waves(
 /// 6, after a break reaction and progress flag 0x102b) [docs/systems/script-host/contract.md]. The app has no field objects, so the event comes
 /// only from the harness: `KH2_FIRE_EVENT=<hex event>[,<argument>]` raises it once after the groups are set up (the argument
 /// defaults to -1) and applies it to the trigger table alone (the objects' event 10 is not sent).
-pub fn fire_group_triggers(mut events: MessageReader<crate::struggle::GlobalEvent>, mut battle: ResMut<BattleGroups>) {
+pub fn fire_group_triggers(mut events: MessageReader<crate::shared::struggle::GlobalEvent>, mut battle: ResMut<BattleGroups>) {
     let mut raised: Vec<(i32, i32)> = events.read().map(|e| (e.id as i32, e.arg)).collect();
     if !battle.fired && battle.run != 0 {
         battle.fired = true;

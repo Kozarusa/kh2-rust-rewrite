@@ -56,6 +56,8 @@ pub const GETTERS: &[(&str, Getter)] = &[
     ("save.sora_hp", |c| c.progress.map(|p| p.sora().hp.to_string())),
     ("save.sora_hp_max", |c| c.progress.map(|p| p.sora().hp_max.to_string())),
     ("cam.pos", cam_pos),
+    ("rng.lo", |_| Some((crate::rng::state() as u32).to_string())),
+    ("rng.hi", |_| Some(((crate::rng::state() >> 32) as u32).to_string())),
     ("sora.motion", |c| c.motion.map(|m| m.0.to_string())),
     ("sora.motion_frame", |c| c.motion.map(|m| f(m.1))),
     ("menu.scene_state", |c| c.menu.map(|(p, _)| if p.0 == Phase::Closed { "0" } else { "1" }.to_string())),
@@ -168,7 +170,7 @@ mod tests {
         assert!((facing[0] - 1.0).abs() < 1e-6 && facing[2].abs() < 1e-6, "{facing:?}");
         // No objects: no values; a name the port lacks stays None.
         let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: None };
-        assert!(GETTERS.iter().filter(|(n, _)| *n != "frame.step").all(|(_, g)| g(&none).is_none()));
+        assert!(GETTERS.iter().filter(|(n, _)| !matches!(*n, "frame.step" | "rng.lo" | "rng.hi")).all(|(_, g)| g(&none).is_none()));
         assert_eq!(read("menu.word_354f70", &c), None);
     }
 

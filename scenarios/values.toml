@@ -142,3 +142,16 @@ note = "the list's first shown row (0 in every traced page) [inferred from 0x297
 path = [0x354f70]
 type = "u32"
 note = "0 in every user state and every stop of the RIG-4 menu runs (docs: the 0x138748 gate, 'a menu is up' outside the camp scene [inferred])"
+
+# The game's random number generator word (generator A, FUN_003117a8): 64 bits at reent +0xa8, the reent pointer being the word at
+# 0x373cf0 (the executable's pointer 0x373a00). Read as two words: the low half and the high half; the draw is bits 32..62 of the word.
+# Every user of the generator steps it, so the pair is the count of draws since the seed in a moved state (boot seed 0x875b2f).
+[rng.lo]
+path = [0x373cf0, 0xa8]
+type = "u32"
+note = "low 32 bits of the generator word (reent +0xa8)"
+
+[rng.hi]
+path = [0x373cf0, 0xac]
+type = "u32"
+note = "high 32 bits of the generator word (reent +0xac); the draw is this word and 0x7fffffff"

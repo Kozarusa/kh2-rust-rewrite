@@ -91,9 +91,6 @@ pub struct TexAnim {
     uvsc: Vec<UvscPlayer>,
     targets: Vec<Target>,
     scrolls: Vec<Scroll>,
-    /// State of the stand-in for the game's `rand()` (FUN_003117a8, an LCG whose stream the whole
-    /// game shares, so its exact sequence cannot be reproduced here).
-    rng: u64,
     tick: u64,
     /// The TEXA slot a motion range trigger requested last field (for the log).
     slot: Option<u32>,
@@ -133,15 +130,14 @@ impl TexAnim {
             anims: Arc::new(anims.clone()),
             targets,
             scrolls,
-            rng: 1,
             tick: 0,
             slot: None,
         })
     }
 
+    /// The game's `rand()` (FUN_003117a8): the one stream every user shares (`crate::rng`).
     fn rand(&mut self) -> u32 {
-        self.rng = self.rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        ((self.rng >> 32) & 0x7fff_ffff) as u32
+        crate::rng::rand()
     }
 
     /// FUN_0011e850: every TEXA that has `slot` in its slot table plays that animation this field.

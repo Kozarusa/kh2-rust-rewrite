@@ -3429,6 +3429,7 @@ dependencies = [
  "kh2-bar",
  "kh2-bdx",
  "kh2-ee",
+ "kh2-factory",
  "kh2-fx",
  "kh2-image",
  "kh2-map",

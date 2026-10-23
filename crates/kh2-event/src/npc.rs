@@ -190,37 +190,25 @@ pub fn region_coord(a: &kh2_ard::Activator, p: [f32; 3]) -> f32 {
     (a.local(p)[0] + sx) / (sx + sx)
 }
 
-/// The game's `rand()` (`FUN_003117a8`) as the class-5 code uses it; a per-object xorshift stands in
-/// for the one global generator [approx: the game's sequence is not reproduced, only the ranges].
-#[derive(Clone, Debug)]
-pub struct Rng(pub u32);
-
-/// `DAT_003780e0` / `DAT_003780e4`: the divisor that turns `rand()` into a fraction.
-const RAND_DIV: f32 = 2_147_483_520.0;
+/// The game's random numbers as the class-5 code draws them: every draw steps the one shared generator (`kh2_game_core::rng`,
+/// `FUN_003117a8` behind `FUN_001063b8`, `FUN_00106308`, `FUN_00106408`). The handle holds no state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Rng;
 
 impl Rng {
-    fn next(&mut self) -> u32 {
-        let mut x = self.0.max(1);
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x >> 1
-    }
-
     /// `FUN_001063b8(x)`: `x * rand() / DAT_003780e4`, a float in [0, x].
     pub fn frac(&mut self, x: f32) -> f32 {
-        x * self.next() as f32 / RAND_DIV
+        kh2_game_core::rng::frac(x)
     }
 
     /// `FUN_00106408(lo, hi)`: `lo + FUN_001063b8(hi - lo)`.
     pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + self.frac(hi - lo)
+        kh2_game_core::rng::range(lo, hi)
     }
 
     /// `FUN_00106308(n)`: `n * rand() / DAT_003780e0` truncated to an integer (0..n).
     pub fn below(&mut self, n: u32) -> u32 {
-        (n as f32 * self.next() as f32 / RAND_DIV) as u32
+        kh2_game_core::rng::below(n)
     }
 }
 
@@ -361,7 +349,7 @@ fn npc_spawn(
                         obj: Obj::new(handle),
                         tag: tag.clone(),
                         flags124,
-                        fields: NpcFields::new(e, &shared, serial),
+                        fields: NpcFields::new(e, &shared),
                         started: false,
                         errors_seen: 0,
                         mode: None,
@@ -1122,11 +1110,11 @@ impl NpcFields {
         u32::from_le_bytes(e.raw[0x24..0x28].try_into().unwrap_or_default())
     }
 
-    pub fn new(e: &kh2_ard::Entity, group: &Arc<NpcGroup>, seed: u32) -> NpcFields {
+    pub fn new(e: &kh2_ard::Entity, group: &Arc<NpcGroup>) -> NpcFields {
         let mut f = NpcFields {
             region: None,
             player_in_part: false,
-            rng: Rng(0x9E37_79B9 ^ seed.wrapping_mul(0x85EB_CA6B)),
+            rng: Rng,
             bits: [0; 2],
             word_b08: 0,
             params: [0; 9],
@@ -2714,7 +2702,7 @@ mod tests {
 
     /// The fields of a walker (bit 0 clear) with the nine floats `rtn_default` hands to host 5.33.
     fn walker(object: u32, serial: u16, g: &Arc<NpcGroup>) -> NpcFields {
-        let mut f = NpcFields::new(&entity(object, serial), g, serial as u32);
+        let mut f = NpcFields::new(&entity(object, serial), g);
         f.params = [360.0f32, 720.0, 180.0, 360.0, 720.0, 180.0, 360.0, 720.0, 180.0].map(f32::to_bits);
         f
     }
@@ -2897,7 +2885,7 @@ mod tests {
         entry[1] = 5;
         entry[3] = 4;
         let g = Arc::new(NpcGroup { tag: "a72_".into(), kind: 6, id: 0x191, paths: Vec::new(), returns: vec![[0; 0x10], entry], activators: Vec::new() });
-        let f = NpcFields::new(&e, &g, 1);
+        let f = NpcFields::new(&e, &g);
         assert!(f.test_bit(0) && f.test_bit(2) && !f.test_bit(1));
         assert!(!f.test_bit(7), "only bits 0..6 are copied");
         assert_eq!(f.follower.kind, 2);

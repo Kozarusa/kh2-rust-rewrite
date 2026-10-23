@@ -523,7 +523,7 @@ impl BevyHost<'_> {
             Call::Func { group: 0, index: i @ (45 | 46), args } if args.len() >= 3 => match (&args[0], &args[1]) {
                 (Arg::Vec(a), Arg::Vec(b)) => {
                     let st = args[2].float();
-                    let v = if *i == 45 { crate::friend_host::advance_vec(*a, *b, st) } else { crate::friend_host::turn_vec(*a, *b, st) };
+                    let v = if *i == 45 { crate::motor::advance_vec(*a, *b, st) } else { crate::motor::turn_vec(*a, *b, st) };
                     approx(Value::Vec(v), "the platform's sqrt / acos / sin / cos, not the vector unit's and the game's kernels")
                 }
                 _ => missing(Value::None, "0.45 / 0.46 without two vectors"),

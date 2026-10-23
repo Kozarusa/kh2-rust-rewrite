@@ -36,6 +36,8 @@ use crate::skel::Animator;
 use crate::sora::Sora;
 use crate::world::World;
 
+pub use crate::shared::party::{MemberAttacks};
+
 /// Script handles of the members: past the enemies' range (`enemy_ai` uses serials below 0x1000), and
 /// one further on so that slot 0's handle is not `SELF_BASE + 0x1000 x OBJ_SIZE` = `PLAYER` (0x0200_0000):
 /// with 0x1000 Donald's script read as the player in every host arm that tests for the player (WP-S3).
@@ -95,30 +97,6 @@ pub struct FriendBrain {
     errors_seen: usize,
     mode: Option<String>,
     fields: FriendFields,
-}
-
-/// The members' live attack objects as the class-5 pull (FUN_00185668 -> FUN_001bf920, Goofy's `tornado`
-/// atkp 1188) needs them, like `magic::SpellAttacks` for the spells: the victim keeps the attack object
-/// (+0xaac) and is pulled toward its position until it is finished (FUN_0018ccf8).
-#[derive(Resource, Default)]
-pub struct MemberAttacks {
-    /// The position of every live attack object of the members by key (`MemberAttacks::key`), Bevy space.
-    pub places: HashMap<u32, Vec3>,
-    /// This tick's hits of the members' attack objects: (victim, atkp, key).
-    pub hits: Vec<(Entity, i16, u32)>,
-}
-
-impl MemberAttacks {
-    /// The key of a member's attack object: bit 31 (apart from the spells' hit groups), the slot and the
-    /// object's handle.
-    fn key(slot: u8, handle: u32) -> u32 {
-        0x8000_0000 | (slot as u32) << 24 | (handle & 0x00ff_ffff)
-    }
-
-    /// The attack object behind this tick's hit on `target` with `atkp`.
-    pub fn hit_group(&self, target: Entity, atkp: i16) -> Option<u32> {
-        self.hits.iter().find(|h| h.0 == target && h.1 == atkp).map(|h| h.2)
-    }
 }
 
 /// Registers the systems (called by `party::PartyPlugin`, which runs them after its own tick).

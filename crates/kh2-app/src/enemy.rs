@@ -1615,7 +1615,7 @@ pub fn fire_group_triggers(mut events: MessageReader<crate::shared::struggle::Gl
 
 /// What the class-5 pull reads: the executable's numbers and the attack objects of the spells and of
 /// the party members (their places by group).
-type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::shared::magic::SpellAttacks>>, Option<Res<'w, crate::friend_ai::MemberAttacks>>);
+type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::shared::magic::SpellAttacks>>, Option<Res<'w, crate::shared::party::MemberAttacks>>);
 
 /// The hit reactions of the enemies (`Hurt`, `Blown`) and the movement they need. A scripted enemy
 /// (`AiBrain`) moves and animates itself in `enemy_ai.rs` whenever no reaction plays.
@@ -1825,7 +1825,7 @@ pub fn receive_hits(
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::shared::drive::DriveRules>>, Option<Res<crate::shared::drive::DriveState>>),
     (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::shared::magic::MagicState>>),
-    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::shared::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
+    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::shared::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::shared::party::MemberAttacks>>),
     (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
     mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
 ) {

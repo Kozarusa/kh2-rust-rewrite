@@ -1174,7 +1174,7 @@ fn use_on_members(item: u16, target: u16, amount: u16, mult: i32, feed: f32, rev
             let scale = crate::party_rules::revive_scale(&abilities, revive.1, revive.0);
             let gain = m.v.hp - hp0;
             m.v.hp = hp0;
-            crate::party_battle::hp_change(&mut m.v.hp, max, 0, &mut m.ko, gain, scale);
+            crate::shared::party::hp_change(&mut m.v.hp, max, 0, &mut m.ko, gain, scale);
         }
         hit.push(i);
     }

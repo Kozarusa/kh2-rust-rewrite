@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use crate::assets::{CurrentArea, Disc};
 use crate::data::GameData;
 use crate::schedule::Sim;
-use crate::sora::{Pad, Sora, State};
+use crate::shared::sora::{Pad, Sora, State};
 use crate::world::{CameraWorld, World};
 use crate::SCALE;
 
@@ -308,7 +308,7 @@ fn tick(
     mut sora: Query<&mut Sora>,
     targets: Query<&GlobalTransform>,
     mut cam: Query<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
-    options: Option<Res<crate::menu::config::Options>>,
+    options: Option<Res<crate::shared::ui::Options>>,
     area_rec: Option<Res<crate::area::AreaRecord>>,
 ) {
     let options = options.map(|o| *o).unwrap_or_default();

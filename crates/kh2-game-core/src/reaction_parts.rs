@@ -152,6 +152,36 @@ pub fn overlaps(a: &Shape, b: &Shape) -> Option<bool> {
     }
 }
 
+/// `FUN_00189208` for every pair of shape kinds the parts use: `parts::overlaps` for ellipsoids and
+/// spheres, and the cylinder (kind 1) tests: `FUN_00188fd0(a, cylinder)` for an ellipsoid or sphere
+/// `a`: the height difference must be below the two vertical radii; above the cylinder's half height
+/// the ellipsoid's horizontal radius at that height (`sqrt(1 - k^2) * a.r`, k the height past the
+/// cylinder over a's vertical radius, `DAT_0037ab24` = 1) is added to the cylinder's radius, else the
+/// full radii; the horizontal distance must be below that sum. `FUN_001890d8` for two cylinders: the
+/// same with the full radii.
+pub fn shapes_overlap(a: &Shape, b: &Shape) -> Option<bool> {
+    let cyl = |e: &Shape, c: &Shape| {
+        let d = c.center - e.center;
+        let dy = d.y.abs();
+        if dy >= e.r[1] + c.r[1] {
+            return false;
+        }
+        let r = if e.kind != 1 && dy > c.r[1] {
+            let k = (dy - c.r[1]) / e.r[1];
+            (1.0 - k * k).max(0.0).sqrt() * e.r[0] + c.r[0]
+        } else {
+            e.r[0] + c.r[0]
+        };
+        d.x * d.x + d.z * d.z < r * r
+    };
+    match (a.kind, b.kind) {
+        (1, 1) => Some(cyl(a, b)),
+        (0 | 3, 1) => Some(cyl(a, b)),
+        (1, 0 | 3) => Some(cyl(b, a)),
+        _ => overlaps(a, b),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

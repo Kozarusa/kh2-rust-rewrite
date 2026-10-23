@@ -28,9 +28,9 @@ use kh2_ps2::gs::Vram;
 use crate::SCALE;
 use crate::assets::Disc;
 use crate::combat::{Fighter, Team};
-use crate::enemy::Enemy;
+use crate::shared::enemy::Enemy;
 use crate::skel::Animator;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 
 /// The lens pass: distortion batches that read the display buffer (WP-I3).
 #[path = "fx_lens.rs"]
@@ -336,7 +336,7 @@ impl Plugin for FxPlugin {
     }
 }
 
-pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::sora::Rigs>, mut distort: ResMut<Assets<DistortMaterial>>) {
+pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::shared::sora::Rigs>, mut distort: ResMut<Assets<DistortMaterial>>) {
     commands.insert_resource(DistortHandle {
         tested: distort.add(DistortMaterial { unused: Vec4::ZERO, depth_test: true }),
         always: distort.add(DistortMaterial { unused: Vec4::ZERO, depth_test: false }),
@@ -735,7 +735,7 @@ pub fn weapons_appeared(prev: &[bool], now: &[bool]) -> Vec<usize> {
 /// bound to the weapon, as the weapon's update `FUN_001843b0` does through `FUN_00184498` the moment the
 /// owner's motion variant is a weapon one (0 or 3) while the weapon was still hidden (flag 0x100 of
 /// +0x10c, set by the constructor `FUN_00184190`). Log with `KH2_FXLOG`.
-pub fn weapon_appear(mut commands: Commands, lib: Res<EffectLib>, sora: Query<&crate::sora::Sora>, vis: Query<&Visibility>, mut prev: Local<Vec<bool>>) {
+pub fn weapon_appear(mut commands: Commands, lib: Res<EffectLib>, sora: Query<&crate::shared::sora::Sora>, vis: Query<&Visibility>, mut prev: Local<Vec<bool>>) {
     let Ok(s) = sora.single() else { return };
     appear_step(&mut commands, &lib, &s.weapons, &vis, &mut prev);
 }
@@ -756,7 +756,7 @@ fn appear_step(commands: &mut Commands, lib: &EffectLib, weapons: &[Entity], vis
 pub fn weapon_trails(
     mut commands: Commands,
     lib: Res<EffectLib>,
-    sora: Query<&crate::sora::Sora>,
+    sora: Query<&crate::shared::sora::Sora>,
     anims: Query<&Animator>,
     mut running: Query<&mut RunningEffect>,
 ) {
@@ -789,7 +789,7 @@ fn ineffective(atk: &kh2_tables::tables::Atkp, victim: Option<crate::data::Stats
 
 /// The first element of `pax` whose category has all of `mask` (FUN_001db9e0: the lookup behind
 /// every category-selected effect).
-pub(crate) fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
+pub fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
     pax.pax.elements.iter().find(|e| e.category & mask == mask).map(|e| e.id)
 }
 
@@ -951,7 +951,7 @@ pub fn tick(
     owners: Query<&Animator>,
     sora: Query<&Sora>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
-    camera: Query<(&GlobalTransform, &Projection), crate::menu::preview::GameCamera>,
+    camera: Query<(&GlobalTransform, &Projection), crate::shared::ui::GameCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -959,7 +959,7 @@ pub fn tick(
     distort: Res<DistortHandle>,
     projection: Res<FxProjection>,
     mut lens_draws: ResMut<lens::LensDraws>,
-    mut se: MessageWriter<crate::audio::PlaySe>,
+    mut se: MessageWriter<crate::shared::sound::PlaySe>,
 ) {
     let view_inv = camera.single().map(|(c, _)| game_camera(c.to_matrix())).unwrap_or(Mat4::IDENTITY);
     // The game's projection for the camera's field of view (camera.rs makes the vertical field from the
@@ -1347,8 +1347,8 @@ pub fn effect_sound_position(bind: &Mat4) -> Vec3 {
 /// destroy test, so an effect that ends on its first tick still sounds). A camera-space element
 /// (flag 0x20000) keeps the unplaced request [inferred: its record holds view-space coordinates, which
 /// the request's camera transform FUN_002c27b0 would apply a second time].
-pub fn effect_sound_request(se: u32, apdx: Option<String>, flags: u32, bind: &Mat4) -> crate::audio::PlaySe {
-    let req = crate::audio::PlaySe::number(se, apdx);
+pub fn effect_sound_request(se: u32, apdx: Option<String>, flags: u32, bind: &Mat4) -> crate::shared::sound::PlaySe {
+    let req = crate::shared::sound::PlaySe::number(se, apdx);
     if flags & ELEMENT_IN_CAMERA_SPACE != 0 { req } else { req.at(effect_sound_position(bind)) }
 }
 
@@ -1463,6 +1463,21 @@ pub fn fx_test(
     start(&mut commands, &pax, id, Bind::Fixed(Mat4::from_translation(at)));
 }
 
+/// Shape kind of the lock-on point (target shapes, as `sora::target_points`).
+pub const TARGET_SHAPE: u8 = 3;
+
+/// The first shape of `kind` of a body, on its bone (`FUN_0016b558` + `FUN_001894d0`), in app cm.
+pub fn body_shape_point(anim: &Animator, body: &GlobalTransform, kind: u8) -> Option<Vec3> {
+    let s = anim.rig.model.shapes.iter().find(|s| s.kind == kind && (kind != TARGET_SHAPE || s.argument & 1 == 0))?;
+    let m = match s.bone {
+        Some(b) => anim.bone_world(body, b),
+        None => body.to_matrix(),
+    };
+    let mut p = m.transform_point3(Vec3::from(s.offset)) / SCALE;
+    p.y += s.lift;
+    Some(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1479,9 +1494,9 @@ mod tests {
         assert!((pos - effect_sound_position(&bind)).length() < 1e-4);
         let cam = effect_sound_request(29, None, ELEMENT_IN_CAMERA_SPACE, &bind);
         assert_eq!(cam.pos, None);
-        let far = crate::audio::placement(world.pos, Some(&Transform::IDENTITY));
+        let far = crate::shared::sound::placement(world.pos, Some(&Transform::IDENTITY));
         assert!(far.0 < 0x3fff, "a placed effect sound is not at full volume: {:#x}", far.0);
-        assert_eq!(crate::audio::placement(cam.pos, Some(&Transform::IDENTITY)).0, 0x3fff);
+        assert_eq!(crate::shared::sound::placement(cam.pos, Some(&Transform::IDENTITY)).0, 0x3fff);
     }
 
     /// WP-AU5: the sound of a fixed-placed effect plays where the effect is, in world metres.

@@ -12,6 +12,7 @@
 //! immediates of the AI classes' constructors (named constants with the routine).
 
 use crate::party_rules::{exe_bytes, AI_PARAMS};
+pub use crate::shared::party::{hp_change, HpChange};
 
 /// The record tables of the AI classes stage 2 drives: (class, table, count). Donald's constructor
 /// FUN_00114550 binds 0x353090 with 0x14 records, Goofy's FUN_00114668 0x3533a0 with 0x12; the Pride
@@ -1019,49 +1020,6 @@ pub fn emergency(recs: &[Record], st: &mut Choosing, status: bool, mp_charge: bo
 
 // ---------------------------------------------------------------------------------------------------
 // Stage 3: hits, KO and revive of a party object
-
-/// What `FUN_00186238` (the HP method of a party object, +0x588 bit 0x4000 set, through FUN_00176c98)
-/// did with a change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct HpChange {
-    /// The KO bit was cleared by a heal (FUN_0017cee8): motion 0x37 when the member lay in 0x36.
-    pub revived: bool,
-    /// HP reached 0 by this change (FUN_00186530 -> the KO method +0x5c, FUN_0017ce60).
-    pub knocked_out: bool,
-    /// The amount applied (after FUN_0017cee8's scale); 0 when the change was refused.
-    pub applied: i32,
-}
-
-/// `FUN_00186238` for a party object on its HP (member index 0): no change at a zero maximum; a heal
-/// (`delta >= 1`) on a KO'd object first revives it (FUN_0017cee8: the KO bit cleared, the amount
-/// scaled by `revive_scale`, which is 1.0 (`DAT_0037a560`) with the ability block's +0x10 bit 8 and
-/// `sstm` +0x54 without); while KO'd nothing else changes; otherwise FUN_001a0100 adds the amount held
-/// between the minimum (+8) and the maximum (+4), and an HP of 0 knocks the object out (FUN_00186530,
-/// only when the KO bit is clear).
-pub fn hp_change(hp: &mut i32, max: i32, min: i32, ko: &mut bool, delta: i32, revive_scale: f32) -> HpChange {
-    let mut out = HpChange::default();
-    if max == 0 {
-        return out;
-    }
-    let mut delta = delta;
-    if delta >= 1 && *ko {
-        *ko = false;
-        out.revived = true;
-        delta = (delta as f32 * revive_scale) as i32;
-    }
-    if *ko {
-        return out;
-    }
-    let sum = *hp + delta;
-    let new = if sum < min { min } else if sum > max { max } else { sum };
-    out.applied = new - *hp;
-    *hp = new;
-    if new == 0 {
-        *ko = true;
-        out.knocked_out = true;
-    }
-    out
-}
 
 /// FUN_0017ce60: the revive timer (+0xb40) is the StunTime (+0x18) of the record at +0x12c, the `prty`
 /// row of the object's `objentry` NeoMoveset (FUN_00196b58 -> FUN_00194438 -> FUN_001cc1c8), times the

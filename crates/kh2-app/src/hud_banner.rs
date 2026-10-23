@@ -122,7 +122,7 @@ pub fn update(
     mut popups: ResMut<ExperiencePopups>,
     mut nodes: ResMut<BannerNodes>,
     mut demo: Local<bool>,
-    (mut gained, cam): (MessageReader<crate::progress::ExperienceGained>, Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>),
+    (mut gained, cam): (MessageReader<crate::progress::ExperienceGained>, Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>),
 ) {
     if scene.files.is_empty() {
         gained.clear();

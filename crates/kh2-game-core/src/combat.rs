@@ -19,7 +19,7 @@ use kh2_model::collision::{kind, Shape};
 use kh2_tables::tables::{self as t, Atkp};
 
 use crate::assets::Disc;
-use crate::audio::PlaySe;
+use crate::shared::sound::PlaySe;
 use crate::data::{GameData, Stats};
 use crate::reaction_rules::{self as rules, ExeConsts, PatnRow, ReactionDefaults, ReflectFields};
 use crate::schedule::{Frame, Sim};
@@ -418,7 +418,7 @@ mod tests {
     fn landed_hit_requests_carry_the_bank_and_the_hit_point() {
         let at = Vec3::new(2.0, 1.0, -4.0);
         let own = hit_sound_request(Some(500_009), Some("obj/W.apdx".into()), at).expect("a sound");
-        assert_eq!((own.bank, own.index, own.pos), (crate::audio::OWN_BANK, 9, Some(at)));
+        assert_eq!((own.bank, own.index, own.pos), (crate::shared::sound::OWN_BANK, 9, Some(at)));
         let none = hit_sound_request(Some(500_009), None, at).expect("a sound");
         assert_eq!((none.bank, none.index), (500, 9));
         let other = hit_sound_request(Some(4_011), Some("obj/W.apdx".into()), at).expect("a sound");

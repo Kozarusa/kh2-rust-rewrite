@@ -26,26 +26,14 @@ use crate::combat::{hit_is_ineffective, Fighter, Hit, IneffectiveHit, ReactionDa
 use crate::data::{GameData, Stats, GRAVITY, LOGIC_HZ};
 use crate::reaction_rules::{self as rules, Blow, Push, VictimAction, VictimCtx};
 use crate::skel::{spawn_skinned, Animator, Rig};
-use crate::sora::{Rigs, Sora};
+use crate::shared::sora::{Rigs, Sora};
 use crate::SCALE;
+
+pub use crate::shared::enemy::{mset_name, EState, Enemy, EnemyClash, Kind};
 
 const IDLE: usize = 0;
 const HURT_FRONT: usize = 10;
 const BLOW: usize = 16;
-
-pub struct Kind {
-    pub name: &'static str,
-    /// Row in `enmp`.
-    pub enmp: u16,
-    /// The object's model name (`obj/<model>.mdlx`, `.mset`, `.apdx`; its `00objentry` row).
-    pub model: &'static str,
-    /// The script's `dead` mode starts element 2 of the object's effect file (the death effect), so
-    /// the damage code starts it when HP reaches 0 (`GameEffect::Death`).
-    pub death_effect: bool,
-    /// The object has a status block, so a hit can hurt it: false for an object whose `00objentry` row has `NeoStatus` 0
-    /// and whose script never calls `set_obj_param` (`M_EX850`): nothing builds the block (FUN_001b2148 is the only builder).
-    pub status: bool,
-}
 
 pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020", death_effect: true, status: true };
 
@@ -329,12 +317,6 @@ impl EnemyRigs {
     }
 }
 
-/// The motion set a model's `00objentry` row names (`AnimationName`, without ".mset"); the model's own name when the
-/// row is missing or names nothing. `M_EX610_RAW` names `M_EX610.mset` and has no `obj/M_EX610_RAW.mset`.
-pub(crate) fn mset_name(animation_name: Option<&str>, model: &str) -> String {
-    animation_name.map(|n| n.trim_end_matches(".mset")).filter(|n| !n.is_empty()).unwrap_or(model).to_string()
-}
-
 fn load_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
     let m = disc.read(&format!("obj/{model}.mdlx")).and_then(|d| kh2_model::mdlx(&d))?;
     let s = disc.read(&format!("obj/{mset}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
@@ -464,7 +446,7 @@ pub struct AreaGroup {
     pub orb_pool: bool,
     /// The triggers (opcode 0xc) of the area's `btl` program and of the `evt` program with the same id, which
     /// the mission's end looks up (WP-7E2) [inferred: the area record runs the `evt` program of the same number].
-    pub triggers: Vec<crate::struggle::Trig>,
+    pub triggers: Vec<crate::shared::struggle::Trig>,
 }
 
 /// The current area's enemy spawn groups (see the module header).
@@ -577,9 +559,9 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
     };
     let mut out: Vec<AreaGroup> = Vec::new();
     for p in ard.scripts.get("btl").into_iter().flatten() {
-        let mission = crate::struggle::mission_command(p);
+        let mission = crate::shared::struggle::mission_command(p);
         let orb_pool = p.spawns().flat_map(|n| ard.spawns.get(&n).into_iter().flatten().flat_map(|g| &g.entities).map(|e| e.object).collect::<Vec<_>>()).any(|o| {
-            rows.iter().any(|r| r.object_id == o && r.object_type == crate::struggle::ORB_POOL_TYPE.0 && r.sub_type == crate::struggle::ORB_POOL_TYPE.1)
+            rows.iter().any(|r| r.object_id == o && r.object_type == crate::shared::struggle::ORB_POOL_TYPE.0 && r.sub_type == crate::shared::struggle::ORB_POOL_TYPE.1)
         });
         for name in p.spawns() {
             // One entry per (program, group): the mission and triggers are the loading program's.
@@ -590,7 +572,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                 .into_iter()
                 .flatten()
                 .flat_map(|q| q.commands.iter().filter(|c| c.opcode == 0xc).filter_map(|c| kh2_ard::parse_trigger(&c.args)))
-                .map(|t| crate::struggle::Trig::from_ard(&t))
+                .map(|t| crate::shared::struggle::Trig::from_ard(&t))
                 .collect();
             let mut g = AreaGroup { program: p.id, name: name.clone(), parts: Vec::new(), members: Vec::new(), skipped: Vec::new(), player: None, player_yaw: 0.0, mission: mission.clone(), orb_pool, triggers };
             for rec in ard.spawns.get(&name).into_iter().flatten() {
@@ -1115,56 +1097,6 @@ pub struct BattleGroups {
     fired: bool,
 }
 
-/// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EState {
-    Idle,
-    Hurt,
-    Blown,
-}
-
-#[derive(Component)]
-pub struct Enemy {
-    pub kind: &'static Kind,
-    pub name: &'static str,
-    pub state: EState,
-    pub hp: i32,
-    pub stats: Stats,
-    pub vel: Vec3,
-    pub grounded: bool,
-    pub yaw: f32,
-    pub timer: f32,
-    pub body: Entity,
-    /// Decaying push of a push reaction, added to the movement every tick.
-    push: Option<Push>,
-    /// Flight of the blow that put the enemy in `EState::Blown`, and whether it came from behind.
-    blow: Option<Blow>,
-    blown_back: bool,
-    /// Reaction class 5 (Magnet): the spell attack object the enemy is drawn toward (its group in
-    /// `magic::SpellAttacks`, actor +0xaac) and the pull's numbers (`reaction_rules::Pull`).
-    pull: Option<(u32, rules::Pull)>,
-    /// Hit sounds played so far; the sound alternates between two entries (actor byte +0x7fc).
-    hit_sounds: u8,
-    /// The spawn kind byte of the enemy's spawn record (host 1.110), -1 without one.
-    pub spawn_kind: i32,
-    /// Spawn parameters 1 and 2 from the record (host 1.39), `None` without a record.
-    pub spawn_params: Option<[i32; 2]>,
-    /// The lowest HP a hit can leave (word 2 of the HP record of the status block, which the game's
-    /// HP change FUN_001a0100 clamps to; scripts set it with host 1.231). 0 unless a script sets it.
-    pub min_hp: i32,
-    /// The `00objentry` id of the spawn record (`Member::object_id`); 0 for the harness's own waves.
-    pub object_id: u32,
-    /// The group record id and the record's serial (+0x1e) of an enemy from an area group, `None` for the
-    /// app's own waves.
-    pub serial: Option<(u16, u16)>,
-}
-
-impl Enemy {
-    pub fn alive(&self) -> bool {
-        self.hp > 0
-    }
-}
-
 /// The executable's numbers of the class 5 pull (`reaction_rules::PullConsts`).
 #[derive(Resource)]
 pub struct PullData(pub rules::PullConsts);
@@ -1239,7 +1171,7 @@ impl Plugin for EnemyPlugin {
 }
 
 /// The assets and the area a wave is made from.
-type WaveSource<'a> = (Res<'a, Disc>, Res<'a, CurrentArea>, ResMut<'a, AreaWaves>, Res<'a, EnemyRigs>, Res<'a, crate::area::AreaRecord>, ResMut<'a, BattleGroups>, Res<'a, crate::area_jump::JumpTask>);
+type WaveSource<'a> = (Res<'a, Disc>, Res<'a, CurrentArea>, ResMut<'a, AreaWaves>, Res<'a, EnemyRigs>, Res<'a, crate::area::AreaRecord>, ResMut<'a, BattleGroups>, Res<'a, crate::shared::area_jump::JumpTask>);
 
 /// What a spawn record gives an enemy: spawn kind, spawn parameters, `00objentry` id, (group id, serial).
 type SpawnRecord = (i32, Option<[i32; 2]>, u32, Option<(u16, u16)>);
@@ -1283,7 +1215,7 @@ fn spawn_enemy(
             object_id,
             serial,
         },
-        crate::area_jump::AreaActor,
+        crate::shared::area_jump::AreaActor,
         Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
     ));
     root
@@ -1375,9 +1307,9 @@ pub fn spawn_waves(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    mut missions: MessageWriter<crate::struggle::MissionStart>,
-    mut events: MessageWriter<crate::struggle::GlobalEvent>,
-    mission: Option<Res<crate::struggle::Mission>>,
+    mut missions: MessageWriter<crate::shared::struggle::MissionStart>,
+    mut events: MessageWriter<crate::shared::struggle::GlobalEvent>,
+    mission: Option<Res<crate::shared::struggle::Mission>>,
 ) {
     let (Some(col), Ok((mut sora_tf, mut sora))) = (collider, sora.single_mut()) else { return };
     let p = *sora_tf;
@@ -1405,7 +1337,7 @@ pub fn spawn_waves(
     if area_on && !area_waves.groups.is_empty() {
         // The area's unload (`area_jump::unload_area_actors`) removes the groups with their enemies; the next run
         // of the scripts sets them up again, also when a jump re-enters the loaded area.
-        if matches!(*task, crate::area_jump::JumpTask::Loading { .. }) {
+        if matches!(*task, crate::shared::area_jump::JumpTask::Loading { .. }) {
             battle.run = 0;
             battle.live.clear();
             battle.events.clear();
@@ -1461,7 +1393,7 @@ pub fn spawn_waves(
                 });
                 if let (Some(_), Some(at)) = (&forced, centre.or(g.player)) {
                     let y = col.ground_m(at.x, at.z, at.y + 1.0).unwrap_or(at.y);
-                    crate::sora::respawn(&mut sora, at.with_y(y) / SCALE);
+                    crate::shared::sora::respawn(&mut sora, at.with_y(y) / SCALE);
                     if centre.is_none() && g.player.is_some() {
                         sora.motor.yaw = g.player_yaw;
                     }
@@ -1510,7 +1442,7 @@ pub fn spawn_waves(
                 }
                 // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
                 if let Some((id, name)) = &g.mission {
-                    missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
+                    missions.write(crate::shared::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
                 }
             }
             // The members created here are entities from the next tick on: the groups' walk starts then.
@@ -1599,7 +1531,7 @@ pub fn spawn_waves(
                         b.events[i].group.name,
                         hit.map_or(String::new(), |t| format!("; area trigger {t:?} matches (its effects are not applied here)"))
                     );
-                    events.write(crate::struggle::GlobalEvent { id, arg });
+                    events.write(crate::shared::struggle::GlobalEvent { id, arg });
                 }
             }
         }
@@ -1646,7 +1578,7 @@ pub fn spawn_waves(
 /// 6, after a break reaction and progress flag 0x102b) [docs/systems/script-host/contract.md]. The app has no field objects, so the event comes
 /// only from the harness: `KH2_FIRE_EVENT=<hex event>[,<argument>]` raises it once after the groups are set up (the argument
 /// defaults to -1) and applies it to the trigger table alone (the objects' event 10 is not sent).
-pub fn fire_group_triggers(mut events: MessageReader<crate::struggle::GlobalEvent>, mut battle: ResMut<BattleGroups>) {
+pub fn fire_group_triggers(mut events: MessageReader<crate::shared::struggle::GlobalEvent>, mut battle: ResMut<BattleGroups>) {
     let mut raised: Vec<(i32, i32)> = events.read().map(|e| (e.id as i32, e.arg)).collect();
     if !battle.fired && battle.run != 0 {
         battle.fired = true;
@@ -1683,7 +1615,7 @@ pub fn fire_group_triggers(mut events: MessageReader<crate::struggle::GlobalEven
 
 /// What the class-5 pull reads: the executable's numbers and the attack objects of the spells and of
 /// the party members (their places by group).
-type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::magic::SpellAttacks>>, Option<Res<'w, crate::friend_ai::MemberAttacks>>);
+type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::shared::magic::SpellAttacks>>, Option<Res<'w, crate::shared::party::MemberAttacks>>);
 
 /// The hit reactions of the enemies (`Hurt`, `Blown`) and the movement they need. A scripted enemy
 /// (`AiBrain`) moves and animates itself in `enemy_ai.rs` whenever no reaction plays.
@@ -1886,15 +1818,15 @@ pub fn receive_hits(
     sora: Query<&Sora>,
     mut q: Query<(&mut Enemy, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
-    mut popups: MessageWriter<crate::hud::DamagePopup>,
+    mut popups: MessageWriter<crate::shared::hud::DamagePopup>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut ineffective: MessageWriter<IneffectiveHit>,
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
     mut game: MessageWriter<crate::fx::GameEffect>,
-    drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
-    (abilities, magic): (Option<Res<crate::abilities::Abilities>>, Option<Res<crate::magic::MagicState>>),
-    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
-    (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
+    drive: (Option<Res<crate::shared::drive::DriveRules>>, Option<Res<crate::shared::drive::DriveState>>),
+    (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::shared::magic::MagicState>>),
+    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::shared::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::shared::party::MemberAttacks>>),
+    (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
     mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
 ) {
     let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
@@ -1918,7 +1850,7 @@ pub fn receive_hits(
             && members.get(h.attacker).is_err()
             && let Some(row) = data.hit_row(h)
         {
-            let extra = crate::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust);
+            let extra = crate::shared::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust);
             if extra > 0 && std::env::var_os("KH2_ABILITYLOG").is_some() {
                 info!("abilities: Berserk Charge: strength {} + {extra} for atkp {}", from.strength, h.atkp);
             }
@@ -1930,10 +1862,10 @@ pub fn receive_hits(
         // Anti form multiplies the damage Sora deals (FUN_001a0610), then the attacker's ability
         // block adds its element and combo/reaction boosts (FUN_001a0a18, FUN_001a0aa8).
         if let (Some(rules), Some(state)) = (&drive.0, &drive.1) {
-            dmg = crate::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
+            dmg = crate::shared::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
         }
         if let Some(ab) = &abilities {
-            dmg = crate::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
+            dmg = crate::shared::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
         }
         // FUN_001a0100: the new HP is held between word 2 (`min_hp`) and the maximum.
         let was_alive = e.hp > 0;
@@ -1945,11 +1877,11 @@ pub fn receive_hits(
             && let Some(state) = &drive.1
         {
             let form = state.object_form();
-            let hit_exp = crate::prize::valor_hit_exp(form);
-            let defeat = if was_alive && e.hp <= 0 { crate::prize::defeat_exp(form, e.object_id) } else { 0 };
+            let hit_exp = crate::shared::prize::valor_hit_exp(form);
+            let defeat = if was_alive && e.hp <= 0 { crate::shared::prize::defeat_exp(form, e.object_id) } else { 0 };
             for amount in [hit_exp, defeat].into_iter().filter(|&a| a > 0) {
                 info!("{} hit by Sora in form {form}: form experience +{amount} (FUN_001d4078 / FUN_001d40e0, object {:#x})", e.name, e.object_id);
-                form_exp.write(crate::prize::FormExpGain { form, amount });
+                form_exp.write(crate::shared::prize::FormExpGain { form, amount });
             }
         }
         // The victim's `dead` method FUN_001b25d0 pays the experience (progress::pay_defeats).
@@ -1961,7 +1893,7 @@ pub fn receive_hits(
             // `dead` mode); a second request for the same victim is ignored by `fx`.
             game.write(crate::fx::GameEffect::Death { victim: h.target });
         }
-        popups.write(crate::hud::DamagePopup { at: h.point, amount: dmg });
+        popups.write(crate::shared::hud::DamagePopup { at: h.point, amount: dmg });
         if useless {
             ineffective.write(IneffectiveHit { attacker: h.attacker, target: h.target, atkp: h.atkp, point: h.point });
         }
@@ -2085,22 +2017,6 @@ pub fn receive_hits(
             f.landed.clear();
         }
     }
-}
-
-/// An enemy attack volume met a player attack volume (`clash.rs`) and the enemy-class handler of the
-/// game (0x1b2478) reacts: the row's `ReflectedMotion` with a recoil push (FUN_00185d30, power
-/// `ReflectHitBack`, negative for the default). `ReflectAction` (a script action id) is not carried:
-/// the table behind FUN_0019e870 is not decoded. Written for every clash of an enemy volume, also when
-/// the handler's own part does nothing (`motion` `None`): the script part of 0x1b2478 (clash hook and
-/// event 0x13, `enemy_ai.rs`) runs before its flag 0x40 / `RefactSelf` 2 tests.
-#[derive(Message, Clone, Copy, Debug)]
-pub struct EnemyClash {
-    pub enemy: Entity,
-    pub motion: Option<u8>,
-    pub power: f32,
-    /// The attack rows of the enemy's own volume and of the other one.
-    pub own_atkp: i16,
-    pub other_atkp: i16,
 }
 
 /// Plays the clash recoil: the motion, then a push backwards along the enemy's own facing
@@ -3294,7 +3210,7 @@ mod tests {
             if dmg != dflt_dmg {
                 checked += 1;
             }
-            if id == crate::magic::ATKP_FIRE {
+            if id == crate::shared::magic::ATKP_FIRE {
                 eprintln!("fire (atkp {id}): SubId 2 Power {} -> damage {dmg}; default SubId {} Power {} -> damage {dflt_dmg}", own.power, dflt.sub_id, base.power);
             }
         }

@@ -38,7 +38,7 @@ use kh2_tables::tables::{self as t, Cmd, Magc};
 use crate::assets::Disc;
 use crate::combat::{self, Fighter, Hit, HurtSpheroid, Team, Volume};
 use crate::data::GameData;
-use crate::hud::hud_target::MagicMarker;
+use crate::shared::hud::MagicMarker;
 use crate::fx::{self, Bind, LoadedPax, Placement, RunningEffect};
 use crate::magic_rules::{self as rules, Charge, HitMemory, MagiRow, Paid, Status};
 use crate::schedule::Sim;
@@ -46,8 +46,9 @@ use crate::skel::Animator;
 use crate::sora::{Battle, Sora, State};
 use crate::SCALE;
 
-/// `atkp` id of Fire's attack objects (FIRE_*.mag event 21: `attack_create(ctx, 502, -1, kind)`).
-pub const ATKP_FIRE: u16 = 502;
+use crate::shared::magic::{log_level, log_on};
+pub use crate::shared::magic::{MagicState, SpellAttacks, ATKP_FIRE};
+
 /// `atkp` ids of Cure's heal on its target and on another member (CURE_*.mag event 21).
 pub const ATKP_CURE_SELF: u16 = 708;
 pub const ATKP_CURE_OTHER: u16 = 709;
@@ -86,9 +87,6 @@ pub const ATKP_MAGNET: u16 = 658;
 pub const ATKP_REFLECT_GUARD: u16 = 573;
 /// `atkp` Type of Reflect's guard row: an attack that clashes with enemy attacks and hits nothing.
 const GUARD_TYPE: u8 = 3;
-/// Ticks a cast request waits for Sora to accept it (app rule: the game keeps a pending command
-/// and retries it while the playing motion has no window, the retry limit was not traced).
-const REQUEST_TICKS: u32 = 20;
 /// Sound of the menu? none: the game's menu sounds are not ported.
 /// Size step of the swept attack test (FUN_001a2cc0: `min(radius, height) * DAT_0037b460`, 0.5).
 const SWEEP_STEP: f32 = 0.5;
@@ -102,23 +100,13 @@ pub struct MagicPlugin;
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MagicState>()
+            .init_resource::<MagicRun>()
             .init_resource::<rules::GlobalFlags>()
             .init_resource::<SpellAttacks>()
             .add_systems(Startup, setup.after(crate::sora::setup))
             .add_systems(Update, harness_keys.after(crate::sora::read_pad))
             .add_systems(FixedUpdate, run.in_set(Sim::Sora).after(crate::sora::tick));
     }
-}
-
-fn log_on() -> bool {
-    log_level() > 0
-}
-
-/// `KH2_MAGIC_LOG`: 1 the casts, MP and hits; 2 also every live attack each tick (the timeline the
-/// hand port and the interpreter are compared by).
-fn log_level() -> u32 {
-    static ON: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("KH2_MAGIC_LOG").map_or(0, |v| v.parse().unwrap_or(1)))
 }
 
 /// `KH2_MAGIC_VM=1`: run the spell scripts in the BDX interpreter (see `VmCast`).
@@ -204,11 +192,23 @@ pub fn refill_mp(charge: Option<&mut Charge>, mp: &mut i32, max_mp: i32) -> bool
     ended
 }
 
+/// `KH2_MAGIC_HURT=<seconds>:<hp>`: once, that many seconds (60 Hz ticks) after the start, Sora's HP
+/// is set to the value (a harness aid: the first levels start at full HP, so a Cure has nothing to
+/// heal). Returns the HP when it is due.
+fn hurt_due(tick: u64) -> Option<i32> {
+    static SPEC: std::sync::OnceLock<Option<(f32, i32)>> = std::sync::OnceLock::new();
+    let (at, hp) = (*SPEC.get_or_init(|| {
+        let v = std::env::var("KH2_MAGIC_HURT").ok()?;
+        let (a, b) = v.split_once(':')?;
+        Some((a.parse().ok()?, b.parse().ok()?))
+    }))?;
+    (tick as f32 >= at * crate::data::LOGIC_HZ).then_some(hp)
+}
+
+/// The casting state of the spell system (`run`): the casts, their attacks, shots and strikes, the hit
+/// memory and the interpreter's world. Split from `MagicState`, which keeps what other systems share.
 #[derive(Resource, Default)]
-pub struct MagicState {
-    pub charge: Charge,
-    /// A spell command waiting for Sora (command id, ticks left).
-    request: Option<(u16, u32)>,
+struct MagicRun {
     casts: Vec<Cast>,
     attacks: Vec<SpellAttack>,
     memory: HashMap<Entity, HitMemory>,
@@ -237,40 +237,6 @@ pub struct MagicState {
     push: Option<crate::reaction_rules::Push>,
     /// Horizontal distance the push has moved Sora so far (for the log).
     push_moved: f32,
-}
-
-/// The spell attack objects as the victims' side reads them (enemy.rs: the pull of reaction class 5,
-/// which follows the attack object the victim keeps at +0xaac). Written by `run` every tick.
-#[derive(Resource, Default)]
-pub struct SpellAttacks {
-    /// The position of every live attack object (method +8), by group, Bevy space. A group that is
-    /// gone has been finished (FUN_0018ccf8 clears the victims' +0xaac then).
-    pub places: HashMap<u32, Vec3>,
-    /// This tick's spell hits: (victim, atkp, attack group).
-    pub hits: Vec<(Entity, i16, u32)>,
-    /// Each enemy's body centre (FUN_0016b7d0: the centre of its first shape of type 1, else its
-    /// position) relative to its root, Bevy space.
-    pub centres: HashMap<Entity, Vec3>,
-}
-
-impl SpellAttacks {
-    /// The attack object behind this tick's spell hit on `target` with `atkp`.
-    pub fn hit_group(&self, target: Entity, atkp: i16) -> Option<u32> {
-        self.hits.iter().find(|h| h.0 == target && h.1 == atkp).map(|h| h.2)
-    }
-}
-
-/// `KH2_MAGIC_HURT=<seconds>:<hp>`: once, that many seconds (60 Hz ticks) after the start, Sora's HP
-/// is set to the value (a harness aid: the first levels start at full HP, so a Cure has nothing to
-/// heal). Returns the HP when it is due.
-fn hurt_due(tick: u64) -> Option<i32> {
-    static SPEC: std::sync::OnceLock<Option<(f32, i32)>> = std::sync::OnceLock::new();
-    let (at, hp) = (*SPEC.get_or_init(|| {
-        let v = std::env::var("KH2_MAGIC_HURT").ok()?;
-        let (a, b) = v.split_once(':')?;
-        Some((a.parse().ok()?, b.parse().ok()?))
-    }))?;
-    (tick as f32 >= at * crate::data::LOGIC_HZ).then_some(hp)
 }
 
 /// What the turn triggers of a cast motion read (FUN_00188030 cases 22 and 28): the command's target
@@ -487,16 +453,6 @@ pub(crate) fn harness_keys(time: Res<Time>, mut keys: ResMut<ButtonInput<KeyCode
     }
 }
 
-impl MagicState {
-    /// Menu glue (WP-7C): the command menu (`items.rs`, FUN_001bc0c8) issued a spell command; Sora
-    /// takes it when a window lets him (see `run`). The menu only issues commands whose status is
-    /// below 4 (FUN_001bb930).
-    pub fn request_cast(&mut self, cmd: u16) {
-        self.request = Some((cmd, REQUEST_TICKS));
-        mlog!("magic: menu: cast command {cmd} selected");
-    }
-}
-
 /// Menu glue (WP-7C): a menu line under `KH2_MAGIC_LOG` (the command menu lives in `items.rs`).
 pub fn log_menu(line: &str) {
     if log_on() {
@@ -559,7 +515,7 @@ fn run(
     mut commands: Commands,
     data: Option<Res<MagicData>>,
     game: Res<GameData>,
-    mut st: ResMut<MagicState>,
+    (mut st, mut mr): (ResMut<MagicState>, ResMut<MagicRun>),
     mut battle: ResMut<Battle>,
     abilities: Res<crate::sora::Abilities>,
     (block, drive, world, progress, reaction, mut published): Context,
@@ -570,18 +526,19 @@ fn run(
     gts: Query<&GlobalTransform>,
     mut running: Running,
     (mut hits, mut spell_hits, mut voices, mut clash_out): (MessageWriter<Hit>, MessageWriter<fx::SpellHit>, MessageWriter<crate::audio::SoraVoice>, MessageWriter<crate::enemy::EnemyClash>),
-    (enemies, mut recharge, pad, mut gflags): (Query<&crate::enemy::Enemy>, ResMut<crate::hud::hud_gauge::MpRecharge>, Res<crate::sora::Pad>, ResMut<rules::GlobalFlags>),
+    (enemies, mut recharge, pad, mut gflags): (Query<&crate::enemy::Enemy>, ResMut<crate::shared::hud::MpRecharge>, Res<crate::sora::Pad>, ResMut<rules::GlobalFlags>),
 ) {
     published.hits.clear();
     let Some(data) = data else { return };
     let Ok((me, mut s)) = sora_q.single_mut() else { return };
     let st = &mut *st;
-    gflags.merge(rules::GFLAG_COLLECT_AT_ONCE, st.vm_world.gflags);
-    st.tick += 1;
-    if !st.hurt_done
-        && let Some(hp) = hurt_due(st.tick)
+    let mr = &mut *mr;
+    gflags.merge(rules::GFLAG_COLLECT_AT_ONCE, mr.vm_world.gflags);
+    mr.tick += 1;
+    if !mr.hurt_done
+        && let Some(hp) = hurt_due(mr.tick)
     {
-        st.hurt_done = true;
+        mr.hurt_done = true;
         mlog!("magic: KH2_MAGIC_HURT: Sora's HP {} -> {hp}", s.hp);
         s.hp = hp.clamp(1, s.stats.max_hp);
     }
@@ -610,7 +567,7 @@ fn run(
     let alive = |e: Entity| enemies.get(e).is_ok_and(|x| x.alive());
     // A cast's target record as a point for the interpreter (host 1.120), while the target lives.
     let target_point = |t: Option<Entity>| t.filter(|e| alive(*e)).and_then(|e| targets.iter().find(|x| x.0 == e)).map(|x| x.1);
-    st.vm_world.refresh(&running);
+    mr.vm_world.refresh(&running);
     let Ok(mut body) = anims.get_mut(body_e) else { return };
 
     // Accept a pending cast (FUN_00174cf8: FUN_00176b00 with the hit latch forced, then FUN_00179400).
@@ -632,7 +589,7 @@ fn run(
         let status = data.status(cmd, s.mp, st.charge.active(), form, progress.as_deref());
         let pressed = (free || combo || fin).then(|| chain.press(Windows { free, combo }, true)).flatten();
         match (row, pressed) {
-            (Some((row, pax)), Some(press)) if status.usable() && !st.casts.iter().any(|c| c.step == Step::Waiting || (c.step == Step::Vm && !c.paid)) => {
+            (Some((row, pax)), Some(press)) if status.usable() && !mr.casts.iter().any(|c| c.step == Step::Waiting || (c.step == Step::Vm && !c.paid)) => {
                 s.hits = chain.combo;
                 s.finishers = chain.finishers;
                 let finisher = form != 6 && rules::is_finisher(chain.combo, airborne, mg, ma);
@@ -673,7 +630,7 @@ fn run(
                     voices.write(crate::audio::SoraVoice { voice: voice as u16, why: format!("cast {}", row.file_name) });
                 }
                 let lock_timer = if lock_mode1.is_some() { rules::mode1_timer_start(game.plyr.auto_lock_on_time) } else { 0.0 };
-                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer, lock_mode2: false });
+                mr.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer, lock_mode2: false });
                 let magi = rules::magi_row(&data.magi, kind).cloned().unwrap_or_default();
                 let cost = data.cmd(cmd).map_or(0, |c| c.cost);
                 mlog!(
@@ -700,14 +657,14 @@ fn run(
                 // The hand port keeps the kind the script keeps after event 20 (the VM's script makes it itself).
                 let kind = if vm.is_some() { kind } else { rules::script_kind(row.id, kind) };
                 let mut cast = Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step, vm, paid: false, target, bliz: None, thunder: None, thunder_wait: 0.0 };
-                st.cast_tick = st.tick;
+                mr.cast_tick = mr.tick;
                 if cast.vm.is_some() {
                     mlog!("magic(vm): {} event 20 runs in the interpreter", row.file_name);
                     let target = target_point(cast.target);
-                    let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e, world: &mut st.vm_world, map: world.as_deref(), target };
+                    let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut mr.attacks, next: &mut mr.next_group, body: body_e, world: &mut mr.vm_world, map: world.as_deref(), target };
                     vm_slice(&mut cast, &mut ctx, airborne, true);
                 }
-                st.casts.push(cast);
+                mr.casts.push(cast);
             }
             _ => {
                 if left > 1 && status.usable() {
@@ -733,7 +690,7 @@ fn run(
     // The lock button is the input record's newly pressed bit 0x800 (`Pad::lock_newly_pressed`). In mode 2 a second press
     // releases the controller (FUN_0019b7a8: FUN_002c14a8(8), then FUN_0019b580, mode 0 with the record cleared; the system
     // sound 8 is not played).
-    if let Some(t) = st.turn.as_mut()
+    if let Some(t) = mr.turn.as_mut()
         && t.lock_mode1.is_some()
         && t.lock_mode2
         && !rules::mode2_keeps(true, pad.lock_newly_pressed())
@@ -742,7 +699,7 @@ fn run(
         t.lock_mode1 = None;
         t.lock_mode2 = false;
     }
-    if let Some(t) = st.turn.as_mut()
+    if let Some(t) = mr.turn.as_mut()
         && t.lock_mode1.is_some()
         && !t.lock_mode2
     {
@@ -765,7 +722,7 @@ fn run(
             }
         }
     }
-    match st.turn {
+    match mr.turn {
         Some(t) if s.state == State::Magic && body.slot == t.motion => {
             let g = body.gframe();
             let turns: Vec<(u8, f32)> = body
@@ -779,7 +736,7 @@ fn run(
                 .unwrap_or_default();
             for (id, deg) in turns {
                 if id == rules::TRIGGER_TURN_LOCK
-                    && let Some(t) = st.turn.as_mut()
+                    && let Some(t) = mr.turn.as_mut()
                     && t.lock_mode1.is_some()
                 {
                     // FUN_001861b8 refills the mode-1 timer (FUN_0019bcb8) before it turns.
@@ -794,7 +751,7 @@ fn run(
                 }
             }
         }
-        Some(_) if s.state != State::Magic => st.turn = None,
+        Some(_) if s.state != State::Magic => mr.turn = None,
         _ => {}
     }
 
@@ -803,7 +760,7 @@ fn run(
     // record's shape byte (FUN_0019b388: byte +1 of the picked target shape, `parts`) and the record's target point are
     // handed to the HUD each frame. The bubble flag is the target's +0x588 bit 1 with a positive +0xac8 / +0xacc, which an
     // enemy object here does not carry [GAP], so it stays off.
-    let marker = st.turn.and_then(|t| {
+    let marker = mr.turn.and_then(|t| {
         let e = t.lock_mode1.filter(|e| alive(*e))?;
         let at = targets.iter().find(|x| x.0 == e)?.1;
         let shape = shape_bytes.iter().find(|x| x.0 == e).map_or(0, |x| x.1);
@@ -811,14 +768,14 @@ fn run(
     });
     match marker {
         Some(m) => {
-            if st.marker_log != Some((m.mode, m.shape)) {
-                mlog!("magic: marker mode {} shape byte {} group {:?} at {:?}", m.mode, m.shape, crate::hud::hud_target::marker_group(m.mode, m.shape), m.at);
-                st.marker_log = Some((m.mode, m.shape));
+            if mr.marker_log != Some((m.mode, m.shape)) {
+                mlog!("magic: marker mode {} shape byte {} group {:?} at {:?}", m.mode, m.shape, crate::shared::hud::marker_group(m.mode, m.shape), m.at);
+                mr.marker_log = Some((m.mode, m.shape));
             }
             commands.insert_resource(m);
         }
         None => {
-            if st.marker_log.take().is_some() {
+            if mr.marker_log.take().is_some() {
                 mlog!("magic: marker released");
                 commands.remove_resource::<MagicMarker>();
             }
@@ -846,7 +803,7 @@ fn run(
     let airborne_now = !s.motor.grounded;
     let (magic_state, playing) = (s.state == State::Magic, body.slot);
     let in_motion = |c: &Cast| magic_state && playing == c.motion;
-    for c in st.casts.iter_mut() {
+    for c in mr.casts.iter_mut() {
         if c.step != Step::Waiting && !(c.step == Step::Vm && !c.paid) {
             continue;
         }
@@ -861,7 +818,7 @@ fn run(
                 }
             }
             if log_level() >= 2 {
-                info!("magic: timeline +{} trigger 17", st.tick - st.cast_tick);
+                info!("magic: timeline +{} trigger 17", mr.tick - mr.cast_tick);
             }
             mlog!("magic: trigger 17 at frame {:.1}: MP spent {} -> {} (cost {}){}", body.gframe(), before, s.mp, c.cost, if st.charge.active() { format!(", MP charge {:.0} frames", st.charge.total) } else { String::new() });
             if let Some(vm) = c.vm.as_mut() {
@@ -872,7 +829,7 @@ fn run(
                 continue;
             }
             let mut bliz = None;
-            c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, &frames, airborne_now, &mut running, &mut st.bliz_counter, &mut bliz);
+            c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, &frames, airborne_now, &mut running, &mut mr.bliz_counter, &mut bliz);
             c.bliz = bliz;
         } else if !in_motion(c) && c.vm.is_none() {
             // Event 20 ends when the caster's motion changes (host 1.15): no spell, no cost.
@@ -883,11 +840,11 @@ fn run(
 
     // The scripts in the interpreter: one slice per tick (FUN_001a4428), except a cast's first, which
     // ran when it started.
-    for c in st.casts.iter_mut().filter(|c| c.step == Step::Vm) {
+    for c in mr.casts.iter_mut().filter(|c| c.step == Step::Vm) {
         let im = in_motion(c);
         if c.vm.as_ref().is_some_and(|v| !v.ran) {
             let target = target_point(c.target);
-            let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e, world: &mut st.vm_world, map: world.as_deref(), target };
+            let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut mr.attacks, next: &mut mr.next_group, body: body_e, world: &mut mr.vm_world, map: world.as_deref(), target };
             vm_slice(c, &mut ctx, airborne_now, im);
         }
         if let Some(v) = c.vm.as_mut() {
@@ -896,7 +853,7 @@ fn run(
     }
 
     // The scripts after their first slice (Fire's attack loop).
-    for c in st.casts.iter_mut() {
+    for c in mr.casts.iter_mut() {
         if let Step::Fire { ball, ball2, attacks, t, yielded } = c.step {
             if !yielded {
                 // The script's yield after starting the effects: the attacks come next frame.
@@ -911,15 +868,15 @@ fn run(
                 Some(a) => a,
                 None => {
                     // After the yield: the attack objects (FIRE event 21).
-                    let a1 = new_attack(&mut st.attacks, &mut st.next_group, &game, &pax, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS), c.magi.f(MAGI_HEIGHT));
+                    let a1 = new_attack(&mut mr.attacks, &mut mr.next_group, &game, &pax, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS), c.magi.f(MAGI_HEIGHT));
                     let mut a2 = None;
                     if c.kind / 10 == 3 {
                         // Host 2.31 copies the attack with id 502, sized 30 smaller; a finisher widens the first to 450.
-                        a2 = new_attack(&mut st.attacks, &mut st.next_group, &game, &pax, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS) - 30.0, c.magi.f(MAGI_HEIGHT) - 30.0);
+                        a2 = new_attack(&mut mr.attacks, &mut mr.next_group, &game, &pax, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS) - 30.0, c.magi.f(MAGI_HEIGHT) - 30.0);
                         if c.kind & 1 == 1
                             && let Some(i) = a1
                         {
-                            st.attacks[i].radius = 450.0;
+                            mr.attacks[i].radius = 450.0;
                         }
                     }
                     let Some(a1) = a1 else {
@@ -927,31 +884,31 @@ fn run(
                         c.step = Step::Done;
                         continue;
                     };
-                    mlog!("magic: Fire attack {} made: atkp {ATKP_FIRE} kind {} radius {} height {} for {} frames", st.attacks[a1].group, c.kind, st.attacks[a1].radius, st.attacks[a1].height, c.magi.f(MAGI_TIME));
+                    mlog!("magic: Fire attack {} made: atkp {ATKP_FIRE} kind {} radius {} height {} for {} frames", mr.attacks[a1].group, c.kind, mr.attacks[a1].radius, mr.attacks[a1].height, c.magi.f(MAGI_TIME));
                     (a1, a2)
                 }
             };
             if t > 0.0 {
                 let p = element_position(&pax, ball, &frames);
-                move_attack(&mut st.attacks[a1], p);
+                move_attack(&mut mr.attacks[a1], p);
                 if let (Some(b2), Some(i2)) = (ball2, a2) {
-                    move_attack(&mut st.attacks[i2], element_position(&pax, b2, &frames));
+                    move_attack(&mut mr.attacks[i2], element_position(&pax, b2, &frames));
                 }
                 c.step = Step::Fire { ball, ball2, attacks: Some((a1, a2)), t: t - 1.0, yielded };
             } else {
                 // Host 2.13: the attack objects are finished.
-                st.attacks[a1].live = false;
+                mr.attacks[a1].live = false;
                 if let Some(i2) = a2 {
-                    st.attacks[i2].live = false;
+                    mr.attacks[i2].live = false;
                 }
-                mlog!("magic: Fire attack {} over", st.attacks[a1].group);
+                mlog!("magic: Fire attack {} over", mr.attacks[a1].group);
                 c.step = Step::Done;
             }
         }
     }
     // Blizzard's event 21 after its yield: the push of the caster (host 1.146 with `magi` +0x1c) and
     // the shot from element 1's position along the facing (R02b9 -> R02d7 -> R04d6).
-    for c in st.casts.iter_mut() {
+    for c in mr.casts.iter_mut() {
         if let Step::Blizzard { elem, yielded } = c.step {
             if !yielded {
                 c.step = Step::Blizzard { elem, yielded: true };
@@ -963,9 +920,9 @@ fn run(
             // term is 0 in the app as for the recoil).
             let back = -s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
             if let Some(rd) = reaction.as_deref() {
-                st.push = crate::reaction_rules::Push::new(back, c.magi.f(MAGI_PUSH), 0.0, &rd.consts);
-                st.push_moved = 0.0;
-                mlog!("magic: Blizzard push of the caster (host 1.146 -> FUN_001857b0): power {} along {back:?}, speed {:?}", c.magi.f(MAGI_PUSH), st.push.map(|p| p.speed));
+                mr.push = crate::reaction_rules::Push::new(back, c.magi.f(MAGI_PUSH), 0.0, &rd.consts);
+                mr.push_moved = 0.0;
+                mlog!("magic: Blizzard push of the caster (host 1.146 -> FUN_001857b0): power {} along {back:?}, speed {:?}", c.magi.f(MAGI_PUSH), mr.push.map(|p| p.speed));
             }
             if let (Some(pax), Some(plan)) = (c.pax.clone(), c.bliz.take()) {
                 // The facing (host 1.201) in the game's space; each shot's direction is it with the
@@ -976,7 +933,7 @@ fn run(
                     let origin = caster_lock_point(&body, gts.get(body_e).ok());
                     let dir = rotate_y_game(facing.with_y(-sh.y), sh.angle);
                     mlog!("magic: Blizzard shot from element {} at {pos:?} along {dir:?} (flag {}, turn scale {}): speed {} life {} size {} turn {}", sh.elem, sh.flag, sh.scale, c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN));
-                    st.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, origin, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale, flag: sh.flag });
+                    mr.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, origin, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale, flag: sh.flag });
                 }
             }
             let _ = elem;
@@ -988,24 +945,24 @@ fn run(
     // tick; a hit reaction replaces it as it replaces the game's push [inferred for the air: the
     // script calls the ground push FUN_001857b0 also for an air cast].
     if matches!(s.state, State::Hurt | State::Blown | State::Down) {
-        st.push = None;
+        mr.push = None;
     }
-    if let (Some(p), Some(rd), Some(w)) = (st.push.as_mut(), reaction.as_deref(), world.as_deref()) {
+    if let (Some(p), Some(rd), Some(w)) = (mr.push.as_mut(), reaction.as_deref(), world.as_deref()) {
         let d = p.step(&rd.consts);
         let dy = (!s.motor.grounded).then_some(0.0);
         let before = s.motor.pos;
         s.motor.move_by(w, d, dy);
-        st.push_moved += (s.motor.pos - before).with_y(0.0).length();
+        mr.push_moved += (s.motor.pos - before).with_y(0.0).length();
         if p.finished() {
-            st.push = None;
-            mlog!("magic: Blizzard push over: Sora moved {:.1} units", st.push_moved);
-            st.push_moved = 0.0;
+            mr.push = None;
+            mlog!("magic: Blizzard push over: Sora moved {:.1} units", mr.push_moved);
+            mr.push_moved = 0.0;
         }
     }
     // Thunder's event 21, the rest of its first slice: the strike's place is the target's position
     // (host 1.120) raised by 100, or 300 ahead of the caster raised by 80 and 330 without a target
     // (L003e / L0076 / L009c), then R02b5 starts the strike thread.
-    for c in st.casts.iter_mut().filter(|c| c.step == Step::Thunder) {
+    for c in mr.casts.iter_mut().filter(|c| c.step == Step::Thunder) {
         let Some(pax) = c.pax.clone() else {
             c.step = Step::Done;
             continue;
@@ -1036,14 +993,14 @@ fn run(
                         Some(sc) => {
                             let clear = |a: Vec3, b: Vec3| world.as_deref().is_none_or(|w| w.raycast_m(a * SCALE, b * SCALE).is_none());
                             let centre = pos;
-                            pos = rules::scatter_place(pos / SCALE, 0.4 * r, r, -0.1 * r, 0.1 * r, &mut st.scatter, sc, clear) * SCALE;
-                            mlog!("magic: Thunder in Final: host 1.248 around {centre:?} (radius {} .. {r}): {pos:?} (generator {:#x}, counter {})", 0.4 * r, st.scatter.seed, st.scatter.turn);
+                            pos = rules::scatter_place(pos / SCALE, 0.4 * r, r, -0.1 * r, 0.1 * r, &mut mr.scatter, sc, clear) * SCALE;
+                            mlog!("magic: Thunder in Final: host 1.248 around {centre:?} (radius {} .. {r}): {pos:?} (generator {:#x}, counter {})", 0.4 * r, mr.scatter.seed, mr.scatter.turn);
                         }
                         None => mlog!("magic: Thunder in Final: no scatter numbers from the executable; the strike stays at the place"),
                     }
                 }
                 mlog!("magic: Thunder strike at {pos:?} (rise {rise})");
-                st.strikes.push(Strike { pax, kind: c.kind, magi: c.magi.clone(), pos, rise, atkp: 0, started: false, wait: 0.0, attacks: None, done: false });
+                mr.strikes.push(Strike { pax, kind: c.kind, magi: c.magi.clone(), pos, rise, atkp: 0, started: false, wait: 0.0, attacks: None, done: false });
                 c.thunder_wait = wait;
                 if c.thunder.as_ref().is_some_and(|q| q.is_empty()) {
                     c.step = Step::Done;
@@ -1052,19 +1009,19 @@ fn run(
             None => c.step = Step::Done,
         }
     }
-    st.casts.retain(|c| c.step != Step::Done);
-    for k in st.strikes.iter_mut() {
-        step_strike(k, &mut commands, &game, &mut st.attacks, &mut st.next_group, world.as_deref());
+    mr.casts.retain(|c| c.step != Step::Done);
+    for k in mr.strikes.iter_mut() {
+        step_strike(k, &mut commands, &game, &mut mr.attacks, &mut mr.next_group, world.as_deref());
     }
-    st.strikes.retain(|x| !x.done);
+    mr.strikes.retain(|x| !x.done);
 
     // The shots (request threads; they run after the spell threads in the same task pass [inferred]).
-    let mut claimed: Vec<Entity> = st.shots.iter().filter_map(|x| x.effect).collect();
-    for shot in st.shots.iter_mut() {
-        step_shot(shot, &mut commands, &game, &mut st.attacks, &mut st.next_group, &mut running, &targets, &claimed);
+    let mut claimed: Vec<Entity> = mr.shots.iter().filter_map(|x| x.effect).collect();
+    for shot in mr.shots.iter_mut() {
+        step_shot(shot, &mut commands, &game, &mut mr.attacks, &mut mr.next_group, &mut running, &targets, &claimed);
         claimed.extend(shot.effect);
     }
-    st.shots.retain(|x| !x.done);
+    mr.shots.retain(|x| !x.done);
 
     // The attacks against the enemies' hurt shapes, then the victims' hit memory counts down.
     let victims: Vec<Victim> = fighters
@@ -1085,12 +1042,12 @@ fn run(
         .collect();
     let sora_pos = s.motor.pos * SCALE;
     let mut disable: Vec<(Entity, Entity, i16)> = Vec::new();
-    let live_groups: Vec<u32> = st.attacks.iter().filter(|a| a.live).map(|a| a.group).collect();
-    st.clash_done.retain(|k| live_groups.contains(&k.0));
-    for a in st.attacks.iter_mut().filter(|a| a.live) {
+    let live_groups: Vec<u32> = mr.attacks.iter().filter(|a| a.live).map(|a| a.group).collect();
+    mr.clash_done.retain(|k| live_groups.contains(&k.0));
+    for a in mr.attacks.iter_mut().filter(|a| a.live) {
         let Some(cur) = a.pos else { continue };
         if log_level() >= 2 {
-            info!("magic: timeline +{} attack {} atkp {} at {:.1?} radius {} height {}", st.tick - st.cast_tick, a.group, game.atkp[a.base_row].id, cur / SCALE, a.radius, a.height);
+            info!("magic: timeline +{} attack {} atkp {} at {:.1?} radius {} height {}", mr.tick - mr.cast_tick, a.group, game.atkp[a.base_row].id, cur / SCALE, a.radius, a.height);
         }
         // FUN_0018c8e0 (from FUN_001a2cc0 when the attack moved more than two units): a row with BG Hit
         // (atkp Flags bit 0) whose attack has not hit yet casts the segment from the last to this
@@ -1126,10 +1083,10 @@ fn run(
                     for (atkp, start, vol) in combat::live_attacks(an, g) {
                         let key = (a.group, fe, ab, start);
                         let Some(er) = game.atkp(atkp) else { continue };
-                        if st.clash_done.contains(&key) || !rd.consts.types_clash(GUARD_TYPE, er.r#type) || !combat::overlap(&guard, &vol) {
+                        if mr.clash_done.contains(&key) || !rd.consts.types_clash(GUARD_TYPE, er.r#type) || !combat::overlap(&guard, &vol) {
                             continue;
                         }
-                        st.clash_done.insert(key);
+                        mr.clash_done.insert(key);
                         a.clashes = a.clashes.wrapping_add(1);
                         let ef = crate::reaction_rules::ReflectFields::from_atkp(er);
                         let c = crate::reaction_rules::enemy_clash(&ef, false);
@@ -1144,7 +1101,7 @@ fn run(
             continue;
         }
         for (te, shapes, tpos) in &victims {
-            let mem = st.memory.entry(*te).or_default();
+            let mem = mr.memory.entry(*te).or_default();
             let row = &game.atkp[a.base_row];
             if !mem.may_hit(row.r#type, a.group) {
                 continue;
@@ -1190,12 +1147,12 @@ fn run(
             }
         }
     }
-    for m in st.memory.values_mut() {
+    for m in mr.memory.values_mut() {
         m.tick();
     }
     // What the victims read next (the pull of reaction class 5): the live attacks' positions and the
     // enemies' body centres (FUN_0016b7d0: the first shape of type 1, else the position).
-    published.places = st.attacks.iter().filter(|a| a.live).filter_map(|a| a.pos.map(|p| (a.group, p))).collect();
+    published.places = mr.attacks.iter().filter(|a| a.live).filter_map(|a| a.pos.map(|p| (a.group, p))).collect();
     published.centres = fighters
         .iter()
         .filter(|(_, f, _)| f.team == Team::Enemy)
@@ -1206,8 +1163,8 @@ fn run(
         })
         .collect();
     // Casts hold indices into the list: finished attacks go once no cast runs.
-    if st.casts.is_empty() && st.shots.is_empty() && st.strikes.is_empty() {
-        st.attacks.retain(|a| a.live);
+    if mr.casts.is_empty() && mr.shots.is_empty() && mr.strikes.is_empty() {
+        mr.attacks.retain(|a| a.live);
     }
 }
 

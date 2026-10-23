@@ -180,7 +180,7 @@ fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
     None
 }
 
-pub(crate) fn exe_f32(elf: &[u8], va: u32) -> Option<f32> {
+pub fn exe_f32(elf: &[u8], va: u32) -> Option<f32> {
     exe_bytes(elf, va, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 

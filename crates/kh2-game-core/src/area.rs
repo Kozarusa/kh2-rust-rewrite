@@ -24,7 +24,7 @@ use bevy::prelude::*;
 use kh2_ard::run::{self, ScriptRun};
 
 use crate::assets::{CurrentArea, Disc};
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
 
@@ -143,7 +143,7 @@ pub fn arealog() -> bool {
 
 /// Brings the world's collision groups in line with the game: the area word once per world, then the
 /// switches of hosts 1.36 / 1.37 in call order. `KH2_AREALOG` logs the mask the world ends up with.
-pub(crate) fn sync_groups(w: &mut World, word: u64, area: &str, edits: &[(u8, bool)]) {
+pub fn sync_groups(w: &mut World, word: u64, area: &str, edits: &[(u8, bool)]) {
     if w.apply_area_word(word) && arealog() {
         info!("area {area}: world collision mask {:#x} applied (script word {word:#x}; FUN_00141768)", w.enabled_groups);
     }
@@ -244,8 +244,8 @@ pub fn run_area_script(
     if let (Some(w), Some(r)) = (world.as_mut(), rec.run.as_ref())
         && r.name == loaded
     {
-        crate::enemy_host::set_area_mask(r.script.word_35cd18);
-        sync_groups(w, r.script.map_visibility, &loaded, &crate::enemy_host::take_group_edits());
+        crate::shared::enemy::set_area_mask(r.script.word_35cd18);
+        sync_groups(w, r.script.map_visibility, &loaded, &crate::shared::enemy::take_group_edits());
     }
     if !rec.place_on_load || rec.placed.as_deref() == Some(loaded.as_str()) {
         return;
@@ -258,7 +258,7 @@ pub fn run_area_script(
         Some((tag, e)) => {
             let at = game_to_app(e.position);
             let at = w.ground(at, at.y + 100.0, 400.0).map_or(at, |g| at.with_y(g.y));
-            crate::sora::respawn(&mut s, at);
+            crate::shared::sora::respawn(&mut s, at);
             s.motor.yaw = app_yaw(e.rotation[1]);
             tf.translation = at * SCALE;
             tf.rotation = Quat::from_rotation_y(s.motor.yaw);

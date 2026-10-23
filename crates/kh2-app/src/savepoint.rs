@@ -46,10 +46,11 @@ use crate::assets::{AreaPart, Disc};
 use crate::fx::{self, Bind, FxHandle, LoadedPax, Placement, StopEffect};
 use crate::npc::{part_offer, Talk};
 use crate::reaction_cmd::{Active, CmdRow, Ctx, ReactionOffer, ReactionRules, Status};
-use crate::reaction_parts::{self as parts, Shape};
+use crate::reaction_parts::{self as parts};
 use crate::schedule::{sim_running, Sim};
 use crate::sora::Sora;
 use crate::SCALE;
+pub use crate::shared::reaction::EXECUTE_SAVE;
 
 /// `00objentry` ObjectType of save and world points (FUN_0016e8c0 case 7 -> FUN_00194ab8).
 pub const OBJECT_POINT: u8 = 7;
@@ -57,8 +58,6 @@ pub const OBJECT_POINT: u8 = 7;
 pub const OBJECT_WORLD_POINT: u32 = 0x239;
 /// The command the points' part offers.
 pub const COMMAND_SAVE: u16 = 55;
-/// The Execute value of command 55 (`FUN_001ba2c0` and `FUN_00177b18` case 0x37).
-pub const EXECUTE_SAVE: u16 = 0x37;
 /// The effect element started with the point (`FUN_00194ab8`).
 pub const EFFECT_IDLE: u16 = 1;
 /// The effect element that plays while the point heals (`FUN_00194b98`).
@@ -114,36 +113,6 @@ pub struct SavePoints {
 /// area, among the first 0x36.
 pub fn world_point_index(table: &[[u8; 4]], world: u8, area: u8) -> Option<usize> {
     table.iter().take(WORLD_POINTS).position(|r| r[0] == world && r[1] == area)
-}
-
-/// `FUN_00189208` for every pair of shape kinds the parts use: `parts::overlaps` for ellipsoids and
-/// spheres, and the cylinder (kind 1) tests: `FUN_00188fd0(a, cylinder)` for an ellipsoid or sphere
-/// `a`: the height difference must be below the two vertical radii; above the cylinder's half height
-/// the ellipsoid's horizontal radius at that height (`sqrt(1 - k^2) * a.r`, k the height past the
-/// cylinder over a's vertical radius, `DAT_0037ab24` = 1) is added to the cylinder's radius, else the
-/// full radii; the horizontal distance must be below that sum. `FUN_001890d8` for two cylinders: the
-/// same with the full radii.
-pub fn overlaps(a: &Shape, b: &Shape) -> Option<bool> {
-    let cyl = |e: &Shape, c: &Shape| {
-        let d = c.center - e.center;
-        let dy = d.y.abs();
-        if dy >= e.r[1] + c.r[1] {
-            return false;
-        }
-        let r = if e.kind != 1 && dy > c.r[1] {
-            let k = (dy - c.r[1]) / e.r[1];
-            (1.0 - k * k).max(0.0).sqrt() * e.r[0] + c.r[0]
-        } else {
-            e.r[0] + c.r[0]
-        };
-        d.x * d.x + d.z * d.z < r * r
-    };
-    match (a.kind, b.kind) {
-        (1, 1) => Some(cyl(a, b)),
-        (0 | 3, 1) => Some(cyl(a, b)),
-        (1, 0 | 3) => Some(cyl(b, a)),
-        _ => parts::overlaps(a, b),
-    }
 }
 
 /// `FUN_001ba2c0` case 0x37 then the flags and the form mask (`FUN_001b70b8`, `FUN_001b7290`):
@@ -397,6 +366,8 @@ fn point_use(mut talk: ResMut<Talk>, points: Query<&SavePoint>, mut save: ResMut
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reaction_parts::shapes_overlap as overlaps;
+    use crate::reaction_parts::Shape;
 
     #[test]
     fn a_cylinder_part_meets_a_body_by_fun_00188fd0() {

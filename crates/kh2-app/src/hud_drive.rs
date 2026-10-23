@@ -9,7 +9,7 @@
 
 use bevy::prelude::*;
 
-use crate::hud::DebugHud;
+use crate::shared::hud::DebugHud;
 
 /// What the HUD needs of the drive system.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]

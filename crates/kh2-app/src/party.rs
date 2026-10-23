@@ -1043,7 +1043,7 @@ fn can_build(area_loaded: bool, no_party: bool, have_memt: bool, have_consts: bo
 /// notice; word 6 then asks for the camp's notice page 0x15 (`party_switch`), which lists who came in and went out.
 /// A world the app has not entered starts from the default preset, as `spawn_party` does.
 fn jump_party(
-    mut menus: ResMut<crate::area_jump::JumpMenus>,
+    mut menus: ResMut<crate::shared::area_jump::JumpMenus>,
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
     mut switch: ResMut<crate::party_switch::PartySwitch>,
@@ -1149,7 +1149,7 @@ fn auto_heal_pass(progress: &mut crate::progress::Progress, bytes: [u8; 4], merg
 /// has no revive path here].
 #[allow(clippy::too_many_arguments)]
 fn jump_reset(
-    mut menus: ResMut<crate::area_jump::JumpMenus>,
+    mut menus: ResMut<crate::shared::area_jump::JumpMenus>,
     game: Option<Res<crate::data::GameData>>,
     drive: Option<Res<crate::drive::DriveState>>,
     mut queue: Option<ResMut<crate::drive::DriveQueue>>,
@@ -1189,13 +1189,13 @@ fn jump_reset(
 /// Donald and Goofy go and Sora fights alone; the bytes stay so until another opcode 0xf (or the Party page)
 /// rewrites them (FUN_001a71c0's record survives area loads).
 fn mission_party(
-    mut starts: MessageReader<crate::struggle::MissionStart>,
+    mut starts: MessageReader<crate::shared::struggle::MissionStart>,
     disc: Res<Disc>,
     area: Res<CurrentArea>,
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
     mgr: Res<Manager>,
-    mut queue: Local<(Vec<crate::struggle::MissionStart>, Option<String>)>,
+    mut queue: Local<(Vec<crate::shared::struggle::MissionStart>, Option<String>)>,
 ) {
     let (pending, owner) = &mut *queue;
     // The preset edits the loaded world's bytes: until `spawn_party` has entered the world for this area (it
@@ -1219,12 +1219,12 @@ fn mission_party(
 /// the queue is dropped when the loaded area changes (a start of the old area must not meet the next area's `btl`
 /// program). `owner` is the area the queue belongs to.
 fn drain_ready(
-    pending: &mut Vec<crate::struggle::MissionStart>,
+    pending: &mut Vec<crate::shared::struggle::MissionStart>,
     owner: &mut Option<String>,
-    new: impl IntoIterator<Item = crate::struggle::MissionStart>,
+    new: impl IntoIterator<Item = crate::shared::struggle::MissionStart>,
     loaded: Option<&str>,
     built_for: Option<&str>,
-) -> Vec<crate::struggle::MissionStart> {
+) -> Vec<crate::shared::struggle::MissionStart> {
     if owner.as_deref() != loaded {
         pending.clear();
         *owner = loaded.map(str::to_string);
@@ -1727,7 +1727,7 @@ fn party_tick(
     flag: Option<Res<crate::audio_bgm::BattleFlag>>,
     progress: Option<Res<crate::progress::Progress>>,
     sora: Query<&Sora>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     fighters: Query<(Entity, &Fighter), Without<PartyMember>>,
     mut q: Query<(&mut Transform, &mut PartyMember)>,
     mut anims: Query<(&mut Animator, &GlobalTransform)>,
@@ -2843,7 +2843,7 @@ fn party_forced_hits(
 /// The party panels' inputs (docs/systems/party/party-friend-ai.md section 7): per party slot the member's status block as the
 /// panel reads it (HP +0 over +4, MP +0x180 over +0x184; FUN_0013dcd8 registers slot + 1 at creation,
 /// summons get none). The harness fill `KH2_HUDPARTY` keeps precedence.
-fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party::PartyMembers>>, mut filled: Local<bool>) {
+fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::shared::hud::PartyMembers>>, mut filled: Local<bool>) {
     let Some(mut panels) = panels else { return };
     if std::env::var_os("KH2_HUDPARTY").is_some() {
         return;
@@ -2858,8 +2858,8 @@ fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party
     }
     members.sort_by_key(|m| m.slot);
     let face = |s: usize| panels.0.get(s).and_then(|p| p.face);
-    let want: Vec<crate::hud::hud_party::PartyMember> =
-        members.iter().enumerate().map(|(s, m)| crate::hud::hud_party::PartyMember { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, face: face(s) }).collect();
+    let want: Vec<crate::shared::hud::HudPartyMember> =
+        members.iter().enumerate().map(|(s, m)| crate::shared::hud::HudPartyMember { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, face: face(s) }).collect();
     if panels.0 != want {
         panels.0 = want;
     }
@@ -3250,8 +3250,8 @@ mod tests {
         assert!(area_entered(Some("tt04"), Some("tt04")));
     }
 
-    fn start(id: u32) -> crate::struggle::MissionStart {
-        crate::struggle::MissionStart { id, name: String::new(), orb_pool: false, triggers: Vec::new() }
+    fn start(id: u32) -> crate::shared::struggle::MissionStart {
+        crate::shared::struggle::MissionStart { id, name: String::new(), orb_pool: false, triggers: Vec::new() }
     }
 
     /// WP-REG1b: starts wait for the area's party pass, drain in order exactly once, and a change of area drops them.

@@ -25,6 +25,7 @@ use crate::menu_pages::{self, Entry, Exe, Flags};
 use crate::progress::Progress;
 use crate::schedule::Pause;
 use crate::sora::{Sora, State};
+pub use crate::shared::ui::Phase;
 
 // The Config page (stage M6) lives in its own file as a child module, so it reads this file's state.
 #[path = "menu_config.rs"]
@@ -102,16 +103,6 @@ fn pause_log(
 /// Run condition: the menu is closed, so the field runs.
 pub fn is_closed(menu: Res<Menu>) -> bool {
     menu.phase == Phase::Closed
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Phase {
-    Closed,
-    /// The enter animations play (the first 15-frame groups of the layout).
-    Opening,
-    Open,
-    /// The leave animations play and the dim returns over `CLOSE_FRAMES`.
-    Closing,
 }
 
 /// Frames the field takes to come back to full brightness on close (clip 10: frames 56..69).

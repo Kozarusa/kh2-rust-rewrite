@@ -4,6 +4,7 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 One file per shift, newest first:
 
+- [Shift 20 (2026-10-22/23)](changelog/shift-20.md)
 - [Shift 19 (2026-10-22)](changelog/shift-19.md)
 - [Shift 18 (2026-10-20)](changelog/shift-18.md)
 - [Shift 17 (2026-10-19)](changelog/shift-17.md)

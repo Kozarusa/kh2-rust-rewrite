@@ -110,7 +110,9 @@ pub const FLAG_NO_FLOOR_AHEAD: u64 = 1 << 32;
 pub const FLAG_NO_FLOOR_POLY: u64 = 1 << 33;
 pub const FLAG_CONTACT: u64 = 1 << 34;
 
-/// The polygon walker's attribute filter (`FUN_00141b30`: `oct +0x40`, `+0x44`, `+0xd0`, `+0xd3`).
+/// The polygon walker's attribute filter.
+///
+/// orig 0x141b30: sets `oct +0x40` (mask), `+0x44` (value), `+0xd0` (invert) and `+0xd3` (the nibble-5 exception).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Filter {
     pub mask: u32,
@@ -146,6 +148,27 @@ pub fn kind_accepts(kind: u32, attr: u32) -> bool {
 pub struct Verts {
     pub v: [V4; 4],
     pub n: usize,
+}
+
+/// The floor facts `FUN_00143560` writes into the actor's ground record (`out +0x00..0x34`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloorInfo {
+    /// `out +0x00`: the floor normal (straight up, `(0, -1, 0)`, without a floor polygon).
+    pub normal: V4,
+    /// `out +0x10`: the negated normal.
+    pub opposite: V4,
+    /// `out +0x24`: the floor polygon, 0xffff for none.
+    pub poly: u32,
+    /// `out +0x28`: byte 0 of the polygon record (the footstep and dust material).
+    pub material: u32,
+    /// `out +0x2c`: byte 1 of the floor colour map polygon.
+    pub colour_byte: u32,
+    /// Byte 0 of the floor colour map polygon (indexes the colour table that fills `out +0x20`).
+    pub colour_class: u8,
+    /// `out +0x30`: the floor kind of `Oct::floor_kind`.
+    pub kind: u32,
+    /// `out +0x34`: attribute bit 16 of the floor polygon.
+    pub flag: u8,
 }
 
 /// The sphere the solver pushes out of polygons: centre (v4) and radius.
@@ -199,8 +222,10 @@ fn rd32(b: &[u8], o: usize) -> u32 {
 }
 
 impl Oct {
-    /// orig 0x141500: builds the object over `file` with the map's mesh-group word `groups` (`FUN_00141768`).
-    /// `None` when the file is too short for its own header.
+    /// orig 0x141500: builds the object over `file` with the map's mesh-group word `groups` (the identity placement
+    /// only). `None` when the file is too short for its own header.
+    ///
+    /// orig 0x141720: also looks for an attribute with nibble 5 (`oct +0xd2`).
     pub fn new(file: &[u8], groups: u64) -> Option<Oct> {
         if file.len() < 0x50 {
             return None;
@@ -237,7 +262,9 @@ impl Oct {
         }
     }
 
-    /// orig 0x141840 / 0x141800: enable or disable every mesh of one group.
+    /// orig 0x141840: enables every mesh of one group.
+    ///
+    /// orig 0x141800: disables every mesh of one group.
     pub fn set_group(&mut self, group: u8, on: bool) {
         for m in 0..self.n_meshes {
             if self.file[self.meshes + 0x14 * m + 0x11] == group {
@@ -265,7 +292,9 @@ impl Oct {
         rd32(&self.file, self.attrs + 4 * i)
     }
 
-    /// The level of the quantized boxes (`FUN_00141888`: the file's header word +0xc).
+    /// The level of the quantized boxes.
+    ///
+    /// orig 0x141888: the file's header word +0xc.
     pub fn level(&self) -> usize {
         (rd32(&self.file, 0x0c) as usize).min(3)
     }
@@ -356,8 +385,10 @@ impl Oct {
         }
     }
 
-    /// orig 0x141f08 with 0x141d90: the nearest polygon the segment `p0`..`p1` crosses among the polygons the
-    /// walker collects under `filt` and `kind`. Returns the hit point and polygon (0xffff when none).
+    /// orig 0x141f08: the nearest polygon the segment `p0`..`p1` crosses among the polygons the walker collects
+    /// under `filt` and `kind`. Returns the hit point and polygon (0xffff when none).
+    ///
+    /// orig 0x141d90: the nearest-hit search over the collected polygons.
     pub fn ray(&self, filt: Filter, p0: V4, p1: V4, kind: u32) -> (Option<V4>, u16) {
         let b = fbox_corners([p0[0], p0[1], p0[2]], [p1[0], p1[1], p1[2]]);
         let q = fbox_to_qbox(&b, self.level());
@@ -450,16 +481,7 @@ impl Oct {
             let verts = self.poly_verts(poly);
             let end = c.v4(coll::END);
             let plane = self.plane(poly);
-            // orig 0x163248: which side of the polygon's plane the end point is on.
-            let d = dot3(sub(verts.v[0], end), plane);
-            let side = if d < -PLANE_SIDE {
-                1
-            } else if d <= PLANE_SIDE {
-                2
-            } else {
-                0
-            };
-            if side == 0 {
+            if plane_side(end, verts.v[0], plane) == 0 {
                 flags = if self.attr(poly) & 0xf == 2 { flags | FLAG_NO_FLOOR_AHEAD } else { flags & !FLAG_NO_FLOOR_AHEAD };
                 c.set_flags(flags);
                 c.set_v4(coll::END, hit);
@@ -676,6 +698,55 @@ impl Oct {
         contacts
     }
 
+    /// orig 0x1434b8: the floor kind under the collider's end point: bits 14..15 of the attribute word of the
+    /// closest floor polygon of this object (the game's slot 0x355944), 0 without one.
+    pub fn floor_kind(&self, c: &Collider) -> u32 {
+        let hits = self.vertical_probe(c);
+        match self.closest_floor(&hits, c).0 {
+            0xffff => 0,
+            p => self.attr(p) >> 14 & 3,
+        }
+    }
+
+    /// orig 0x1421b8: the unit plane normal of polygon `p` as the original hands it out (w = 1; the moved-object
+    /// branch that rotates and renormalizes it is not ported).
+    pub fn normal(&self, p: u16) -> V4 {
+        let mut n = self.plane(p);
+        n[3] = ONE;
+        n
+    }
+
+    /// orig 0x143560: what stands under the collider, from the floor polygon `coll +0x60` that the floor ray
+    /// found (`self` is the walking map, the game's slot 0x355934). `colour` is the floor colour map (slot
+    /// 0x35593c) and `kinds` the floor kind object (slot 0x355944), each optional like the original's slot.
+    /// The colour table words themselves (`FUN_0015c690` and `FUN_00153540`, the lighting colour of the floor)
+    /// are not ported: the result carries the colour map polygon's class byte for the caller to look up.
+    pub fn floor_info(&self, c: &Collider, colour: Option<&Oct>, kinds: Option<&Oct>) -> FloorInfo {
+        let mut out = FloorInfo { normal: [0.0; 4], opposite: [0.0; 4], poly: 0, material: 0, colour_byte: 0, colour_class: 0, kind: 0, flag: 0 };
+        if let Some(map) = colour {
+            let hits = map.vertical_probe(c);
+            let (p, _) = map.closest_floor(&hits, c);
+            if p != 0xffff {
+                let (class, byte) = map.poly_bytes(p);
+                out.colour_class = class;
+                out.colour_byte = byte as u32;
+            }
+        }
+        out.kind = kinds.map_or(0, |k| k.floor_kind(c));
+        let poly = c.u16_at(coll::FLOOR_POLY);
+        out.poly = poly as u32;
+        if poly == 0xffff {
+            out.normal = [0.0, -ONE, 0.0, ONE];
+            out.opposite = [0.0, ONE, 0.0, ONE];
+        } else {
+            out.normal = self.normal(poly);
+            out.flag = (self.attr(poly) >> 16 & 1) as u8;
+            out.material = self.poly_bytes(poly).0 as u32;
+            out.opposite = sub([0.0, 0.0, 0.0, ONE], out.normal);
+        }
+        out
+    }
+
     /// orig 0x143840 on a map with no moving collision objects: the sweep, then the floor ray.
     /// Returns the sweep's contact bit.
     pub fn walk_step(&self, c: &mut Collider) -> u64 {
@@ -688,6 +759,20 @@ impl Oct {
             c.set_u32(coll::MOVING, 0);
         }
         r
+    }
+}
+
+/// orig 0x163248: which side of a polygon's plane the point is on, by the gap from the polygon's first vertex along the
+/// normal: 1 when the vertex is more than a thousandth behind the point's plane position, 2 within a thousandth, 0
+/// (strictly in front) otherwise.
+pub fn plane_side(p: V4, first_vertex: V4, plane: V4) -> u32 {
+    let d = dot3(sub(first_vertex, p), plane);
+    if d < -PLANE_SIDE {
+        1
+    } else if d <= PLANE_SIDE {
+        2
+    } else {
+        0
     }
 }
 

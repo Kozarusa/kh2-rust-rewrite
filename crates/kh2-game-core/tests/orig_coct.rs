@@ -191,6 +191,25 @@ fn random_poly(r: &mut Rng, span: f32) -> Poly {
     Poly { v, attr: random_attr(r, wall), material: r.below(8) as u8, boxed: r.below(2) == 0 }
 }
 
+/// A wall of 100 to 260 units a few tens of units from the origin, any heading, party-solid.
+fn dense_wall(r: &mut Rng, k: usize) -> Poly {
+    // The first dozen are parallel and a few units apart, so one sphere pushed out of each in turn counts a dozen
+    // contacts; the rest face every way.
+    let stack = k < 12;
+    let ang = if stack { 0.4 } else { urange(r, 0.0, 6.2832) };
+    let (c, s) = (ang.cos(), ang.sin());
+    let off = if stack { [c * (k as f32 * 3.0 - 18.0), s * (k as f32 * 3.0 - 18.0)] } else { [urange(r, -50.0, 50.0), urange(r, -50.0, 50.0)] };
+    let half = if stack { 140.0 } else { urange(r, 50.0, 130.0) };
+    let (ux, uz) = (-s * half, c * half);
+    let (a, b) = ([off[0] - ux, off[1] - uz], [off[0] + ux, off[1] + uz]);
+    let h = urange(r, 150.0, 300.0);
+    let mut v = vec![[a[0], 0.0, a[1]], [b[0], 0.0, b[1]], [b[0], -h, b[1]], [a[0], -h, a[1]]];
+    if !stack && r.below(2) == 0 {
+        v.reverse();
+    }
+    Poly { v, attr: 0x172, material: 1, boxed: r.below(2) == 0 }
+}
+
 fn bounds(v: &[[f32; 3]]) -> FBox {
     let mut b = [f32::MAX, f32::MAX, f32::MAX, f32::MIN, f32::MIN, f32::MIN];
     for p in v {
@@ -329,7 +348,10 @@ impl Rig {
     fn new(elf: &[u8], r: &mut Rng) -> Rig {
         let n = 5 + r.below(12) as usize;
         let span = urange(r, 120.0, 450.0);
-        let polys: Vec<Poly> = (0..n).map(|_| random_poly(r, span)).collect();
+        // One world in five is a dense cluster of walls around the origin, so a sphere there touches more than nine
+        // polygons (the walking solver gives up past nine contacts).
+        let dense = r.below(5) == 0;
+        let polys: Vec<Poly> = (0..if dense { 28 } else { n }).map(|k| if dense { dense_wall(r, k) } else { random_poly(r, span) }).collect();
         let level = r.below(4) as u32;
         let file = build_file(r, &polys, level);
         let groups = pick(r, &[0xfu64, 0x7, 0x3, 0x5, 0xb, 1 << 63 | 0xf, 0]);
@@ -520,7 +542,7 @@ fn orig_1423d8_matches_the_game() {
         assert_eq!(ret & 1, out as u64, "case {n}: return");
         hits += out as usize;
     });
-    assert!(hits > 200, "only {hits} floor hits");
+    assert!(hits > 100, "only {hits} floor hits");
 }
 
 /// orig 0x142760: the vertical probe.
@@ -637,7 +659,7 @@ fn orig_143840_matches_the_game() {
         contacts += (game.flags() >> 34 & 1) as usize;
         floors += (game.flags() >> 33 & 1 == 0) as usize;
     });
-    assert!(contacts > 100 && floors > 200, "contacts {contacts}, floors {floors}");
+    assert!(contacts > 100 && floors > 100, "contacts {contacts}, floors {floors}");
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -918,13 +940,7 @@ fn orig_163248_matches_the_game() {
         lab.put(LAB_PLANE, plane);
         let ret = lab.call(0x163248, &[LAB_P as u64, LAB_OUT as u64, LAB_PLANE as u64]) as u32;
         let d = dot3(sub(v.v[0], p), plane);
-        let mine = if d < -0.001 {
-            1
-        } else if d <= 0.001 {
-            2
-        } else {
-            0
-        };
+        let mine = plane_side(p, v.v[0], plane);
         assert_eq!(ret, mine, "case {n}: gap {d}");
         seen[mine as usize] += 1;
     });
@@ -1164,4 +1180,99 @@ start {:?} delta {:?} flags {:#x}", c.v4(0), c.v4(0x10), c.flags());
     }
     eprintln!("{areas} areas, {cases} cases, {contacts} with a contact");
     assert!(areas >= 3 && contacts > 50, "{areas} areas, {contacts} contacts");
+}
+
+const FILE2_AT: u32 = 0x0140_0000;
+const OBJ2_AT: u32 = 0x0199_0000;
+
+impl Rig {
+    /// A second built object (the floor colour map and floor kind slots hold objects of their own).
+    fn aux(&mut self, r: &mut Rng) -> Oct {
+        let n = 4 + r.below(8) as usize;
+        let polys: Vec<Poly> = (0..n).map(|_| random_poly(r, 300.0)).collect();
+        let level = r.below(4) as u32;
+        let file = build_file(r, &polys, level);
+        self.ee.write(FILE2_AT, &file);
+        let groups = 0xfu64;
+        self.ee.call(0x141500, &[OBJ2_AT as u64, FILE2_AT as u64, groups], &[], STACK).expect("FUN_00141500");
+        Oct::new(&file, groups).expect("port object")
+    }
+}
+
+/// orig 0x1434b8 (the floor kind probe) and 0x143560 (the floor query), with the optional colour map and kind
+/// slots empty, filled with one object, or both.
+#[test]
+fn orig_143560_matches_the_game() {
+    let (mut with_floor, mut kinds_seen, mut colours_seen) = (0, 0, 0);
+    rigs("0x143560", 40, 60, |rig, r, n| {
+        let aux = if n % 60 == 0 { Some(rig.aux(r)) } else { None };
+        // The aux object is rebuilt once per world and kept in a static-like slot through the loop index.
+        thread_local!(static AUX: std::cell::RefCell<Option<Oct>> = const { std::cell::RefCell::new(None) });
+        if let Some(a) = aux {
+            AUX.with(|s| *s.borrow_mut() = Some(a));
+        }
+        let aux = AUX.with(|s| s.borrow().clone()).unwrap();
+        let mut c0 = rig.collider(r);
+        c0.set_u32(coll::MOVING, 0);
+        rig.put(&c0);
+        // The floor ray fills coll +0x60 the way the walking step does.
+        rig.ee.call(0x1423d8, &[OBJ_AT as u64, COLL_AT as u64], &[], STACK).unwrap();
+        let mut c1 = rig.get();
+        c1.set_u32(coll::MOVING, 0);
+        rig.put(&c1);
+        let (colour_slot, kind_slot) = match n % 4 {
+            0 => (0, 0),
+            1 => (OBJ2_AT, 0),
+            2 => (0, OBJ2_AT),
+            _ => (OBJ2_AT, OBJ2_AT),
+        };
+        rig.ee.w32(0x35593c, colour_slot);
+        rig.ee.w32(0x355944, kind_slot);
+        rig.ee.write(OUT_AT, &[0xccu8; 0x40]);
+        rig.ee.call(0x143560, &[COLL_AT as u64, OUT_AT as u64], &[], STACK).unwrap();
+        let game: Vec<u8> = rig.ee.read::<0x40>(OUT_AT).to_vec();
+        let info = rig.oct.floor_info(&c1, (colour_slot != 0).then_some(&aux), (kind_slot != 0).then_some(&aux));
+        let f = |o: usize| f32::from_le_bytes(game[o..o + 4].try_into().unwrap());
+        let u = |o: usize| u32::from_le_bytes(game[o..o + 4].try_into().unwrap());
+        for k in 0..3 {
+            assert!(feq(f(4 * k), info.normal[k]), "case {n}: normal lane {k}: {} vs {}", f(4 * k), info.normal[k]);
+            assert!(feq(f(0x10 + 4 * k), info.opposite[k]), "case {n}: opposite lane {k}");
+        }
+        assert_eq!(u(0x24), info.poly, "case {n}: polygon");
+        assert_eq!(u(0x28), info.material, "case {n}: material");
+        assert_eq!(u(0x2c), info.colour_byte, "case {n}: colour byte");
+        assert_eq!(u(0x30), info.kind, "case {n}: kind");
+        assert_eq!(game[0x34], info.flag, "case {n}: flag");
+        // The colour words at +0x20 are the colour table's and are not ported; nothing past +0x34 may change.
+        assert!(game[0x35..0x40].iter().all(|&b| b == 0xcc), "case {n}: the original wrote past +0x34");
+        with_floor += (info.poly != 0xffff) as usize;
+        kinds_seen += (info.kind != 0) as usize;
+        colours_seen += (info.colour_byte != 0) as usize;
+    });
+    assert!(with_floor > 100 && kinds_seen > 20 && colours_seen > 20, "{with_floor} floors, {kinds_seen} kinds, {colours_seen} colour bytes");
+}
+
+/// orig 0x144548: the bounds of a polygon's three or four vertices.
+#[test]
+fn orig_144548_matches_the_game() {
+    lab_cases("0x144548", 3000, |lab, r, n| {
+        let v = rand_verts(r);
+        lab.put_verts(LAB_VERTS, &v);
+        lab.ee.write(LAB_OUT, &[0xeeu8; 32]);
+        lab.call(0x144548, &[LAB_OUT as u64, LAB_VERTS as u64]);
+        let game: FBox = std::array::from_fn(|k| lab.ee.f32_at(LAB_OUT + 4 * k as u32));
+        assert_eq!(game, fbox_of_polygon(&v.v, v.n), "case {n}");
+    });
+}
+
+/// orig 0x1443a8: a box from six floats.
+#[test]
+fn orig_1443a8_matches_the_game() {
+    static SPEC: Spec = Spec { addr: 0x1443a8, args: &[Arg::Ptr(FBOX)], floats: 6, ret: Ret::None, globals: &[], stubs: &[], nulls: false };
+    let Some(st) = fuzz(&SPEC, 2000, |c| {
+        let b = fbox(c.floats[0], c.floats[1], c.floats[2], c.floats[3], c.floats[4], c.floats[5]);
+        put6(&mut c.blocks[0], &b);
+        Out::none()
+    }) else { return };
+    eprintln!("{} cases equal, {} interpreter steps in {:.3} s", st.cases, st.steps, st.secs);
 }

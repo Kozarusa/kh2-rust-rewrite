@@ -1,4 +1,4 @@
-//! Pins the address constants of `kh2_rig::save` and the pad button order: against the app's own source (`crates/kh2-app/src/progress.rs`
+//! Pins the address constants of `kh2_rig::save` and the pad button order: against the app's own source (`crates/kh2-game-core/src/progress.rs`
 //! and the other files that name the same addresses) and against the user's save states (skipped when absent).
 
 use kh2_rig::p2s::P2s;
@@ -10,8 +10,14 @@ fn app_src() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kh2-app/src")
 }
 
+/// The game crates' source folders: the app and its core crate (with the core's `shared` types).
+fn game_srcs() -> [PathBuf; 3] {
+    let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kh2-game-core/src");
+    [app_src(), core.join("shared"), core]
+}
+
 fn progress_source() -> String {
-    std::fs::read_to_string(app_src().join("progress.rs")).expect("crates/kh2-app/src/progress.rs")
+    std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kh2-game-core/src/progress.rs")).expect("crates/kh2-game-core/src/progress.rs")
 }
 
 /// The value of `pub const NAME` inside `pub mod <module>` of `src` (a plain hex or decimal literal, underscores allowed).
@@ -30,7 +36,7 @@ fn app_const(src: &str, module: &str, name: &str) -> u64 {
 /// Every `.rs` file of the app, lowercased and lossy (one file holds binary bytes).
 fn app_text() -> String {
     let mut all = String::new();
-    for e in std::fs::read_dir(app_src()).unwrap() {
+    for e in game_srcs().iter().flat_map(|d| std::fs::read_dir(d).unwrap()) {
         let p = e.unwrap().path();
         if p.extension().is_some_and(|x| x == "rs") {
             all.push_str(&String::from_utf8_lossy(&std::fs::read(p).unwrap()).to_lowercase());

@@ -3328,6 +3328,10 @@ dependencies = [
 [[package]]
 name = "kh2-ee"
 version = "0.1.0"
+dependencies = [
+ "kh2-archive",
+ "serde_json",
+]
 
 [[package]]
 name = "kh2-fx"

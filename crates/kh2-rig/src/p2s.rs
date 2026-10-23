@@ -20,6 +20,8 @@ const SIG_CENTRAL: u32 = 0x0201_4b50;
 const SIG_LOCAL: u32 = 0x0403_4b50;
 const METHOD_STORED: u16 = 0;
 const METHOD_ZSTD: u16 = 93;
+/// Most bytes reserved before any data has arrived; the buffer grows beyond it only as bytes are decoded.
+const PREALLOC_MAX: usize = 64 << 20;
 
 /// One entry of the zip's central directory.
 #[derive(Clone, Debug)]
@@ -95,8 +97,13 @@ impl Zip {
             METHOD_STORED => raw.to_vec(),
             METHOD_ZSTD => {
                 let mut dec = ruzstd::decoding::StreamingDecoder::new(raw).map_err(|e| format!("zstd: {e}"))?;
-                let mut out = Vec::with_capacity(e.size);
-                dec.read_to_end(&mut out).map_err(|e| format!("zstd: {name}: {e}"))?;
+                // Never produce more than the directory declares (one byte more is enough to tell), and never reserve more than
+                // PREALLOC_MAX up front: a lying directory cannot make the reader allocate gigabytes.
+                let mut out = Vec::with_capacity(e.size.min(PREALLOC_MAX));
+                (&mut dec).take(e.size as u64 + 1).read_to_end(&mut out).map_err(|e| format!("zstd: {name}: {e}"))?;
+                if out.len() > e.size {
+                    return Err(format!("zip: '{name}' decompresses past its declared {} bytes", e.size));
+                }
                 out
             }
             m => return Err(format!("zip: '{name}' uses compression method {m}; only stored (0) and zstd (93) are read")),
@@ -148,6 +155,18 @@ pub(crate) mod testzip {
             let hdr = last | ((b.len() as u32) << 3);
             f.extend_from_slice(&hdr.to_le_bytes()[..3]);
             f.extend_from_slice(b);
+        }
+        f
+    }
+
+    /// A zstd frame of `blocks` RLE blocks, each repeating `byte` 64 KiB times: a few bytes that expand to `blocks * 64 KiB`.
+    pub fn zstd_rle(byte: u8, blocks: usize) -> Vec<u8> {
+        let mut f = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x58];
+        for i in 0..blocks {
+            let last = u32::from(i + 1 == blocks);
+            let hdr = last | (1 << 1) | (0x1_0000u32 << 3);
+            f.extend_from_slice(&hdr.to_le_bytes()[..3]);
+            f.push(byte);
         }
         f
     }
@@ -220,6 +239,28 @@ mod tests {
         let z = Zip::parse(build(&[("d", 8, vec![0; 4], 9), ("s", 0, vec![1; 4], 5)])).unwrap();
         assert!(z.read("d").unwrap_err().contains("method 8"));
         assert!(z.read("s").unwrap_err().contains("directory says 5"));
+    }
+
+    #[test]
+    fn an_rle_bomb_stops_at_the_declared_size() {
+        // 160 blocks of 64 KiB = 10 MiB from about 650 bytes; the directory declares 1000.
+        let bomb = zstd_rle(0, 160);
+        assert!(bomb.len() < 1000);
+        let z = Zip::parse(build(&[("bomb", METHOD_ZSTD, bomb.clone(), 1000)])).unwrap();
+        assert!(z.read("bomb").unwrap_err().contains("past its declared 1000"));
+        // Declared exactly right it decodes; one byte short it is refused.
+        let n = 160 * 0x1_0000;
+        assert_eq!(Zip::parse(build(&[("b", METHOD_ZSTD, bomb.clone(), n)])).unwrap().read("b").unwrap().len(), n);
+        assert!(Zip::parse(build(&[("b", METHOD_ZSTD, bomb, n - 1)])).unwrap().read("b").is_err());
+    }
+
+    #[test]
+    fn a_huge_declared_size_does_not_preallocate_it() {
+        assert_eq!(0x0200_0000usize.min(PREALLOC_MAX), 0x0200_0000);
+        assert_eq!(usize::MAX.min(PREALLOC_MAX), 64 << 20);
+        // A 4 GiB declaration over a tiny frame is a size mismatch, found without reserving 4 GiB (the test would abort otherwise).
+        let z = Zip::parse(build(&[("h", METHOD_ZSTD, zstd_raw(&[1, 2, 3]), 0xffff_fff0)])).unwrap();
+        assert!(z.read("h").unwrap_err().contains("directory says"));
     }
 
     #[test]

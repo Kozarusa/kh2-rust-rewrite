@@ -227,15 +227,14 @@ impl StatusBlock {
     /// orig 0x1a0030
     pub fn store_party(&self, saved: u32, host: &mut impl StatusHost) -> u32 {
         let mut saved = saved;
-        if self.record() != 0 {
-            if let Some(r) = host.party(self.record()) {
-                r.set_hp(self.hp() as u8);
-                r.set_hp_max(self.hp_max() as u8);
-                r.set_mp(self.mp() as u8);
-                r.set_mp_max(self.mp_max() as u8);
-                r.set_timer_c((f32::from_bits(self.timer_1bc_bits()) / TIMER_SCALE) as i32 as u8);
-                r.set_timer_d((f32::from_bits(self.charge_timer_bits()) / TIMER_SCALE) as i32 as u8);
-            }
+        let record = self.record();
+        if let Some(r) = host.party(record).filter(|_| record != 0) {
+            r.set_hp(self.hp() as u8);
+            r.set_hp_max(self.hp_max() as u8);
+            r.set_mp(self.mp() as u8);
+            r.set_mp_max(self.mp_max() as u8);
+            r.set_timer_c((f32::from_bits(self.timer_1bc_bits()) / TIMER_SCALE) as i32 as u8);
+            r.set_timer_d((f32::from_bits(self.charge_timer_bits()) / TIMER_SCALE) as i32 as u8);
         }
         if self.drive_store() != 0 {
             if let Some(d) = host.drive(self.drive_store()) {

@@ -13,3 +13,4 @@ pub mod area_jump;
 pub mod reaction;
 pub mod summon;
 pub mod party;
+pub mod event;

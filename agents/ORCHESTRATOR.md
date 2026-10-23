@@ -72,7 +72,7 @@ DEVIATIONS, README, sheets. Keep context lean: read verdicts and report blocks, 
    `git ls-files | Select-String '\.(png|wav|bin|iso|img|idx|elf|vsb|seb|wd|tm2|mdlx|apdx|pax|mset)$'`;
    `git grep -nE '\b(iVar|uVar|lVar|puVar|piVar|pcVar|bVar|param_)[0-9]+\b' -- .`; `git grep -nE '[A-Z]:\\Users' -- tools agents scenarios`.
 4. `cargo run -p kh2 -- preflight`; `cargo run -p kh2 -- validate; git checkout sheets/systems.json`.
-5. Bookkeeping (O5) for every merged WP, CHANGELOG heading for the shift; cleanup (O6), leftovers check; main and push (O7).
+5. Bookkeeping (O5) for every merged WP, `docs/changelog/shift-NN.md` for the shift (and its line in `docs/CHANGELOG.md`); cleanup (O6), leftovers check; main and push (O7).
 6. Rewrite HANDOFF.md so a new orchestrator can take over at once (A15). No chat message.
 
 ## 6. Pitfalls

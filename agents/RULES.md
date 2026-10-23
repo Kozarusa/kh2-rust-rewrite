@@ -1,11 +1,11 @@
 # kh2-rs RULES: the user's standing rules (single source of truth)
 
-Precedence: the user's latest message > this file > `local/PLAN.md` (the master plan; `docs/ROADMAP.md` once moved) > `local/HANDOFF.md`
+Precedence: the user's latest message > this file > `docs/ROADMAP.md` (the master plan) > `local/HANDOFF.md`
 > `agents/ORCHESTRATOR.md` > `agents/WORKER.md` > briefs. Other files link here instead of restating a rule. Each rule carries the date it
 was given (or "date unknown"). Only the user changes this file's rules; an orchestrator may fix typos and paths.
 
 Status: section B confirmed by the user 2026-10-15; section C and the model table (B2) confirmed 2026-10-22 ("I confirm RULES changes
-C1-C6 and the model table in local/PLAN.md"; C7 with "go ahead" the same day). Moved from `local/RULES.md` to `agents/` (tracked) in
+C1-C6 and the model table in local/PLAN.md", now docs/ROADMAP.md; C7 with "go ahead" the same day). Moved from `local/RULES.md` to `agents/` (tracked) in
 Phase 0 (WP-P0A, 2026-10-22).
 
 ## A. Agreed rules
@@ -61,8 +61,10 @@ Phase 0 (WP-P0A, 2026-10-22).
 - A16. Anything only the user can resolve goes in "Needs your attention", and is put at the top of the next report the user asks for.
   Never wait for an answer; skip to the next WP.
 - A20. (2026-10-22, user) Full consent while the user is away: decide project questions yourself, label each decision ("decided:") in the
-  report or HANDOFF, never wait for an answer. This covers opening the game, writing save files and save states, and driving PCSX2. It
-  does not relax A3-A6, A9-A11.
+  report or HANDOFF, never wait for an answer. The user's words: "For now treat it as though I'm not going to be at my pc, you are
+  permitted to do whatever it takes, and generally outside of that i give my full consent and permission to this project by default
+  already". [inferred by the orchestrator: this covers opening the game, writing save files and save states, and driving PCSX2, and does
+  not relax A3-A6, A9-A11.]
 
 ## B. Resolved contradictions (confirmed by the user 2026-10-15; B2, B6, B8 amended 2026-10-22)
 
@@ -80,10 +82,14 @@ Phase 0 (WP-P0A, 2026-10-22).
   | mechanical packages (ledger checks, doc splitting, survey and accept sweeps, rig runs) | Haiku 5.5 |
   | never | Fable (A6) |
 
+  Why (PLAN section 8): the planner and spec packages need the strongest model for hard code reading; the orchestrator's judgement is
+  mostly table-driven; ports from a good spec and reviews do not need Opus; mechanical packages need no judgement.
+  Concurrency: one open ladder step with up to 3 port workers on disjoint clusters, plus one spec worker for the next step, plus
+  reviewers; raise to 4 or 5 port workers only after measuring cold and warm builds (B5 still caps the total).
   If the Opus retry fails, log it in "Needs your attention" and move on. A worker that only hit its context limit is respawned on the
   same model (not a failure).
-- B3. First step of a new orchestrator session: spawn a Plan agent on `opus` (medium or high effort) with HANDOFF and the files it
-  names, and follow its plan.
+- B3. First step of a new orchestrator session: spawn a Plan agent on `opus` (medium or high effort) with `agents/RULES.md`,
+  `local/HANDOFF.md`, `agents/ORCHESTRATOR.md`, `agents/DEVIATIONS.md`, `docs/ROADMAP.md` and the files HANDOFF names, and follow its plan.
 - B4. Usage: ignore the weekly limit. At 90% used of the 5-hour window do WRAP UP (stop dispatching, let workers commit and report,
   review and merge what passes, bookkeeping, handoff) and do not resume by yourself.
 - B5. Worker count (2026-10-19, user): up to floor(free GB on drive C / 22) workers running at once. Reviewers do not count.
@@ -98,6 +104,9 @@ Phase 0 (WP-P0A, 2026-10-22).
   without a reviewer.
 
 ## C. Phase 0 rules (confirmed by the user 2026-10-22)
+
+The confirmed wording is `docs/ROADMAP.md` section 9 (the user: "I confirm RULES changes C1-C6 and the model table in local/PLAN.md";
+C7 with "go ahead"). The lines below are condensed from it; where they differ, section 9 wins.
 
 - C1. Sequential ladder: exactly one ladder step (PLAN section 5) is open for code at a time; a second lane writes specs for the next step
   only. A step closes only through its exit gate (G1 ledger, G2 hosts, G3 rig, G4 reports, G5 doc). New user requests and P0 reports

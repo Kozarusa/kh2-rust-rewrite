@@ -1,7 +1,6 @@
 # kh2-rs documentation index
 
-How the documents are organized: one folder per system under `docs/systems/`, in the order of the ladder (`local/PLAN.md` section 5, later
-`docs/ROADMAP.md`). Each folder starts with `contract.md` (at most about 150 lines: what the system does, its state with owners, entry points with
+How the documents are organized: one folder per system under `docs/systems/`, in the order of the ladder (`docs/ROADMAP.md` section 5). Each folder starts with `contract.md` (at most about 150 lines: what the system does, its state with owners, entry points with
 original addresses, open gaps, and a table of the detail files); the detail files are the long evidence and status notes, split by subject.
 Agents read the contract first and open a detail file only for the part they need. Section numbers in references ("section 20.14") are the old
 chapter numbers that still stand in the headings; the contract table says which file holds which.

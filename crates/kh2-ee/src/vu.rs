@@ -233,13 +233,13 @@ impl Ee {
                 0x04..=0x07 => self.fmac(dest, v, map(&|k| sv[k] - bcv)),
                 0x08..=0x0B => self.fmac(dest, v, map(&|k| av[k] + sv[k] * bcv)),
                 0x0C..=0x0F => self.fmac(dest, v, map(&|k| av[k] - sv[k] * bcv)),
-                0x10..=0x13 => self.vset(fd, dest, map(&|k| s[k].max(bc))),
-                0x14..=0x17 => self.vset(fd, dest, map(&|k| s[k].min(bc))),
+                0x10..=0x13 => self.vset(fd, dest, map(&|k| sv[k].max(bcv))),
+                0x14..=0x17 => self.vset(fd, dest, map(&|k| sv[k].min(bcv))),
                 0x18..=0x1B => self.fmac(dest, v, map(&|k| sv[k] * bcv)),
                 0x1C => self.fmac(dest, v, map(&|k| sv[k] * qv)),
-                0x1D => self.vset(fd, dest, map(&|k| s[k].max(i))),
+                0x1D => self.vset(fd, dest, map(&|k| sv[k].max(iv))),
                 0x1E => self.fmac(dest, v, map(&|k| sv[k] * iv)),
-                0x1F => self.vset(fd, dest, map(&|k| s[k].min(i))),
+                0x1F => self.vset(fd, dest, map(&|k| sv[k].min(iv))),
                 0x20 => self.fmac(dest, v, map(&|k| sv[k] + qv)),
                 0x21 => self.fmac(dest, v, map(&|k| av[k] + sv[k] * qv)),
                 0x22 => self.fmac(dest, v, map(&|k| sv[k] + iv)),
@@ -251,11 +251,11 @@ impl Ee {
                 0x28 => self.fmac(dest, v, map(&|k| sv[k] + tv[k])),
                 0x29 => self.fmac(dest, v, map(&|k| av[k] + sv[k] * tv[k])),
                 0x2A => self.fmac(dest, v, map(&|k| sv[k] * tv[k])),
-                0x2B => self.vset(fd, dest, map(&|k| s[k].max(t[k]))),
+                0x2B => self.vset(fd, dest, map(&|k| sv[k].max(tv[k]))),
                 0x2C => self.fmac(dest, v, map(&|k| sv[k] - tv[k])),
                 0x2D => self.fmac(dest, v, map(&|k| av[k] - sv[k] * tv[k])),
                 0x2E => self.fmac(dest & 0xE, v, [av[0] - sv[1] * tv[2], av[1] - sv[2] * tv[0], av[2] - sv[0] * tv[1], 0.0]),
-                0x2F => self.vset(fd, dest, map(&|k| s[k].min(t[k]))),
+                0x2F => self.vset(fd, dest, map(&|k| sv[k].min(tv[k]))),
                 0x30 => self.vi_write(fd, self.vi_read(fs).wrapping_add(self.vi_read(ft))),
                 0x31 => self.vi_write(fd, self.vi_read(fs).wrapping_sub(self.vi_read(ft))),
                 0x32 => {
@@ -296,7 +296,7 @@ impl Ee {
             }
             0x18..=0x1B => self.fmac(dest, a, map(&|k| sv[k] * bcv)),
             0x1C => self.fmac(dest, a, map(&|k| sv[k] * qv)),
-            0x1D => self.vset(ft, dest, map(&|k| s[k].abs())),
+            0x1D => self.vset(ft, dest, map(&|k| sv[k].abs())),
             0x1E => self.fmac(dest, a, map(&|k| sv[k] * iv)),
             0x1F => {
                 let wv = t[3].abs();
@@ -506,6 +506,20 @@ mod tests {
         e.vf[1] = [1.0; 4];
         e.execute(s1(0xF, 2, 1, 3, 0x2B)).unwrap(); // VMAX
         assert_eq!(e.vi[17], 0, "VMAX leaves the MAC flag alone");
+    }
+
+    #[test]
+    fn vmax_vmini_vabs_read_exponent_255_operands_as_the_largest_finite_value() {
+        let mut e = vu();
+        let nan = f32::from_bits(0x7FC0_0000);
+        e.vf[1] = [f32::INFINITY, f32::NEG_INFINITY, nan, 1.0];
+        e.vf[2] = [1.0, 1.0, 1.0, 1.0];
+        e.execute(s1(0xF, 2, 1, 3, 0x2B)).unwrap(); // VMAX
+        assert_eq!(e.vf[3], [f32::MAX, 1.0, f32::MAX, 1.0], "inf and NaN read as +max, -inf as -max");
+        e.execute(s1(0xF, 2, 1, 3, 0x2F)).unwrap(); // VMINI
+        assert_eq!(e.vf[3], [1.0, -f32::MAX, 1.0, 1.0]);
+        e.execute(s2(0xF, 4, 1, 0x1D)).unwrap(); // VABS
+        assert_eq!(e.vf[4], [f32::MAX, f32::MAX, f32::MAX, 1.0], "abs of exponent 255 is max, never inf or NaN");
     }
 
     #[test]

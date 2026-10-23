@@ -331,7 +331,7 @@ impl Ee {
                 let mut hi = [0u64; 2];
                 for (k, i) in [0usize, 2].into_iter().enumerate() {
                     let (x, y) = (wa[i], wb[i]);
-                    let (q, r) = if y == 0 { (u32::MAX, x) } else { (x / y, x % y) };
+                    let (q, r) = (x.checked_div(y).unwrap_or(u32::MAX), x.checked_rem(y).unwrap_or(x));
                     lo[k] = sx32(q);
                     hi[k] = sx32(r);
                 }

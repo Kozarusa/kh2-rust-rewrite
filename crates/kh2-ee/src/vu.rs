@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(e.vf[3].map(f32::to_bits), [0x3F92_3456; 4]);
         // VRNEXT: R = ((R << 1) ^ bit4 ^ bit22) & 0x7FFFFF | 0x3F800000. 0x123456: bit 4 = 1, bit 22 = 0.
         e.execute(s2(0b1000, 4, 0, 0x40)).unwrap(); // VRNEXT.x vf4, R
-        let expect = (((0x12_3456u32 << 1) ^ 1 ^ 0) & 0x7F_FFFF) | 0x3F80_0000;
+        let expect = (((0x12_3456u32 << 1) ^ 1) & 0x7F_FFFF) | 0x3F80_0000;
         assert_eq!(e.vi[20], expect);
         assert_eq!(e.vf[4][0].to_bits(), expect, "the new value is delivered");
         assert_eq!(e.vf[4][1], 0.0, "only the dest lane is written");

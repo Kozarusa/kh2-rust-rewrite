@@ -917,7 +917,7 @@ mod tests {
     /// The marker follows the controller's mode and the picked shape's byte (FUN_0019bbc0 groups 5 / 1 in mode 1, 0x1b / 0x17 in mode 2).
     #[test]
     fn marker_groups_follow_mode_and_shape_byte() {
-        let g = |mode2, shape| crate::hud::hud_target::marker_group(marker_mode(mode2), shape);
+        let g = |mode2, shape| crate::shared::hud::marker_group(marker_mode(mode2), shape);
         assert_eq!((g(false, 0), g(false, 1), g(true, 0), g(true, 3)), (Some(5), Some(1), Some(0x1b), Some(0x17)));
     }
 

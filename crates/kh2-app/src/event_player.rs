@@ -33,7 +33,7 @@ use crate::area::{app_yaw, game_to_app, AreaRecord};
 use crate::assets::{AreaPart, Disc};
 use crate::camera::rules::View;
 use crate::camera::CamEvent;
-use crate::hud::{HudNode, HudScene, Label};
+use crate::{hud_gfx::Node as HudNode, hud_gfx::HudScene, hud_text::Label};
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::SCALE;
 
@@ -768,7 +768,7 @@ fn step(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    mut msg: Option<ResMut<crate::hud::hud_msgwin::ScriptWindow>>,
+    mut msg: Option<ResMut<crate::shared::hud::ScriptWindow>>,
     children: Query<&Children>,
     mesh_q: Query<(), With<Mesh3d>>,
 ) {

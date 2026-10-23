@@ -259,12 +259,12 @@ pub fn pay_defeats(
     data: Option<Res<crate::data::GameData>>,
     tables: Option<Res<ExperienceTables>>,
     mut progress: Option<ResMut<Progress>>,
-    abilities: Option<Res<crate::abilities::Abilities>>,
-    mut sora: Query<&mut crate::sora::Sora>,
-    enemies: Query<(&crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy_ai::AiBrain>)>,
+    abilities: Option<Res<crate::shared::abilities::Abilities>>,
+    mut sora: Query<&mut crate::shared::sora::Sora>,
+    enemies: Query<(&crate::shared::enemy::Enemy, &GlobalTransform, Option<&crate::shared::enemy::AiBrain>)>,
     bodies: Query<(&crate::skel::Animator, &GlobalTransform)>,
     (mut log, area, mut shown, mut fx): (
-        ResMut<crate::prize::ObtainedLog>,
+        ResMut<crate::shared::prize::ObtainedLog>,
         Option<Res<crate::assets::CurrentArea>>,
         MessageWriter<ExperienceGained>,
         MessageWriter<crate::fx::StartBoundSystemEffect>,
@@ -274,7 +274,7 @@ pub fn pay_defeats(
         defeats.clear();
         return;
     };
-    let place = area.as_ref().map_or((0, 0), |a| crate::prize::place_bytes(&a.name));
+    let place = area.as_ref().map_or((0, 0), |a| crate::shared::prize::place_bytes(&a.name));
     for d in defeats.read() {
         // The row the script's `set_obj_param` left the status block on, else the kind's.
         let enmp = enemies.get(d.victim).ok().and_then(|(_, _, b)| b.map(|b| b.enmp())).unwrap_or(d.enmp);
@@ -312,7 +312,7 @@ pub fn pay_defeats(
                 );
                 if l.ability != 0 {
                     let key = progress.items().get(l.ability).is_some_and(|i| i.is_key());
-                    log.push(crate::prize::obtained_record(place, l.ability, key, l.given, l.member as u8, 3));
+                    log.push(crate::shared::prize::obtained_record(place, l.ability, key, l.given, l.member as u8, 3));
                 }
             }
             if let (Some(s), true) = (sora.single().ok(), paid.levels.iter().any(|l| l.member == SORA)) {
@@ -323,7 +323,7 @@ pub fn pay_defeats(
                     bodies
                         .get(e.body)
                         .ok()
-                        .and_then(|(a, g)| crate::prize::shape_point(a, g, POPUP_SHAPE))
+                        .and_then(|(a, g)| crate::fx::body_shape_point(a, g, POPUP_SHAPE))
                         .map_or(gt.translation(), |p| p * crate::SCALE)
                 });
                 if let Some(at) = at {
@@ -338,7 +338,7 @@ pub fn pay_defeats(
             for part in &paid.parts {
                 for &(item, given) in &part.gifts {
                     let key = progress.items().get(item).is_some_and(|i| i.is_key());
-                    log.push(crate::prize::obtained_record(place, item, key, given, part.member as u8, 4));
+                    log.push(crate::shared::prize::obtained_record(place, item, key, given, part.member as u8, 4));
                 }
                 if let (SORA, Ok(mut s)) = (part.member, sora.single_mut()) {
                     s.hp = (s.hp + i32::from(part.hp)).min(i32::from(progress.sora().hp_max));
@@ -1932,8 +1932,7 @@ impl Progress {
     }
 
     /// Test aid: a record's maximum HP and MP.
-    #[cfg(test)]
-    pub(crate) fn set_member_maxima(&mut self, member: u16, hp_max: u8, mp_max: u8) {
+    pub fn set_member_maxima(&mut self, member: u16, hp_max: u8, mp_max: u8) {
         if let Some(r) = Self::member_off(member) {
             self.set_u8(r + rec::HP_MAX, hp_max);
             self.set_u8(r + rec::MP_MAX, mp_max);
@@ -1941,8 +1940,7 @@ impl Progress {
     }
 
     /// Test aid: an ability into the first empty slot of a member's list (`put_ability` by member id).
-    #[cfg(test)]
-    pub(crate) fn give_ability(&mut self, member: u16, id: u16, equipped: bool) {
+    pub fn give_ability(&mut self, member: u16, id: u16, equipped: bool) {
         if let Some(r) = Self::member_off(member) {
             self.put_ability(r, id, equipped);
         }
@@ -2207,7 +2205,7 @@ impl Progress {
                 self.set_u16(r + rec::WEAPONS, KINGDOM_KEY);
                 added.push(format!("Kingdom Key (item {KINGDOM_KEY}) equipped"));
             }
-            let guard_id = crate::abilities::id::GUARD;
+            let guard_id = crate::shared::abilities::id::GUARD;
             if guard && !self.sora().abilities.iter().any(|&(id, _)| id == guard_id) {
                 self.put_ability(r, guard_id, true);
                 added.push(format!("Guard (item {guard_id}) equipped"));
@@ -3665,13 +3663,13 @@ mod tests {
         let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
-        let chains = crate::prize::GrowthChains([[0; 5], [0, 94, 95, 96, 97], [0, 98, 99, 100, 101], [0; 5], [0; 5]]);
+        let chains = crate::shared::prize::GrowthChains([[0; 5], [0, 94, 95, 96, 97], [0, 98, 99, 100, 101], [0; 5], [0; 5]]);
         let mut arr = [0u16; 64];
         arr[0] = 82 | 0x8000;
         let step = |p: &mut Progress, arr: &mut [u16; 64], form: u8, level: u8| {
             let old = if level == 0 { chains.at(form - 1, 4) } else { chains.at(form, level - 1) };
             let got = p.upgrade_ability(SORA, old, chains.at(form, level));
-            crate::prize::growth_upgrade(arr, &chains, form, level);
+            crate::shared::prize::growth_upgrade(arr, &chains, form, level);
             let words: Vec<u16> = (0..64).map(|i| p.u16_at(r + rec::ABILITIES + 2 * i)).collect();
             assert_eq!(words, arr.to_vec(), "form {form} level {level}");
             got
@@ -3699,7 +3697,7 @@ mod tests {
         use kh2_ee::Ee;
         const STACK: u32 = 0x01ff_0000;
         const LIST: u32 = 0x0180_0000;
-        const CHAINS: u32 = crate::prize::GROWTH_CHAINS;
+        const CHAINS: u32 = crate::shared::prize::GROWTH_CHAINS;
         let Some(mut tb) = tables() else { return };
         let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
         let mut ee = Ee::new();
@@ -4874,7 +4872,7 @@ mod tests {
         assert_eq!(p.spell_levels(), [1, 1, 1, 1, 0, 0]);
         assert_eq!((1..=5).map(|f| p.owns_form(f)).collect::<Vec<_>>(), [true, true, true, true, false]);
         assert_eq!(p.sora().weapons[0], KINGDOM_KEY);
-        assert!(p.sora().abilities.contains(&(crate::abilities::id::GUARD, true)));
+        assert!(p.sora().abilities.contains(&(crate::shared::abilities::id::GUARD, true)));
         assert_eq!(p.dodge_roll, 1, "the baseline gives Sora the Dodge Roll");
         // Valor, Master and Final took the three spare Kingdom Keys (FUN_001a2010).
         assert_eq!((1..=4).map(|f| p.form(f).weapon).collect::<Vec<_>>(), [KINGDOM_KEY, 0, KINGDOM_KEY, KINGDOM_KEY]);

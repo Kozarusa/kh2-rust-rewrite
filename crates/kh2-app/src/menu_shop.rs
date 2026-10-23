@@ -32,6 +32,7 @@ use crate::menu_pages::Exe;
 use crate::menu_text::{Label, MenuText};
 use crate::progress::{Moogle, Progress};
 use crate::schedule::Pause;
+pub use crate::shared::reaction::ShopRequest;
 
 /// The message ids of the shop pages (`msg/us/sys.bar`): the question's rows (`FUN_00261bf8`: row 0 = 0x8ad0 "No",
 /// row 1 = 0x8acf "Yes"; the cursor starts on row 0).
@@ -63,14 +64,6 @@ pub mod snd {
     pub const BACK: u32 = 0x02;
     pub const DEAL: u32 = 0x26;
 }
-
-/// The events `FUN_00197b70` sends to menu kind 4 (`FUN_0024f0b8(4, event)`).
-pub fn opens_shop(event: u32) -> bool {
-    matches!(event, 0x13 | 0x66..=0x75 | 0x83..=0x85 | 0x8a)
-}
-
-/// The Execute value of the rows whose accept fires their event (`FUN_00177b18` case 0x7f).
-pub const EXECUTE_EVENT: u16 = 0x7f;
 
 /// One record of the shop file (0x18 bytes from +0x10).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -583,10 +576,6 @@ pub fn deal(p: &mut Progress, sell: bool, d: &Deal) -> u32 {
 }
 
 // --- the scene ---------------------------------------------------------------------------------------
-
-/// A shop the next frame opens (`FUN_0024f0b8(4, event)`), set by the reaction accept.
-#[derive(Resource, Default)]
-pub struct ShopRequest(pub Option<u16>);
 
 #[derive(Default)]
 struct Nodes {
@@ -3127,6 +3116,7 @@ pub mod synth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::reaction::{opens_shop, EXECUTE_EVENT};
 
     fn ware(id: u16, kind: u8, buy: u16, sell: u16) -> Ware {
         Ware { id, kind, name: 0, buy, sell, rank: 0, flag1: 0 }

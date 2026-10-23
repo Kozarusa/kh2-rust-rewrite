@@ -29,7 +29,7 @@ use kh2_ard::parse_event;
 use crate::assets::Disc;
 use crate::camera::CamEvent;
 use crate::camera::rules::View;
-use crate::intro::{Shot, Track};
+use crate::shared::event::{Shot, Track};
 use crate::limit_script::LimitEvent;
 use crate::schedule::Sim;
 use crate::sora::Sora;
@@ -144,7 +144,7 @@ fn run(disc: Option<Res<Disc>>, mut events: MessageReader<LimitEvent>, sora: Que
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intro::{Channels, Cut, Key};
+    use crate::shared::event::{Channels, Cut, Key};
 
     fn constant(v: f32) -> Vec<Key> {
         vec![Key { kind: 0, time: 0, value: v, tin: 0.0, tout: 0.0 }]

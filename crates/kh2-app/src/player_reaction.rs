@@ -35,7 +35,7 @@ use crate::combat::{live_attacks, Fighter, ReactionData};
 use crate::data::GameData;
 use crate::enemy::Enemy;
 use crate::fx::StartSystemEffect;
-use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd};
+use crate::shared::reaction::{PlayerReaction, PlayerReactionCmd};
 use crate::reaction_rules::{self as rules, ClashActor, ClashReaction, ExeConsts, Push, ReflectFields, RECOIL_BLEND};
 use crate::schedule::Sim;
 use crate::skel::Animator;

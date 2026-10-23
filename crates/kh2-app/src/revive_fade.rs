@@ -20,9 +20,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin, MeshMaterial2d};
-
-/// The fade alpha that is full: 0x80 is 1.0 on the GS, and the end value `FUN_0014a818` stores.
-pub const FULL: u32 = 0x80;
+pub use crate::shared::summon::FULL;
 
 /// `FUN_0014a710`'s blend word for the colour (`white` is the flag stored at +0xf4).
 #[cfg(test)]
@@ -55,23 +53,6 @@ pub fn decode_blend(word: u64) -> Option<Blend> {
     }
 }
 
-/// The alpha byte after `calls` runs of `FUN_0014a818` in state 3 (the fade out), for a fade of `length` (the command's +6):
-/// `FUN_0014a710` makes the counter `2 * length` and the ratio `128 / counter` (`DAT_00379130`); each run takes `DAT_00356f44` (1.0) off
-/// the counter and stores `0x80 - (char)(int)(ratio * counter)`, and when the counter is 0 or less it stores 0x80 and the state becomes 4.
-/// Single-precision, as the game computes it.
-pub fn alpha_after(calls: u32, length: u32) -> u32 {
-    let counter0 = (length.max(1) * 2) as f32;
-    let ratio = 128.0_f32 / counter0;
-    let counter = counter0 - calls as f32;
-    if calls == 0 {
-        return 0;
-    }
-    if counter <= 0.0 {
-        return FULL;
-    }
-    FULL - ((ratio * counter) as i32).clamp(0, FULL as i32) as u32
-}
-
 /// The quad's colour for an alpha byte: white, with the alpha as the blend factor (0x80 = 1.0).
 pub fn color(alpha: u32) -> [f32; 4] {
     [1.0, 1.0, 1.0, alpha.min(FULL) as f32 / FULL as f32]
@@ -88,7 +69,7 @@ pub struct ReviveFadeMaterial {
 impl Material2d for ReviveFadeMaterial {
     fn fragment_shader() -> ShaderRef {
         // The HUD's textured, vertex-coloured shader (embedded by `hud_gfx`).
-        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/hud_quad.wgsl").into())
+        ShaderRef::Path(crate::hud_gfx::HUD_QUAD_SHADER.into())
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -148,7 +129,7 @@ pub fn spawn(commands: &mut Commands, images: &mut Assets<Image>, meshes: &mut A
         Transform::from_xyz(256.0, -224.0, 60.0),
         Visibility::Hidden,
         NoFrustumCulling,
-        RenderLayers::layer(crate::hud::WIPE_LAYER),
+        RenderLayers::layer(crate::hud_gfx::WIPE_LAYER),
     ));
 }
 
@@ -163,6 +144,7 @@ pub fn paint(alpha: u32, quad: &Mesh2d, vis: &mut Visibility, meshes: &mut Asset
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::summon::alpha_after;
 
     /// The two words `FUN_0014a710` writes decode to the two blends: 0x44 alpha, 0x48 additive; white takes the additive one.
     #[test]

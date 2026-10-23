@@ -14,6 +14,7 @@ use bevy::prelude::*;
 
 use super::hud_gfx::{Edge, HudScene, Node};
 use crate::sora::Sora;
+pub use crate::shared::hud::{DriveGauge, DriveMode, MpRecharge};
 
 /// Sequence pair order in the world's field file: fiel, gaug, mapj, miss.
 pub const GAUG: usize = 1;
@@ -108,52 +109,9 @@ impl PanelEvent {
 #[derive(Resource, Default)]
 pub struct FaceFile(pub Option<usize>);
 
-/// Sora's MP recharge state (player +0x1bc progress and +0x1c0 total, floats). The MP bar switches to its
-/// recharge look while `total > 0`: a full-size back bar and a fill that grows with `progress / total`
-/// (0x157628, 0x1556a0). The player module fills it in; `KH2_HUDMPRECHARGE=<progress>:<total>` shows it.
-#[derive(Resource, Clone, Copy, Debug, Default)]
-pub struct MpRecharge {
-    pub progress: f32,
-    pub total: f32,
-}
-
 /// MP bar groups (label, back, fill, cap): normal and recharge sets (0x157628).
 const MP_NORMAL: [usize; 4] = [116, 119, 115, 120];
 const MP_RECHARGE: [usize; 4] = [110, 113, 109, 114];
-
-/// Which art the drive gauge uses (the player's mode byte at +0x1af in the game: 0 normal, 2 and 3 the
-/// two form variants, 4 locked behind chains).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DriveMode {
-    #[default]
-    Normal,
-    FormA,
-    FormB,
-    Locked,
-}
-
-/// Game-state input of the drive gauge. The player module fills it in; `KH2_HUDDRIVE=<points>:<max>:<fraction>[:mode]`
-/// (mode 0 normal, 2, 3 or 4) shows it by hand. `enabled` is false until the player has a drive gauge.
-#[derive(Resource, Clone, Debug)]
-pub struct DriveGauge {
-    pub enabled: bool,
-    pub mode: DriveMode,
-    /// Whole drive points (player +0x1b1) and the most the gauge holds (+0x1b2).
-    pub points: u8,
-    pub max: u8,
-    /// Progress to the next point, 0 to 99 (+0x1b0).
-    pub fraction: u8,
-    /// Modes 2 and 3: the fill inside the current segment, 0.0 to 1.0 (`FUN_00155bf0`: the timer's
-    /// remainder over the segment size, full on the last segment of a full timer). `None` uses
-    /// `fraction`. The summon module fills it in mode 3.
-    pub time_fill: Option<f32>,
-}
-
-impl Default for DriveGauge {
-    fn default() -> DriveGauge {
-        DriveGauge { enabled: false, mode: DriveMode::Normal, points: 0, max: 5, fraction: 0, time_fill: None }
-    }
-}
 
 /// Digit groups by drive points for the three art sets (executable tables 0x3589c0, 0x3589e8,
 /// 0x358998), read at run time.

@@ -40,6 +40,8 @@ use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
+pub use crate::reaction_cmd::{part_offer, PartOffer, Talk, TalkRun};
+pub use crate::shared::reaction::{EXECUTE_EXAMINE, EXECUTE_TALK};
 
 /// `00objentry` ObjectType of the townspeople (FUN_0016e8c0 case 0xf -> FUN_00189858).
 pub const OBJECT_TOWNSPERSON: u8 = 15;
@@ -56,7 +58,7 @@ impl Plugin for NpcPlugin {
         app.init_resource::<NpcAssets>()
             .init_resource::<NpcSpawned>()
             .init_resource::<Talk>()
-            .init_resource::<crate::hud::hud_msgwin::ScriptWindow>()
+            .init_resource::<crate::shared::hud::ScriptWindow>()
             .add_plugins(crate::savepoint::SavePointPlugin)
             .add_systems(FixedUpdate, (npc_spawn, npc_update).chain().in_set(Sim::Enemy).after(crate::enemy::spawn_waves))
             // After the reaction manager's own offer and accept (`reaction_cmd`, `Sim::Effects`).
@@ -403,7 +405,7 @@ pub(crate) fn npc_update(
     mut commands: Commands,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     sora: Query<&Sora>,
     assets: Res<NpcAssets>,
     mut q: Query<(Entity, &mut Transform, &mut Npc, &mut NpcBrain)>,
@@ -690,13 +692,6 @@ pub(crate) fn npc_update(
 // (`DAT_0037ab84`); the script goes to its "after_talk" mode when it has one. Then the camera comes
 // back (FUN_00159768), the lock is released (FUN_001b7d18) and the HUD record cleared (FUN_001befc0).
 
-/// A reaction part with this id offers the command of the object's spawn record (+0x2c).
-pub const PART_FROM_RECORD: u16 = 0x83;
-/// The Execute value FUN_00177b18 turns into a talk (case 0x1f).
-pub const EXECUTE_TALK: u16 = 0x1f;
-/// Execute 0x1e, "Examine" (command 30, message 0x81eb): `FUN_00177b18` case 0x1e -> `FUN_001a54a8`, the same talk table
-/// with the task `FUN_001a5510` and the callback `FUN_001a5608` (WP-SH1).
-pub const EXECUTE_EXAMINE: u16 = 0x1e;
 /// The window Examine opens: `FUN_001a5608` builds class `FUN_001ab7d8` (`FUN_001aaf20(win, 3, 4, message, 0, 0x100, 0x20,
 /// 3)`: font 3, colour 4, at (256, 32), frame kind 3, alignment 2), class 2 of `kh2_image::window::CLASSES`.
 pub const EXAMINE_WINDOW_CLASS: usize = 2;
@@ -746,120 +741,6 @@ pub fn talk_shot(
         bone((rec.joint & 0x3fff) as usize, off)? + Vec3::Y * rec.lift as f32
     };
     Some((crate::camera::rules::TalkShot { look, dist: rec.r[0] as f32, height: rec.r[1] as f32, frame }, rec.kind))
-}
-
-/// The talk state: the world's talk table, the current offer and the talk that runs.
-#[derive(Resource, Default)]
-pub struct Talk {
-    world: Option<String>,
-    lib: Option<kh2_ard::libretto::Libretto>,
-    /// The candidate for the player's slot 1 this tick (a townsperson's, or a save point's that
-    /// `savepoint.rs` puts in after it).
-    pub offer: Option<crate::reaction_cmd::Active>,
-    /// The townspeople's own candidate (for the log).
-    npc_offer: Option<crate::reaction_cmd::Active>,
-    /// The offer `reaction_cmd::accept` dispatched this tick (Execute 0x1f here, 0x37 in
-    /// `savepoint.rs`): the accept key was pressed while this candidate held the player's slot 1.
-    pub accepted: Option<crate::reaction_cmd::Active>,
-    run: Option<TalkRun>,
-}
-
-struct TalkRun {
-    npc: Entity,
-    tag: String,
-    ops: Vec<kh2_ard::libretto::Op>,
-    at: usize,
-    /// A message window of this run is open.
-    window: bool,
-    /// The target's facing before the talk (FUN_0016a890), given back at the end.
-    yaw: f32,
-    /// The talk camera was started (FUN_00159688).
-    camera: bool,
-    /// An Examine (FUN_001a5510), not a talk (FUN_001a5728).
-    examine: bool,
-}
-
-impl Talk {
-    /// Drops the running talk (an area load ends it without the talk task's own ending). A run that
-    /// started the talk camera hands back the request that ends it, so the rig does not stay in mode 4.
-    fn drop_run(&mut self) -> Option<crate::camera::TalkCam> {
-        self.run.take().filter(|r| r.camera).map(|_| crate::camera::TalkCam::End)
-    }
-
-    /// `FUN_001b6408`: `libretto-<world>.bar`'s talk table (once per world).
-    fn load(&mut self, disc: &Disc, world: &str) {
-        if self.world.as_deref() == Some(world) {
-            return;
-        }
-        self.world = Some(world.to_string());
-        self.lib = disc.read(&format!("libretto-{world}.bar")).and_then(|f| kh2_ard::libretto::Libretto::from_bar(&f));
-        match &self.lib {
-            Some(l) => info!("npc: talk table libretto-{world}.bar: {} talk ids (FUN_001b6408)", l.records.len()),
-            None => warn!("npc: libretto-{world}.bar is not readable; townspeople cannot be talked to"),
-        }
-    }
-
-    /// Whether a talk runs (the player's control is locked, bit 0 of 0x1d5d7b8).
-    pub fn running(&self) -> bool {
-        self.run.is_some()
-    }
-}
-
-/// One offer candidate of an object's reaction parts.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PartOffer {
-    pub cmd: u16,
-    pub part: u8,
-    pub status: crate::reaction_cmd::Status,
-    pub priority: u8,
-    /// Distance from the part's centre to the player (the tie-break of FUN_0019c520).
-    pub dist: f32,
-}
-
-/// FUN_0019cb70 for one object: every usable type-5 part whose volume touches the player's body
-/// offers its id, a part with id 0x83 the record's +0x2c (`record_cmd`); the best by priority, then
-/// by distance (FUN_0019c520). `on` / `off` are the parameters of the range triggers 4 and 5 of the
-/// object's playing motion; positions are the app's space in centimetres.
-#[allow(clippy::too_many_arguments)]
-pub fn part_offer(
-    rules: &crate::reaction_cmd::ReactionRules,
-    table: &parts::Table,
-    record_cmd: u16,
-    (on, off): (&[i16], &[i16]),
-    (pos, yaw): (Vec3, f32),
-    player: &parts::Shape,
-    (player_pos, player_yaw): (Vec3, f32),
-    (ctx, window): (&crate::reaction_cmd::Ctx, Option<u16>),
-) -> Option<PartOffer> {
-    use crate::reaction_cmd::{native_gate, status, Ctx, Status};
-    let mut best: Option<PartOffer> = None;
-    for r in table.reaction_parts() {
-        if !parts::part_usable(table, r.part, on, off) {
-            continue;
-        }
-        let cmd = if r.id == PART_FROM_RECORD { record_cmd } else { r.id };
-        let Some(c) = rules.cmd(cmd) else { continue };
-        if !native_gate(c, ctx.battle, window) {
-            continue;
-        }
-        let Some(shape) = parts::shape_of(r, pos, yaw) else { continue };
-        if crate::savepoint::overlaps(&shape, player) != Some(true) {
-            continue;
-        }
-        let dist = (shape.center - player_pos).length();
-        if best.is_some_and(|b| c.priority < b.priority || (c.priority == b.priority && b.dist <= dist)) {
-            continue;
-        }
-        let mut st = status(&rules.cmds, c, &Ctx { distance: (pos - player_pos).with_y(0.0).length(), ..*ctx });
-        if st == Status::Available && c.range > -1.0 {
-            let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
-            if (pos - player_pos).normalize_or_zero().dot(face) < c.range {
-                st = Status::TooFar;
-            }
-        }
-        best = Some(PartOffer { cmd, part: r.part, status: st, priority: c.priority, dist });
-    }
-    best
 }
 
 fn reaction_log() -> bool {
@@ -970,7 +851,7 @@ fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd:
 pub(crate) fn talk_step(
     mut talk: ResMut<Talk>,
     rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
-    mut win: ResMut<crate::hud::hud_msgwin::ScriptWindow>,
+    mut win: ResMut<crate::shared::hud::ScriptWindow>,
     mut sora: Query<(&mut Transform, &mut Sora), Without<Npc>>,
     mut npcs: Query<(&mut Transform, &mut Npc, &mut NpcBrain), Without<Sora>>,
     mut anims: Query<&mut Animator>,
@@ -2671,6 +2552,7 @@ pub mod look {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reaction_cmd::PART_FROM_RECORD;
 
     /// `FUN_001af650`: no part -> 15 degrees flat (strict); a part -> its own point, not flattened,
     /// at most halfword * 0.017453 (the townspeople's 50 degrees).
@@ -3072,7 +2954,7 @@ mod tests {
     /// not at a 0x10 inside a command's arguments (0x190fa8).
     #[test]
     fn a_message_splits_into_pages_at_command_0x10() {
-        use crate::hud::hud_msgwin::pages;
+        use crate::shared::hud::pages;
         // 'A' page end 'B' end.
         let p = pages(&[0x21, 0x10, 0x22, 0x00]);
         assert_eq!(p.len(), 2);
@@ -3102,7 +2984,7 @@ mod tests {
                     let ops: Vec<_> = prog.iter().map(|c| c.kind()).collect();
                     let [kh2_ard::libretto::Op::Message(id)] = ops[..] else { panic!("{tag}: {ops:?}") };
                     let b = msgs.bytes(id).expect("message");
-                    let pages = crate::hud::hud_msgwin::pages(b);
+                    let pages = crate::shared::hud::pages(b);
                     eprintln!("{tag} {} talk {:#x}: message {id:#x}, {} page(s): {:?}", o.model_name, e.talk_id(), pages.len(), pages.iter().map(|p| kh2_image::text::to_text(p).len()).collect::<Vec<_>>());
                     assert!(!pages.is_empty());
                     let mset = disc.read(&format!("obj/{}.mset", o.model_name)).and_then(|d| kh2_anim::Mset::parse(&d)).expect("mset");

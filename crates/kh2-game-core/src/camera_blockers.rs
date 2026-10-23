@@ -69,7 +69,7 @@ impl Plugin for CameraBlockersPlugin {
 }
 
 /// Rebuilds `CamBlockers` for this tick (`FUN_0015a3e8`).
-pub(crate) fn fill(mut blockers: ResMut<CamBlockers>, objects: Query<(&Animator, &GlobalTransform)>, mut last: Local<usize>) {
+pub fn fill(mut blockers: ResMut<CamBlockers>, objects: Query<(&Animator, &GlobalTransform)>, mut last: Local<usize>) {
     blockers.0 = collect(objects.iter().map(|(a, g)| (a, g.to_matrix())));
     if blockers.0.len() != *last {
         *last = blockers.0.len();

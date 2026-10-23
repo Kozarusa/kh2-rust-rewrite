@@ -46,6 +46,8 @@ pub enum Frame {
     Sky,
     Hud,
     Popups,
+    /// The HUD's gauge and party-panel updates (inside Hud): the summon feeds order themselves before them.
+    HudGauges,
     /// Debug hit-volume overlay (combat).
     Volumes,
 }

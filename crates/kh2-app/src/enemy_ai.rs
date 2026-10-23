@@ -36,12 +36,13 @@ use crate::enemy_host::{call_id, compute_drop, parse_przt, prize_row, BevyHost, 
 use crate::enemy_obj::{handle_of_serial, AppearRamp, Appearing, CreatedHandle, Obj, ObjTable, Other, Remote, FLAG_UNHITTABLE, HIT, PLAYER, REMOTE_PATIENCE};
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
 use crate::motor::wrap_angle;
-use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
+use crate::shared::reaction::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
 use crate::schedule::Sim;
 use crate::skel::Animator;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
+pub use crate::shared::enemy::AiBrain;
 
 /// Ticks between two printouts of the host call table (with `KH2_BDXLOG`).
 const SUMMARY_EVERY: u64 = 900;
@@ -229,35 +230,6 @@ fn is_query(c: &Call) -> bool {
 // ---------------------------------------------------------------------------------------------------
 // Bevy side
 
-/// The BDX runtime of one enemy. Its presence hands the enemy's behaviour to the script.
-#[derive(Component)]
-pub struct AiBrain {
-    rt: Runtime,
-    obj: Obj,
-    tag: String,
-    enmp: u16,
-    flags124: bool,
-    paired: Arc<HashMap<usize, Vec<(String, f32)>>>,
-    player_model: u8,
-    started: bool,
-    dead_sent: bool,
-    errors_seen: usize,
-    /// Animator frame after the previous tick (a looping motion wrapped when it goes down).
-    last_frame: f32,
-    in_air: bool,
-    visible: bool,
-    applied_alpha: f32,
-    original_modes: HashMap<AssetId<StandardMaterial>, AlphaMode>,
-}
-
-impl AiBrain {
-    /// The `enmp` row the enemy's status block stands on: its kind's row, or the one the script's `set_obj_param`
-    /// (host 2.9) rebuilt it from. The defeat payout reads it.
-    pub fn enmp(&self) -> u16 {
-        self.enmp
-    }
-}
-
 pub struct EnemyAiPlugin;
 
 impl Plugin for EnemyAiPlugin {
@@ -418,9 +390,9 @@ fn ai_attach(
 /// The scripts, Sora's abilities, the mission manager (WP-7E: host 4.29, no-prize flag) and the global events.
 type ScriptWorld<'w, 's> = (
     Res<'w, AiPrograms>,
-    Option<Res<'w, crate::abilities::Abilities>>,
-    Option<Res<'w, crate::struggle::Mission>>,
-    MessageReader<'w, 's, crate::struggle::GlobalEvent>,
+    Option<Res<'w, crate::shared::abilities::Abilities>>,
+    Option<Res<'w, crate::shared::struggle::Mission>>,
+    MessageReader<'w, 's, crate::shared::struggle::GlobalEvent>,
 );
 
 /// One tick of every scripted enemy: deliver events, run the script, carry out what it asked for.
@@ -429,7 +401,7 @@ fn ai_update(
     mut commands: Commands,
     data: Res<GameData>,
     world: Option<Res<World>>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, &mut AiBrain)>,
     mut anims: Query<&mut Animator>,
@@ -441,13 +413,13 @@ fn ai_update(
     (mut trace, mut mailbox, mut table, appear): (ResMut<AiTrace>, ResMut<Mailbox>, ResMut<ObjTable>, Option<Res<AppearRamp>>),
     (programs, abilities, mission, mut global_events): ScriptWorld,
     (prize_pool, mut prize_drops, mut item_drops, mut collect_all): (
-        Option<Res<crate::prize::PrizePool>>,
-        MessageWriter<crate::prize::PrizeDrop>,
-        MessageWriter<crate::prize::ItemDrop>,
-        MessageWriter<crate::prize::CollectAll>,
+        Option<Res<crate::shared::prize::PrizePool>>,
+        MessageWriter<crate::shared::prize::PrizeDrop>,
+        MessageWriter<crate::shared::prize::ItemDrop>,
+        MessageWriter<crate::shared::prize::CollectAll>,
     ),
     (summon, mut summon_stop_logged, mut forced_done, mut defeated): (
-        Option<Res<crate::summon::SummonState>>,
+        Option<Res<crate::shared::summon::SummonState>>,
         Local<bool>,
         Local<bool>,
         MessageWriter<crate::progress::EnemyDefeated>,
@@ -488,7 +460,7 @@ fn ai_update(
     let mut mail = dispatch_messages(&mut mailbox, &order);
     // Global events (FUN_00197b70 -> FUN_0016b470, object method +0x34): every scripted enemy gets event 10
     // with (event, argument) (WP-7E: the Struggle's result 159 / 160 picks the opponents' `gameset_voice_*`).
-    let globals: Vec<crate::struggle::GlobalEvent> = global_events.read().copied().collect();
+    let globals: Vec<crate::shared::struggle::GlobalEvent> = global_events.read().copied().collect();
     let mission_counters = mission.as_deref().and_then(|m| m.counters());
     let no_prizes = mission.as_deref().is_some_and(|m| m.no_prizes());
     let event_active = mission.as_deref().is_some_and(|m| m.event_active());
@@ -601,7 +573,7 @@ fn ai_update(
         for g in &globals {
             let handled = rt.event(&mut host, 10, &[g.id, g.arg as u32]);
             host.trace.line(host.tag, &format!("event 10: global event {} ({}); handler {}", g.id, g.arg, if handled { "ran" } else { "absent" }));
-            if handled && matches!(g.id, crate::struggle::EV_PLAYER_WON | crate::struggle::EV_PLAYER_LOST) {
+            if handled && matches!(g.id, crate::shared::struggle::EV_PLAYER_WON | crate::shared::struggle::EV_PLAYER_LOST) {
                 info!("bdx {}: event 10 (global event {}) delivered", host.tag, g.id);
             }
         }
@@ -654,10 +626,10 @@ fn ai_update(
                         d.item_launches.len()
                     );
                     if !d.launches.is_empty() {
-                        prize_drops.write(crate::prize::PrizeDrop { from: ent, row: d.row, launches: d.launches });
+                        prize_drops.write(crate::shared::prize::PrizeDrop { from: ent, row: d.row, launches: d.launches });
                     }
                     if !d.item_launches.is_empty() {
-                        item_drops.write(crate::prize::ItemDrop { from: ent, launches: d.item_launches });
+                        item_drops.write(crate::shared::prize::ItemDrop { from: ent, launches: d.item_launches });
                     }
                 }
                 None => trace.note(tag, format!("drop row {id}: przt has neither it nor row 0x48")),
@@ -666,7 +638,7 @@ fn ai_update(
         // Host 6.31 (FUN_002eece8): every prize and item goes to the player.
         if std::mem::take(&mut obj.collect_all) {
             info!("bdx {tag}: host 6.31 collects every prize and item for the player");
-            collect_all.write(crate::prize::CollectAll);
+            collect_all.write(crate::shared::prize::CollectAll);
         }
         // The status block the script rebuilt (host 2.9) and the HP changes it made (1.231, 1.155).
         if let Some(row) = obj.param_row.take() {

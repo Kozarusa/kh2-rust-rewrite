@@ -85,7 +85,7 @@ pub struct Consts {
 }
 
 /// Bytes at a virtual address of the executable, through its program headers.
-pub(crate) fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
+pub fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
     let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
     let u32_at = |o: usize| elf.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     if elf.get(0..4)? != b"\x7fELF" {
@@ -104,7 +104,7 @@ pub(crate) fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
 }
 
 /// The friend-AI parameter table (FUN_0010b780 binds `0x34ea00 + offset[class]` to the AI object).
-pub(crate) const AI_PARAMS: u32 = 0x34ea00;
+pub const AI_PARAMS: u32 = 0x34ea00;
 
 impl Consts {
     pub fn from_exe(elf: &[u8]) -> Option<Consts> {
@@ -1408,7 +1408,7 @@ mod jump_tests {
         let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05").expect("exe");
         assert_eq!(revive_full_scale(&elf), Some(1.0));
         let mut a = kh2_archive::Archive::open(&iso).expect("disc");
-        let r = crate::abilities::AbilityRules::load(&mut a).expect("rules");
+        let r = crate::shared::abilities::AbilityRules::load(&mut a).expect("rules");
         assert_eq!(r.abilities[&ABILITY_HYPER_HEALING].bit, 131);
     }
 }

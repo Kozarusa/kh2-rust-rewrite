@@ -40,6 +40,7 @@ use bevy::prelude::*;
 use super::hud_gauge::GAUG;
 use super::hud_gfx::{self, Edge, HudScene, Node};
 use crate::assets::Disc;
+pub use crate::shared::hud::{HudPartyMember as PartyMember, PartyMembers, SummonFace};
 
 /// Panels the game has (0x13d738 allocates two).
 pub const SLOTS: usize = 2;
@@ -51,32 +52,6 @@ mod g {
     pub const RING_TRAIL: usize = 64;
     pub const RING_HP: usize = 65;
     pub const RING_MP: usize = 66;
-}
-
-/// One companion as the panel reads it: the two values of +0x48c (HP, maximum), +0x180 and +0x184
-/// (MP, maximum), and the scene file of the member's `face` pair when it was loaded.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PartyMember {
-    pub hp: i32,
-    pub max_hp: i32,
-    pub mp: i32,
-    pub max_mp: i32,
-    pub face: Option<usize>,
-}
-
-/// The party, in slot order (filled by `party::party_hud`); empty draws nothing.
-/// `KH2_HUDPARTY=<hp>:<max>:<mp>:<mpmax>[;...]` fills it instead, for a look at the geometry.
-#[derive(Resource, Default, Clone, Debug)]
-pub struct PartyMembers(pub Vec<PartyMember>);
-
-/// What the summon asks of the party panel (WP-SUM8, docs/systems/drive-limits-summons/summons-stages.md "The summon face panel"). While a summon
-/// object holds party slot 0 and the gauge is in mode 3, the party panels give way to one panel built like a party
-/// panel: sequence group 154 (once), then 155 (looping), with the summon's own `face` picture in it; when the
-/// gauge leaves mode 3 group 156 plays out (FUN_00156fe8 / FUN_00157020 -> FUN_00156e30). `summon.rs` fills it.
-#[derive(Resource, Default, Clone, Debug, PartialEq, Eq)]
-pub struct SummonFace {
-    /// The model of the summon object in party slot 0 (`obj/<model>.apdx` holds its face); `None` for none.
-    pub model: Option<String>,
 }
 
 /// The sequence groups of the summon panel (0x9a, 0x9b, 0x9c of the field file).

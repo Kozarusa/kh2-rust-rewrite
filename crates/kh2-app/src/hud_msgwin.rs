@@ -30,6 +30,7 @@ use kh2_image::window::{self, Phase, CLASSES, PROMPT_CLOSE_GROUP, PROMPT_GROUP};
 use super::hud_gfx::{Edge, HudScene, Node};
 use super::hud_text::{Label, TextSys};
 use crate::audio::PlaySe;
+pub use crate::shared::hud::{pages, ScriptWindow};
 
 /// The tutorial presenter (docs/systems/ui/hud-banners-windows.md "Tutorial windows"): opens windows from the game's own messages.
 #[path = "hud_tutorial.rs"]
@@ -45,25 +46,6 @@ pub struct Request {
 /// The game state the window draws: `Some` shows the window, `None` hides it.
 #[derive(Resource, Default, Debug)]
 pub struct MsgWindow(pub Option<Request>);
-
-/// A window game code opens by message id (the talk's `FUN_001a5a60`): the window looks the id up
-/// (0x190c40), shows its pages and closes on the button; `closed` is set when it reached state 3
-/// (what the opener waits for).
-#[derive(Resource, Default, Debug)]
-pub struct ScriptWindow {
-    /// Open this message in this class (index into `CLASSES`).
-    pub open: Option<(u32, usize)>,
-    /// The window opened through `open` was closed by the player.
-    pub closed: bool,
-    /// Close the window opened through `open` (the owner's vtable +0x20, `FUN_001aacb0`: the closing
-    /// states start at once, without the button). The event player's opcode 0x2d action 1 sets it
-    /// (`FUN_002275a8`); the window takes it in its next update. Ignored when no such window is open.
-    pub close: bool,
-    /// The window's state is 3 (state +0x70 of `FUN_001ab170`): the button closed it and the closing
-    /// groups run. The event player's opcode 0x2d action 2 waits for it (`FUN_00222588`). Cleared when
-    /// a new window opens.
-    pub waiting: bool,
-}
 
 /// The speech tail of class 0x1ab9e0 (0x1aa628(1, 1, 0)): its group, and its closing group (0x1aa680:
 /// the group plus one).
@@ -101,24 +83,6 @@ pub struct WindowNodes {
     pages: Option<(Vec<Vec<Token>>, usize)>,
     /// The class of a window in its closing states.
     closing: Option<usize>,
-}
-
-/// The pages of message bytes: a page ends at text command 0x10 (0x190fa8 walks the commands by
-/// their sizes, 0x190f68), the message at 0. A 0x10 byte is a page end only where the walk reaches
-/// it: the tokens of the bytes up to it equal the page's own tokens.
-pub fn pages(b: &[u8]) -> Vec<Vec<Token>> {
-    let mut out = Vec::new();
-    let mut rest = b;
-    while !rest.is_empty() {
-        let page = kh2_image::text::tokens(rest);
-        let end = (0..rest.len()).find(|&k| matches!(rest[k], 0 | 0x10) && kh2_image::text::tokens(&rest[..=k]) == page);
-        out.push(page);
-        match end {
-            Some(k) if rest[k] == 0x10 => rest = &rest[k + 1..],
-            _ => break,
-        }
-    }
-    out
 }
 
 /// The pages of message `id` as 0x190c40 finds it (the system table, then the world's; a missing id

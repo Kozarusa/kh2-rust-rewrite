@@ -10,20 +10,19 @@ use crate::enemy::Enemy;
 use crate::schedule::Frame;
 use crate::skel::Animator;
 use crate::sora::{Sora, State};
+pub use crate::shared::hud::{DamagePopup, DebugHud};
 
 // The HUD's own files sit beside this one; they are submodules so `main.rs` stays untouched.
 #[path = "hud_gauge.rs"]
 pub(crate) mod hud_gauge;
-#[path = "hud_gfx.rs"]
-mod hud_gfx;
+pub(crate) use kh2_game_core::hud_gfx;
 #[path = "hud_target.rs"]
 pub(crate) mod hud_target;
 #[path = "hud_banner.rs"]
 mod hud_banner;
 #[path = "hud_menu.rs"]
 pub(crate) mod hud_menu;
-#[path = "hud_text.rs"]
-mod hud_text;
+pub(crate) use kh2_game_core::hud_text;
 #[path = "hud_card.rs"]
 mod hud_card;
 #[path = "hud_party.rs"]
@@ -37,8 +36,8 @@ use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::HudGfxPlugin;
 #[allow(unused_imports)] // re-exported for the keyhole wipe in area_jump.rs
 pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode, SeqFile};
-/// The render layer of the keyhole wipe, above the HUD, the ring panels and the menus.
-pub(crate) use hud_gfx::WIPE_LAYER;
+/// The asset path of the HUD quad shader (`menu_gfx`).
+pub(crate) use hud_gfx::HUD_QUAD_SHADER;
 /// A node's text, for the event player's subtitle lines (`event_player::subtitles`).
 pub(crate) use hud_text::Label;
 use hud_banner::{BannerNodes, ExperiencePopups, HudBanner, NumberStrips, StripNodes};
@@ -85,8 +84,8 @@ impl Plugin for HudPlugin {
                     toggle_debug,
                     (
                         hud_gauge::feed_drive,
-                        hud_gauge::update,
-                        hud_party::update,
+                        hud_gauge::update.in_set(Frame::HudGauges),
+                        hud_party::update.in_set(Frame::HudGauges),
                         hud_target::update,
                         hud_menu::mirror_reaction,
                         hud_menu::update,
@@ -107,10 +106,6 @@ impl Plugin for HudPlugin {
     }
 }
 
-/// Developer overlay switch.
-#[derive(Resource)]
-pub struct DebugHud(pub bool);
-
 fn debug_on(d: Res<DebugHud>) -> bool {
     d.0
 }
@@ -122,12 +117,6 @@ fn toggle_debug(keys: Res<ButtonInput<KeyCode>>, mut d: ResMut<DebugHud>, mut te
     if let Ok(mut v) = text.single_mut() {
         *v = if d.0 { Visibility::Inherited } else { Visibility::Hidden };
     }
-}
-
-#[derive(Message, Clone, Copy)]
-pub struct DamagePopup {
-    pub at: Vec3,
-    pub amount: i32,
 }
 
 #[derive(Component)]
@@ -221,7 +210,7 @@ pub fn popups(
     mut commands: Commands,
     time: Res<Time>,
     mut msgs: MessageReader<DamagePopup>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     mut q: Query<(Entity, &mut Popup, &mut Node, &mut TextColor)>,
 ) {
     for m in msgs.read() {

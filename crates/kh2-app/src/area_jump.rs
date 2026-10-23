@@ -37,6 +37,8 @@ use crate::assets::{CurrentArea, Disc};
 use crate::schedule::Sim;
 use crate::sora::Sora;
 
+pub use crate::shared::area_jump::{AreaActor, Dest, FADE_TICKS, JumpMenus, JumpTask, KEEP, PartyWords};
+
 pub struct AreaJumpPlugin;
 
 impl Plugin for AreaJumpPlugin {
@@ -54,10 +56,6 @@ impl Plugin for AreaJumpPlugin {
             .add_systems(Update, (load_keyhole, draw_fader, draw_wipe_bars).in_set(crate::schedule::Frame::Hud));
     }
 }
-
-/// `2 x 15` ticks: `FUN_0014a7c8(fader, 0xf, ..)` and `FUN_0014a710` (`param << 1`). The fader's
-/// full alpha is `DAT_00379130` = 128.0 (0x80 is opaque on the PS2); the app's alpha runs 0..1.
-pub const FADE_TICKS: f32 = 30.0;
 
 /// The executable's constants the gate test reads.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Default)]
@@ -235,40 +233,6 @@ pub fn exit_groups(run: &area::AreaRun) -> Vec<ExitGroup> {
     out
 }
 
-/// A destination: the six bytes `FUN_00104e18` receives (world, area, entrance, then the map, btl and evt
-/// program bytes). A byte of 0xff means "keep the record's" (`FUN_00104bd0`; `FUN_00104b90` for the programs,
-/// where it keeps the story table's byte).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Dest {
-    pub world: u8,
-    pub area: u8,
-    pub entrance: u8,
-    pub programs: [u8; 3],
-}
-
-/// The "keep" byte of a destination.
-pub const KEEP: u8 = 0xff;
-
-impl Dest {
-    /// A destination without program bytes (exits and type-1 jumps).
-    pub fn new(world: u8, area: u8, entrance: u8) -> Dest {
-        Dest { world, area, entrance, programs: [KEEP; 3] }
-    }
-
-    /// `FUN_00104bd0`: the bytes that are 0xff become the record's current world, area and entrance
-    /// (`cur`); the program bytes stay as they are (0xff keeps the table's bytes).
-    pub fn apply(self, cur: (u8, u8, u8)) -> Dest {
-        let k = |b: u8, c: u8| if b == KEEP { c } else { b };
-        Dest { world: k(self.world, cur.0), area: k(self.area, cur.1), entrance: k(self.entrance, cur.2), programs: self.programs }
-    }
-
-    /// The program bytes as the log shows them: `0xb5`, or `-` for a byte that keeps the table's.
-    pub fn programs_text(&self) -> String {
-        let b: Vec<String> = self.programs.iter().map(|p| if *p == KEEP { "-".to_string() } else { format!("{p:#x}") }).collect();
-        format!("({})", b.join(", "))
-    }
-}
-
 /// The destination of the last exit's walk-in: the six bytes at `0x33e840` that `FUN_00198fa0` writes
 /// (the exit's world, area and entrance, programs 0xff) before it asks the trigger or starts the jump, and
 /// that a type-3 jump record jumps to (`FUN_0019d9d8`). Initially all 0xff (`FUN_00105420`), which keeps the
@@ -287,37 +251,6 @@ impl LastExit {
 /// `DAT_01c8bd90`: the world byte a type-4 jump remembers between two records (-1 at the start).
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub struct Type4Memory(pub Option<u8>);
-
-/// What a record asked for besides a jump (types 5 and 6): `menu_ending` takes `ending` (menu kind 0xe), `tick` the
-/// type 6 screen fade.
-#[derive(Resource, Debug, Default, PartialEq, Eq)]
-pub struct JumpMenus {
-    /// Type 5: `FUN_0024f0b8(0xe, -1)` was called; the ending screen opens.
-    pub ending: bool,
-    /// Type 6: `FUN_00149f38` was called; the screen freezes and fades to black.
-    pub black: bool,
-    /// The party words of the record a jump took (`FUN_0019d9d8`); `party::jump_party` applies them (WP-PT1).
-    pub party: Option<PartyWords>,
-    /// The reset code `FUN_00104d58` runs when the fade-out is over (`FUN_001abfe8`), waiting for the load.
-    pub reset_at_load: Option<i16>,
-    /// Reset codes to run now (`FUN_00104e18` runs it at once when the record's wait is not 0; the jump task runs it after
-    /// the fade-out); `party::jump_reset` takes them.
-    pub resets: Vec<i16>,
-    /// The save point menu's World Map entry (`FUN_002580b8`): ticks of the screen fader going to black while the menu is still
-    /// up (the jump task cannot run, the field is frozen). `draw_fader` paints it; the menu clears it when it hands over.
-    pub map_fade: Option<u32>,
-}
-
-/// What `FUN_0019d9d8` does with a record's words 4 to 6 besides the jump itself (WP-PT1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PartyWords {
-    /// The destination world byte (`pbVar8`); `None` when the record keeps the current world (`FUN_001a71c0(-1)`).
-    pub world: Option<u8>,
-    /// Word 4: the party arrangement (a preset index, negative for none).
-    pub arrange: i16,
-    /// Word 6: 1 or 2 opens the camp's notice page 0x15 (`FUN_0024f300(arg, ..)`); the argument is 0 or 2.
-    pub menu: Option<u32>,
-}
 
 /// What a trigger's jump record (`FUN_0019d9d8`, parsed by `FUN_0019d8f0`) jumps to, with `cur` the record's
 /// world, area and entrance, `last` the remembered exit and `localset(world, key)` the area `07localset.bin`
@@ -511,24 +444,6 @@ pub fn disc_localset(disc: &Disc, world: u8, key: u16) -> Option<u8> {
     kh2_ard::localset::area_for(&entry, key)
 }
 
-/// The jump task (`FUN_00104d58`): ticks count the fade.
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
-pub enum JumpTask {
-    #[default]
-    Idle,
-    FadeOut { dest: Dest, kind: u32, t: f32 },
-    /// The destination is set on `CurrentArea`; waits until it is loaded and Sora is placed.
-    Loading { dest: Dest, kind: u32 },
-    FadeIn { kind: u32, t: f32 },
-    /// The jump task's wait before its fade-out (`FUN_00104e18`'s 3rd argument, `JumpExtras::delay_ticks`): `left` ticks,
-    /// then the fade-out starts at tick `t0` (0, or the end of the fade for a jump taken after an event).
-    Wait { dest: Dest, kind: u32, left: u32, t0: f32 },
-    /// Type 6 (`FUN_00149eb0`): the screen is frozen and faded to black over `FADE_TICKS`, then stays black. Nothing in the
-    /// executable fades it back in by itself (the area start's fade-in and the event end's, `FUN_0013f1a0`, `FUN_002233d8`,
-    /// run when something else starts); here the black is lifted when a jump starts or an event plays [inferred].
-    Black { t: f32 },
-}
-
 /// One tick of the type 6 black: lifted (`Idle`) when an event plays [inferred], else the fade advances until it
 /// reaches `FADE_TICKS` and the black holds.
 pub fn black_step(t: f32, event_playing: bool) -> JumpTask {
@@ -538,10 +453,6 @@ pub fn black_step(t: f32, event_playing: bool) -> JumpTask {
         JumpTask::Black { t: if t < FADE_TICKS { t + 1.0 } else { t } }
     }
 }
-
-/// An actor that belongs to the loaded area: the area's unload removes it (the enemies of `enemy.rs`).
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct AreaActor;
 
 /// The area's unload in the jump task (`FUN_00104d58` -> `FUN_00104ce0`, after the fade-out, before the
 /// destination is applied): `FUN_00168ca0` -> `FUN_001b8800` frees every object of the list at `0x1d5d7e0`, and
@@ -637,7 +548,7 @@ pub fn pair_index(image: usize, ok: impl Fn(usize) -> bool) -> Option<usize> {
 /// `field2d/us/<world>0field.2dd` first (`SeqFile::from_bar`), so slot 2's pair is one of its
 /// files; the match is checked by image size and sequence before a hidden root node at (0, 0) is
 /// added on it.
-fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<crate::hud::HudScene>>, mut key: ResMut<Keyhole>) {
+fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<crate::hud_gfx::HudScene>>, mut key: ResMut<Keyhole>) {
     let Some(mut scene) = scene else { return };
     if key.tried || scene.files.is_empty() {
         return;
@@ -672,22 +583,22 @@ fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<cr
 
 /// The wipe's node: hidden until a fade starts, drawn on the wipe layer so it covers the whole frame, the HUD included
 /// (`hud_gfx::WIPE_LAYER`).
-fn keyhole_node(file: usize) -> crate::hud::HudNode {
-    let mut node = crate::hud::HudNode::new(file, None);
+fn keyhole_node(file: usize) -> crate::hud_gfx::Node {
+    let mut node = crate::hud_gfx::Node::new(file, None);
     node.visible = false;
     node.top = true;
     node
 }
 
 /// Starts group `group` of the wipe on its node and shows it.
-fn play_wipe(scene: &mut Option<ResMut<crate::hud::HudScene>>, key: &Keyhole, group: usize) -> bool {
+fn play_wipe(scene: &mut Option<ResMut<crate::hud_gfx::HudScene>>, key: &Keyhole, group: usize) -> bool {
     let (Some(scene), Some(n)) = (scene.as_mut(), key.node) else { return false };
     scene.set_group(n, group);
     scene.nodes[n].visible = true;
     true
 }
 
-fn wipe_ended(scene: &Option<ResMut<crate::hud::HudScene>>, key: &Keyhole) -> bool {
+fn wipe_ended(scene: &Option<ResMut<crate::hud_gfx::HudScene>>, key: &Keyhole) -> bool {
     match (scene.as_ref(), key.node) {
         (Some(s), Some(n)) => s.nodes[n].player.finished(),
         _ => true,
@@ -869,7 +780,7 @@ fn tick(
     sora: Query<&Sora>,
     mut refused: Local<u32>,
     mut key: ResMut<Keyhole>,
-    mut scene: Option<ResMut<crate::hud::HudScene>>,
+    mut scene: Option<ResMut<crate::hud_gfx::HudScene>>,
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
     mut forced: Local<u32>,
     mut last: ResMut<LastExit>,
@@ -1147,7 +1058,7 @@ fn tick(
 }
 
 /// The start of a fade-out (`FUN_0015d058`: group 1 of the layout; the fader follows once it has ended).
-fn begin_fade_out(key: &mut Keyhole, scene: &mut Option<ResMut<crate::hud::HudScene>>, kind: u32) {
+fn begin_fade_out(key: &mut Keyhole, scene: &mut Option<ResMut<crate::hud_gfx::HudScene>>, kind: u32) {
     key.black_from = None;
     key.wiping = kind == 0 && play_wipe(scene, key, 1);
     if kind == 0 {
@@ -1173,7 +1084,7 @@ const WIPE_BARS: [([f32; 2], [f32; 2]); 4] = [
     ([256.0, -2446.0], [8000.0, 4000.0]),
 ];
 
-fn draw_wipe_bars(scene: Option<Res<crate::hud::HudScene>>, key: Res<Keyhole>, mut bars: Query<&mut Visibility, With<WipeBar>>) {
+fn draw_wipe_bars(scene: Option<Res<crate::hud_gfx::HudScene>>, key: Res<Keyhole>, mut bars: Query<&mut Visibility, With<WipeBar>>) {
     let shown = scene.zip(key.node).is_some_and(|(s, n)| s.nodes.get(n).is_some_and(|n| n.visible));
     for mut v in &mut bars {
         *v = if shown { Visibility::Inherited } else { Visibility::Hidden };
@@ -1188,7 +1099,7 @@ fn spawn_fader(mut commands: Commands) {
             Sprite::from_color(Color::BLACK, Vec2::from(size)),
             Transform::from_xyz(at[0], at[1], 50.0),
             Visibility::Hidden,
-            bevy::camera::visibility::RenderLayers::layer(crate::hud::WIPE_LAYER),
+            bevy::camera::visibility::RenderLayers::layer(crate::hud_gfx::WIPE_LAYER),
         ));
     }
     commands.spawn((
@@ -1264,13 +1175,13 @@ mod tests {
         w.run_system_once(draw_wipe_bars).unwrap();
         assert!(bars(&mut w).iter().all(|v| *v == Visibility::Hidden));
         // A scene with the node hidden: hidden; shown: the bars show.
-        let mut scene = crate::hud::HudScene::default();
+        let mut scene = crate::hud_gfx::HudScene::default();
         let i = scene.add(keyhole_node(0));
         w.insert_resource(scene);
         w.resource_mut::<Keyhole>().node = Some(i);
         w.run_system_once(draw_wipe_bars).unwrap();
         assert!(bars(&mut w).iter().all(|v| *v == Visibility::Hidden));
-        w.resource_mut::<crate::hud::HudScene>().nodes[i].visible = true;
+        w.resource_mut::<crate::hud_gfx::HudScene>().nodes[i].visible = true;
         w.run_system_once(draw_wipe_bars).unwrap();
         assert!(bars(&mut w).iter().all(|v| *v == Visibility::Inherited));
         // Each bar overlaps the screen edge it borders by 2 units.

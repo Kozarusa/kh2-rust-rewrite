@@ -15,6 +15,7 @@ use super::hud_gfx::{Edge, HudScene, Node};
 use super::hud_text::Label;
 use crate::assets::Disc;
 use crate::reaction_cmd::{ReactionOffer, ReactionRules, Status};
+pub use crate::shared::hud::{CommandMenu, MenuEntry, MenuPage, Reaction};
 
 /// Menu pages that can be open at once (a sub-menu opens one page to the right).
 pub const PAGES: usize = 3;
@@ -22,46 +23,6 @@ pub const PAGES: usize = 3;
 pub const ROWS: usize = 9;
 /// Number of menu kinds in the game's group table.
 const KINDS: usize = 18;
-
-/// A command shown in a list.
-#[derive(Clone, Debug, Default)]
-pub struct MenuEntry {
-    /// The command's message id (`cmd.MessageId`; bit 15 is ignored).
-    pub message: u32,
-    /// `cmd.CmdIcon`: picks the icon on the selected bar (0 none, 1 to 7 as the game's switch at 0x13bd48).
-    pub icon: u8,
-    /// Text colour style, 0 to 8: the entry's status byte (entry +5, list +0x11 for the first entry):
-    /// 0 usable, 1 a sub-menu with nothing usable, 2 a spell short of MP (orange), 5 unavailable,
-    /// 6 an item only reserved (docs/systems/ui/items.md).
-    pub style: u8,
-}
-
-/// One open list.
-#[derive(Clone, Debug, Default)]
-pub struct MenuPage {
-    /// Which menu: the command list's index (0 and 6 the decks, 1 magic, 2 items, 3 forms, 4 the targets,
-    /// 5 shortcuts, 7 summons, 8 friends, 9 limits; the art of each is listed in docs/systems/ui/contract.md).
-    pub kind: u8,
-    pub entries: Vec<MenuEntry>,
-    pub cursor: usize,
-}
-
-/// The reaction command offered above the list.
-#[derive(Clone, Debug, Default)]
-pub struct Reaction {
-    pub message: u32,
-    /// The command's `Flags` bit 3 (picks the capsule's alternate art).
-    pub alt: bool,
-    /// The list entry type 7 (a second alternate).
-    pub kind7: bool,
-}
-
-#[derive(Resource, Default, Clone, Debug)]
-pub struct CommandMenu {
-    pub visible: bool,
-    pub pages: Vec<MenuPage>,
-    pub reaction: Option<Reaction>,
-}
 
 /// Scene file index of the command pair (`comw`).
 #[derive(Resource, Default)]

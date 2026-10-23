@@ -33,6 +33,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use super::{Menu, Phase};
 use crate::menu_gfx::{MenuScene, Pic, Tex};
 use crate::skel::{Animator, Rig};
+pub use crate::shared::ui::PreviewCamera;
 
 pub struct PreviewPlugin;
 
@@ -116,14 +117,6 @@ pub fn motion_slot(rig: &Rig) -> Option<usize> {
         Some(MOTION).filter(|&s| rig.mset.has(s))
     }
 }
-
-/// Marks the preview's own `Camera3d`. Every system that looks for THE game camera filters `Without<PreviewCamera>`:
-/// with two 3D cameras alive `Query::single()` would fail (the effects' view fell back to identity, the HUD lost its projection).
-#[derive(Component)]
-pub struct PreviewCamera;
-
-/// The filter of every query for THE game camera (the preview's own `Camera3d` is left out).
-pub type GameCamera = (With<Camera3d>, Without<PreviewCamera>);
 
 #[derive(Component)]
 struct PreviewModel {

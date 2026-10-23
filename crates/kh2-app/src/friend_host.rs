@@ -11,6 +11,7 @@ use kh2_bdx::host::{Arg, Call, Host, Value};
 
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, St};
+pub use crate::motor::{advance_vec, turn_vec};
 
 /// What the group-10 entries and the remap read or write of the member (kept on `FriendBrain`).
 #[derive(Clone, Debug, Default)]
@@ -199,43 +200,6 @@ pub struct AttackObj {
     /// +0x8c..+0x94 (host 2.38): the routine FUN_0018cf50 runs on the script's thread for every hit, with its
     /// argument (the routine's address, the argument).
     pub callback: Option<(u32, u32)>,
-}
-
-/// Host 0.45 (FUN_0016d098): `a + b / |b.xyz| x step x DAT_00356f40` on all four lanes (the frame step 1.0).
-pub(crate) fn advance_vec(a: [f32; 4], b: [f32; 4], step: f32) -> [f32; 4] {
-    let len = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
-    let q = if len > 0.0 { step / len } else { 0.0 };
-    std::array::from_fn(|k| a[k] + b[k] * q)
-}
-
-/// Host 0.46 (FUN_0016d138 -> FUN_0017c0f8): `a` turned toward `b` by at most `rate` (times the frame step
-/// 1.0). Both are normalised by their xyz length; the angle between them is FUN_0017bf10's (acos of the dot,
-/// 0 at or above 1.0 `DAT_0037a53c`, pi at or below -1.0 `DAT_0037a540` / `DAT_0037a544`), held at `rate`;
-/// FUN_0017bf88 builds the rotation by that angle about the unit `a x b` (rows `x^2 t + c, xy t + z s, xz t -
-/// y s` .., `t = 1 - c`), and the result is `a` through it with w 0. A zero cross product gives a zero axis
-/// (the vector unit's division by zero times 0): the result is `a x cos(angle)`.
-pub(crate) fn turn_vec(a: [f32; 4], b: [f32; 4], rate: f32) -> [f32; 4] {
-    let unit = |v: [f32; 4]| {
-        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0; 3] }
-    };
-    let (u, w) = (unit(a), unit(b));
-    let dot = u[0] * w[0] + u[1] * w[1] + u[2] * w[2];
-    let angle = if dot >= 1.0 {
-        0.0
-    } else if dot <= -1.0 {
-        std::f32::consts::PI
-    } else {
-        dot.acos()
-    };
-    let step = angle.min(rate);
-    let k = unit([u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0], 0.0]);
-    let (s, c) = step.sin_cos();
-    let t = 1.0 - c;
-    let (x, y, z) = (k[0], k[1], k[2]);
-    let rows = [[x * x * t + c, x * y * t + z * s, x * z * t - y * s], [x * y * t - z * s, y * y * t + c, y * z * t + x * s], [x * z * t + y * s, y * z * t - x * s, z * z * t + c]];
-    let r: [f32; 3] = std::array::from_fn(|j| rows[0][j] * u[0] + rows[1][j] * u[1] + rows[2][j] * u[2]);
-    [r[0], r[1], r[2], 0.0]
 }
 
 /// Handles of the members' attack objects (host 2.10), apart from the object handles.

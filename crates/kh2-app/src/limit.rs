@@ -229,7 +229,7 @@ pub type GateParams<'w> = (Option<Res<'w, crate::menu::Menu>>, Option<Res<'w, cr
 pub fn gates_of(g: &GateParams, sora_down: bool) -> StartGates {
     StartGates {
         sora_down,
-        menu_open: g.0.as_deref().is_some_and(|m| m.phase != crate::menu::Phase::Closed),
+        menu_open: g.0.as_deref().is_some_and(|m| m.phase != crate::shared::ui::Phase::Closed),
         event: g.1.as_deref().is_some_and(|e| e.playing()),
         summon_sequence: g.2.as_deref().is_some_and(|s| s.sequence && s.state != 2),
     }
@@ -1020,9 +1020,9 @@ mod tests {
         w.init_resource::<crate::intro::event_player::EventPlayer>();
         w.init_resource::<crate::summon::SummonState>();
         assert_eq!(read(&mut w).check(), Ok(()), "closed menu, no event, no summon");
-        w.resource_mut::<crate::menu::Menu>().phase = crate::menu::Phase::Closing;
+        w.resource_mut::<crate::menu::Menu>().phase = crate::shared::ui::Phase::Closing;
         assert_eq!(read(&mut w).check(), Err(Gate::MenuOpen));
-        w.resource_mut::<crate::menu::Menu>().phase = crate::menu::Phase::Closed;
+        w.resource_mut::<crate::menu::Menu>().phase = crate::shared::ui::Phase::Closed;
         {
             let mut sm = w.resource_mut::<crate::summon::SummonState>();
             sm.sequence = true;

@@ -110,7 +110,7 @@ Only the USA release is supported. Other discs are refused, because table layout
 | `crates/kh2-anim` | Motion sets, ANB motions and triggers, pose evaluation |
 | `crates/kh2-app` | The game (`kh2-game`, Bevy 0.19) as a library plus a thin binary, with plugins in domain bundles: areas, skinned characters, Sora, Heartless, combat, camera, HUD |
 | `crates/kh2` | Command-line tool |
-| `docs/` | `METHOD.md` (how we work), `docs/systems/foundations/research.md` (sources) |
+| `docs/` | `README.md` (index of the system docs), `METHOD.md` (how we work), `systems/foundations/research.md` (sources), `changelog/` |
 | `local/` | Your machine only (git-ignored): ISO path, downloaded name list, extracted files |
 
 ## How it is built

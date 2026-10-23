@@ -3355,6 +3355,13 @@ name = "kh2-iso"
 version = "0.1.0"
 
 [[package]]
+name = "kh2-looprec"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+]
+
+[[package]]
 name = "kh2-map"
 version = "0.1.0"
 dependencies = [

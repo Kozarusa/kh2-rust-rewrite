@@ -1,0 +1,9 @@
+[package]
+name = "kh2-looprec"
+description = "WASAPI loopback recorder: writes what the default output device plays to a 32-bit float wav (reference recordings of PCSX2 and kh2-game for loudness comparisons)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cpal = "0.17"

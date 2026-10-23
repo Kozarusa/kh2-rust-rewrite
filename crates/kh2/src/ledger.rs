@@ -198,7 +198,7 @@ const OVERLAY_SYSTEMS: [&str; 4] = ["gummi.flight", "ui.title", "event.movie", "
 /// The first main-executable function that touches hardware registers: the Sony runtime starts here (FAC 1.3).
 pub const SDK_START: u32 = 0x002f_8210;
 
-const DOC: &str = "One row per function of the original executable (main) and its four overlays (ovl0..ovl3, all loaded at 0x1f18000): addr, image, size in bytes, the ledger system, status, evidence (what the tree shows, written by the scan), note. Addresses, sizes and statuses only: callers, callees and names stay in the private workspace (RULES A5). Statuses: unread, read (cited in docs/), ported (a `/// orig 0x<addr>` doc comment line in non-test Rust code; overlays `/// orig ovlN 0x<addr>`), verified (the address in a #[test] function's name, e.g. the factory's orig_<addr>_matches_the_game, or in its doc comment), not-needed:<sdk|debug|hw|dead|fm>. read/ported/verified are only set by `kh2 ledger scan`; system, not-needed and note are hand-edited. `systems` lists the ledger systems: [id, ladder step of PLAN section 5, sheets/systems.json rows, what]. A systems.json row is closed by a `closed` column or a `validated` text starting with 'closed'; the preflight then rejects any unread or read function of a system mapped to it. Rebuild: `kh2 ledger import` (rows from ../kh2_ps2, seeding, scan); report: `kh2 ledger report`. Note `lv4`: a function start the typed project added (not in the workspace's function sheets).";
+const DOC: &str = "One row per function of the original executable (main) and its four overlays (ovl0..ovl3, all loaded at 0x1f18000): addr, image, size in bytes, the ledger system, status, evidence (what the tree shows, written by the scan), note. Addresses, sizes and statuses only: callers, callees and names stay in the private workspace (RULES A5). Statuses: unread, read (cited in docs/ on a line that does not say the function was not read), ported (a `/// orig 0x<addr>` doc comment line in non-test Rust code; overlays `/// orig ovlN 0x<addr>`), tested (the address in a hand-written #[test] function's name or doc comment), verified (the same for an oracle test: it runs the original through kh2-ee, calling Ee or the factory harness directly or through a helper of its file, e.g. the factory's orig_<addr>_matches_the_game; verified over tested over ported over read), not-needed:<sdk|debug|hw|dead|fm>. read/ported/tested/verified are only set by `kh2 ledger scan`; system, not-needed and note are hand-edited. `systems` lists the ledger systems: [id, ladder step of PLAN section 5, sheets/systems.json rows, what]. A systems.json row is closed by a `closed` column or a `validated` text starting with 'closed'; the preflight then rejects any unread or read function of a system mapped to it. Rebuild: `kh2 ledger import` (rows from ../kh2_ps2, seeding, scan); report: `kh2 ledger report`. Note `lv4`: a function start the typed project added (not in the workspace's function sheets).";
 
 fn ps2_root() -> PathBuf {
     kh2_factory::ps2_root()
@@ -498,7 +498,8 @@ pub fn apply_scan(rows: &mut [Row], c: &Cites, demote: bool) -> (usize, Vec<Stri
     for r in rows.iter_mut() {
         let (st, ev) = lg::derive(r, c);
         let rank = |s: &str| match s {
-            "verified" => 3,
+            "verified" => 4,
+            "tested" => 3,
             "ported" => 2,
             _ => 0,
         };
@@ -592,22 +593,25 @@ fn cmd_scan(args: &[String]) -> Result<(), String> {
     let demote = args.iter().any(|a| a == "--demote");
     let (mut sheet, mut rows) = load_sheet()?;
     let c = lg::scan_tree(&super::root(), &lg::index(&rows));
+    let before: HashMap<Key, String> = rows.iter().map(|r| (r.key(), r.status.clone())).collect();
     let (changed, lost) = apply_scan(&mut rows, &c, demote);
     for l in &lost {
         println!("{}: {l}", if demote { "demoted" } else { "ERROR" });
     }
     if !lost.is_empty() && !demote {
-        return Err(format!("{} ported/verified rows have no code reference any more; rerun with --demote to accept", lost.len()));
+        return Err(format!("{} ported/verified/tested rows have no code reference any more; rerun with --demote to accept", lost.len()));
     }
     save(&mut sheet, &rows)?;
-    println!("scan: {changed} rows changed");
+    let back = rows.iter().filter(|r| r.status == "unread" && before.get(&r.key()).is_some_and(|s| s == "read")).count();
+    println!("scan: {changed} rows changed, {back} went from read back to unread");
     Ok(())
 }
 
 #[derive(Default, Clone, Copy)]
 struct Tally {
-    n: [usize; 5],
-    b: [u64; 5],
+    /// Functions and bytes per status: unread, read, ported, tested, verified, not needed.
+    n: [usize; 6],
+    b: [u64; 6],
     code: usize,
 }
 
@@ -617,8 +621,9 @@ impl Tally {
             "unread" => 0,
             "read" => 1,
             "ported" => 2,
-            "verified" => 3,
-            _ => 4,
+            "tested" => 3,
+            "verified" => 4,
+            _ => 5,
         };
         self.n[i] += 1;
         self.b[i] += r.size as u64;
@@ -627,7 +632,7 @@ impl Tally {
         }
     }
     fn plus(&mut self, o: &Tally) {
-        for i in 0..5 {
+        for i in 0..6 {
             self.n[i] += o.n[i];
             self.b[i] += o.b[i];
         }
@@ -638,16 +643,19 @@ impl Tally {
         let bytes: u64 = self.b.iter().sum();
         let kb = |b: u64| b as f64 / 1024.0;
         let cell = |i: usize| format!("{:>5} {:>6.1}", self.n[i], kb(self.b[i]));
-        let done = if bytes > 0 { (self.b[3] + self.b[4]) as f64 * 100.0 / bytes as f64 } else { 0.0 };
+        let pct = |b: u64| if bytes > 0 { b as f64 * 100.0 / bytes as f64 } else { 0.0 };
         format!(
-            "{name:<18} {fns:>6} {:>7.1} | {} | {} | {} | {} | {} | {:>5} | {done:>5.1}%",
+            "{name:<18} {fns:>6} {:>7.1} | {} | {} | {} | {} | {} | {} | {:>5} | {:>5.1}% | {:>5.1}%",
             kb(bytes),
             cell(0),
             cell(1),
             cell(2),
             cell(3),
             cell(4),
-            self.code
+            cell(5),
+            self.code,
+            pct(self.b[4] + self.b[5]),
+            pct(self.b[3])
         )
     }
 }
@@ -666,10 +674,14 @@ pub fn report(rows: &[Row], c: &Cites, only: Option<&str>) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<18} {:>6} {:>7} | {:^12} | {:^12} | {:^12} | {:^12} | {:^12} | {:>5} | {:>6}",
-        "system", "fns", "KB", "unread", "read", "ported", "verified", "not-needed", "code", "done"
+        "{:<18} {:>6} {:>7} | {:^12} | {:^12} | {:^12} | {:^12} | {:^12} | {:^12} | {:>5} | {:>6} | {:>6}",
+        "system", "fns", "KB", "unread", "read", "ported", "tested", "verified", "not-needed", "code", "done", "tested"
     );
-    let _ = writeln!(out, "{:<18} {:>6} {:>7} | {:^12} | {:^12} | {:^12} | {:^12} | {:^12} | {:>5} | (bytes verified or not needed)", "", "", "", "fns KB", "fns KB", "fns KB", "fns KB", "fns KB", "");
+    let _ = writeln!(
+        out,
+        "{:<18} {:>6} {:>7} | {:^12} | {:^12} | {:^12} | {:^12} | {:^12} | {:^12} | {:>5} | {:>6} | {:>6}",
+        "", "", "", "fns KB", "fns KB", "fns KB", "fns KB", "fns KB", "fns KB", "", "bytes", "bytes"
+    );
     let mut all = Tally::default();
     for st in STEPS {
         let mut sum = Tally::default();
@@ -690,6 +702,7 @@ pub fn report(rows: &[Row], c: &Cites, only: Option<&str>) -> String {
         all.plus(&sum);
     }
     let _ = writeln!(out, "{}", all.line("all"));
+    let _ = writeln!(out, "done = share of bytes verified (an oracle test ran the original) or not needed; tested = share of bytes with a hand-written test only, shown apart");
     let _ = writeln!(out, "code = functions cited in Rust code that are still unread or read (ports without a `/// orig` line yet)");
     out
 }
@@ -797,6 +810,7 @@ pub fn brief(input: &BriefIn, system: &str, cluster: Option<&str>) -> Result<Str
                 "unread" => "u",
                 "read" => "r",
                 "ported" => "p",
+                "tested" => "t",
                 "verified" => "v",
                 _ => "n",
             };
@@ -1155,15 +1169,17 @@ mod tests {
 
     #[test]
     fn report_counts_bytes_per_status_and_step() {
-        let mut rows = vec![row(0x100, "magic"), row(0x200, "magic"), row(0x300, "sdk")];
+        let mut rows = vec![row(0x100, "magic"), row(0x200, "magic"), row(0x300, "sdk"), row(0x400, "magic")];
         rows[1].status = "verified".into();
         rows[2].status = "not-needed:sdk".into();
         rows[2].size = 32;
+        rows[3].status = "tested".into();
         let r = report(&rows, &Cites::default(), None);
         let all = r.lines().find(|l| l.starts_with("all")).unwrap();
-        assert!(all.contains("     3     0.1"), "{all}");
-        assert!(all.trim_end().ends_with("75.0%"), "{all}");
-        assert!(r.lines().any(|l| l.starts_with("step L4") && l.trim_end().ends_with("50.0%")), "{r}");
+        assert!(all.contains("     4     0.1"), "{all}");
+        // 16 + 32 of 80 bytes are verified or not needed, 16 are tested only: shown apart.
+        assert!(all.trim_end().ends_with("|  60.0% |  20.0%"), "{all}");
+        assert!(r.lines().any(|l| l.starts_with("step L4") && l.trim_end().ends_with("|  33.3% |  33.3%")), "{r}");
     }
 
     #[test]

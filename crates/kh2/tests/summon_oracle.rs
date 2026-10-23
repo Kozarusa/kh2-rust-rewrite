@@ -24,14 +24,7 @@ const CONFIG: u32 = 0x0033_e860;
 const SEEN: u32 = 0x01d5_e370;
 
 fn open() -> Option<(Ee, Vec<u32>)> {
-    let path = std::env::var("KH2_ISO")
-        .ok()
-        .or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))
-        .filter(|p| std::path::Path::new(p).exists());
-    let Some(path) = path else {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    };
+    let path = kh2_factory::disc_path("summon_oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
     let sstm = kh2_tables::player::load_sstm(&mut a).ok()?.words.clone();

@@ -30,6 +30,9 @@
   `cargo test -p <crate> --test orig_<cluster>`; never relax a comparison or the case count; after three failed fix rounds mark the
   function `blocked` with the failing case and go on; cap 90 minutes. Tools: `kh2-factory` (crates/kh2-factory)
   and `kh2 ledger brief <system> [cluster]`.
+- Float inputs: the generator draws edge values (signed zeros, +-1, extremes, denormals) but never NaN or infinity, because the EE FPU has
+  none (exponent 255 reads as the largest finite value); do not add them to a spec. Ledger statuses: a hand-written `#[test]` naming the
+  address marks it `tested`; only an oracle test (kh2-ee or the factory harness runs the original) marks it `verified`.
 
 ## R3. BDX host calls and enemies
 - Host calls: the `match` in `crates/kh2-app/src/enemy_host.rs`; each arm is `imp` (exact), `approx(.., "why")`, `stub(.., "why")` or

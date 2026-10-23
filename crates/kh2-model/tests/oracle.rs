@@ -18,14 +18,7 @@ const OBJ: u32 = 0x0190_0000;
 const RAND: u32 = 0x0031_17a8;
 
 fn open() -> Option<(Ee, kh2_archive::Archive)> {
-    let path = std::env::var("KH2_ISO")
-        .ok()
-        .or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))
-        .filter(|p| std::path::Path::new(p).exists());
-    let Some(path) = path else {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    };
+    let path = kh2_factory::disc_path("oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let names = std::fs::read_to_string("../../local/kh2idx.txt").unwrap_or_default();
     let subs: Vec<&str> = names.lines().filter(|l| l.ends_with(".idx")).collect();

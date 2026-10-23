@@ -12,10 +12,7 @@ const STACK: u32 = 0x01ff_0000;
 const PICK: u32 = 0x1ae538;
 
 fn exe() -> Option<Vec<u8>> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("voice_oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())
 }

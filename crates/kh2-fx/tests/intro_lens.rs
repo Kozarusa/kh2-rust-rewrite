@@ -4,10 +4,7 @@
 use kh2_fx::Pax;
 
 fn mission_pax() -> Option<Pax> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("intro_lens")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     // The mission files sit in the world sub-index `000tt.idx` (as the app's `assets::Disc` opens it).
     a.apply_names(vec!["000tt.idx"]).ok()?;

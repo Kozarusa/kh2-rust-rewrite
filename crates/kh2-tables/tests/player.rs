@@ -1,26 +1,13 @@
 //! Structure checks for the player-system decoders. They read the user's own disc ($KH2_ISO or
 //! local/iso.txt) and skip, with a note, when it is not available.
 
-use std::path::{Path, PathBuf};
 
 use kh2_archive::Archive;
 use kh2_tables::player::{self, execute, form, item_type};
 use kh2_tables::tables;
 
-fn iso() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("KH2_ISO") {
-        return Some(p.into());
-    }
-    let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
-    std::fs::read_to_string(f).ok().map(|s| PathBuf::from(s.trim()))
-}
-
 fn open() -> Option<Archive> {
-    let p = iso().filter(|p| p.exists());
-    if p.is_none() {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-    }
-    Archive::open(p?).ok()
+    kh2_factory::disc("player")
 }
 
 macro_rules! rows {

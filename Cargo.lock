@@ -3304,6 +3304,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-factory",
  "kh2-tables",
 ]
 
@@ -3313,6 +3314,7 @@ version = "0.1.0"
 dependencies = [
  "kh2-archive",
  "kh2-ee",
+ "kh2-factory",
 ]
 
 [[package]]
@@ -3326,6 +3328,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-factory",
 ]
 
 [[package]]
@@ -3353,6 +3356,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-factory",
  "kh2-ps2",
 ]
 
@@ -3382,6 +3386,7 @@ version = "0.1.0"
 dependencies = [
  "kh2-archive",
  "kh2-bar",
+ "kh2-factory",
  "kh2-ps2",
  "png 0.17.16",
 ]
@@ -3412,6 +3417,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-factory",
  "kh2-ps2",
 ]
 
@@ -3441,6 +3447,7 @@ version = "0.1.0"
 dependencies = [
  "kh2-archive",
  "kh2-bar",
+ "kh2-factory",
  "kh2-sheets",
 ]
 

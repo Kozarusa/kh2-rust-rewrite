@@ -35,14 +35,7 @@ const AI_PARAMS: u32 = 0x0034_ea00;
 const HEAL_FRACTION: u32 = 0x0037_85c8;
 
 fn open() -> Option<(Ee, Vec<u8>)> {
-    let path = std::env::var("KH2_ISO")
-        .ok()
-        .or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))
-        .filter(|p| std::path::Path::new(p).exists());
-    let Some(path) = path else {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    };
+    let path = kh2_factory::disc_path("party_oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
     let memt = kh2_tables::subfile(&mut a, &kh2_tables::tables::MEMT).ok()?;

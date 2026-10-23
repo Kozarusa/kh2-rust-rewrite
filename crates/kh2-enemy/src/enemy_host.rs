@@ -142,7 +142,7 @@ pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32, mut fre
 
 /// Classification of a host call, for the trace and the summary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum St {
+pub enum St {
     /// Does what the game's function does (read from the game's code).
     Impl,
     /// Does the visible part; some of what the game does is not reproduced.
@@ -154,7 +154,7 @@ pub(crate) enum St {
 }
 
 /// `group.index` of the host function behind a call (the mode manager's hooks are not host functions).
-pub(crate) fn call_id(c: &Call) -> (u16, u16) {
+pub fn call_id(c: &Call) -> (u16, u16) {
     match c {
         Call::Player => (1, 3),
         Call::Position { .. } => (1, 147),
@@ -225,29 +225,29 @@ pub(crate) fn call_id(c: &Call) -> (u16, u16) {
 
 /// FUN_0017bbc0 (host 0.43): an angle into -pi..pi with fmod by 2 pi, from above for a positive angle
 /// and from below otherwise (pi and 2 pi are the floats at 0x37a528 / 0x37a52c, 0x40490fdb / 0x40c90fdb).
-pub(crate) fn game_wrap_angle(x: f32) -> f32 {
+pub fn game_wrap_angle(x: f32) -> f32 {
     let (pi, two_pi) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb));
     if x > 0.0 { (x + pi) % two_pi - pi } else { pi - (pi - x) % two_pi }
 }
 
 /// What the host reads from the app, per enemy and tick.
-pub(crate) struct Env<'a> {
-    pub(crate) player: Vec3,
-    pub(crate) player_yaw: f32,
-    pub(crate) world: Option<&'a World>,
-    pub(crate) rig: &'a Rig,
-    pub(crate) flags124: bool,
-    pub(crate) enmp: u16,
+pub struct Env<'a> {
+    pub player: Vec3,
+    pub player_yaw: f32,
+    pub world: Option<&'a World>,
+    pub rig: &'a Rig,
+    pub flags124: bool,
+    pub enmp: u16,
     /// The player's +0x158 (the serial of the paired motion last started on him) and whether that
     /// motion has ended (bit 1 of his +0x160), from `reaction_cmd::PlayerReaction`.
-    pub(crate) player_serial: i32,
-    pub(crate) player_motion_done: bool,
-    pub(crate) paired: &'a HashMap<usize, Vec<(String, f32)>>,
-    pub(crate) player_model: u8,
+    pub player_serial: i32,
+    pub player_motion_done: bool,
+    pub paired: &'a HashMap<usize, Vec<(String, f32)>>,
+    pub player_model: u8,
     /// The mission manager's counters (`struggle::Mission`), None without a manager (host 4.29).
-    pub(crate) mission_counters: Option<[i32; 3]>,
+    pub mission_counters: Option<[i32; 3]>,
     /// A mission layout event is playing (`struggle::Mission::event_active`, host 1.34) (WP-7E2).
-    pub(crate) event_active: bool,
+    pub event_active: bool,
 }
 
 /// The keyed persistent buffers of host 2.21 (`kh2_bdx::shared`), one list for every enemy script of the battle like the
@@ -264,7 +264,7 @@ fn shared_blocks() -> MutexGuard<'static, kh2_bdx::shared::SharedBlocks> {
 static GROUP_ENEMY_SUM: AtomicI32 = AtomicI32::new(0);
 
 /// Hands host 1.320 the sum of the groups' enemy counters.
-pub(crate) fn set_group_enemy_sum(n: i32) {
+pub fn set_group_enemy_sum(n: i32) {
     GROUP_ENEMY_SUM.store(n, Ordering::Relaxed);
 }
 
@@ -274,12 +274,12 @@ fn group_enemy_sum() -> i32 {
 }
 
 /// FUN_001a5030: the list of keyed buffers is emptied (the area's groups are set up again).
-pub(crate) fn clear_shared_blocks() {
+pub fn clear_shared_blocks() {
     shared_blocks().clear();
 }
 
 /// Host 1.2 (FUN_00182538): the game-space direction from the object (`pos`, app space) to the point `t`, y forced to 0.
-pub(crate) fn move_toward_dir(pos: Vec3, t: Vec4) -> Vec4 {
+pub fn move_toward_dir(pos: Vec3, t: Vec4) -> Vec4 {
     [t[0] - pos.x, 0.0, t[2] + pos.z, 0.0]
 }
 
@@ -290,7 +290,7 @@ static FREE_POINT: LazyLock<Mutex<(Option<crate::party_rules::FreePointConsts>, 
     LazyLock::new(|| Mutex::new((None, crate::magic_rules::ScatterState::default())));
 
 /// Hands host 1.247 the executable's numbers (`FreePointConsts::from_exe`).
-pub(crate) fn set_free_point_consts(k: crate::party_rules::FreePointConsts) {
+pub fn set_free_point_consts(k: crate::party_rules::FreePointConsts) {
     FREE_POINT.lock().unwrap_or_else(|e| e.into_inner()).0 = Some(k);
 }
 
@@ -307,11 +307,11 @@ fn random_free_point(centre: Vec3, lo: f32, hi: f32, world: Option<&World>) -> O
     Some(p)
 }
 
-pub(crate) struct BevyHost<'a> {
-    pub(crate) obj: &'a mut Obj,
-    pub(crate) env: &'a Env<'a>,
-    pub(crate) trace: &'a mut AiTrace,
-    pub(crate) tag: &'a str,
+pub struct BevyHost<'a> {
+    pub obj: &'a mut Obj,
+    pub env: &'a Env<'a>,
+    pub trace: &'a mut AiTrace,
+    pub tag: &'a str,
 }
 
 /// The self-targeted motion queue (host 1.13) is enabled for M_EX900, M_EX110 and M_EX210 only until it is verified for the other kinds whose

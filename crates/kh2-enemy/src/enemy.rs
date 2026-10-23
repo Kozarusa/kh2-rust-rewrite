@@ -901,7 +901,7 @@ impl Default for PlaceRng {
 
 impl PlaceRng {
     /// One step: a value in [0, 1).
-    pub fn next(&mut self) -> f32 {
+    pub fn next_unit(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(0x10dcd);
         self.seed as f32 * (1.0 / 4_294_967_296.0)
     }
@@ -937,8 +937,8 @@ pub struct Ring {
 /// the centre. `ground` and `clear` are the collision queries.
 pub fn ring_place(rng: &mut PlaceRng, ring: &Ring, ground: &dyn Fn(Vec3) -> Option<Vec3>, clear: &dyn Fn(Vec3, Vec3) -> bool) -> Vec3 {
     const STEP: f32 = std::f32::consts::FRAC_PI_4;
-    let mut r = ring.min + rng.next() * (ring.max - ring.min);
-    let start = rng.octant() as f32 * STEP + rng.next() * STEP;
+    let mut r = ring.min + rng.next_unit() * (ring.max - ring.min);
+    let start = rng.octant() as f32 * STEP + rng.next_unit() * STEP;
     let mut tries = 0;
     while r >= ring.min {
         tries += 1;
@@ -956,7 +956,7 @@ pub fn ring_place(rng: &mut PlaceRng, ring: &Ring, ground: &dyn Fn(Vec3) -> Opti
                 }
             }
             Some((lo, hi)) => {
-                let h = lo + rng.next() * (hi - lo);
+                let h = lo + rng.next_unit() * (hi - lo);
                 let at = spot + Vec3::Y * h;
                 beyond.y = at.y + 1.0;
                 if clear(ring.centre, beyond) {
@@ -1226,7 +1226,7 @@ fn spawn_enemy(
 /// or at the point the script's `set_position` (1.148) gave it in the same tick; facing 0 in the game's space. Its
 /// brain takes the handle the call returned (`CreatedHandle`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_created(
+pub fn spawn_created(
     mut commands: Commands,
     mut table: ResMut<crate::enemy_obj::ObjTable>,
     rigs: Res<EnemyRigs>,
@@ -1778,7 +1778,7 @@ fn row_damage<'a>(data: &'a GameData, h: &Hit, from: &Stats, to: &Stats) -> Opti
 /// magic, defense, level, maximum HP). [inferred] The equipment pass of the status rebuild is not applied:
 /// the hand-0 weapon's attack and magic (`item_stat`) are not added, unlike Sora's keyblade in
 /// `GameData::sora_stats`.
-pub(crate) fn member_stats(progress: Option<&crate::progress::Progress>, neo: u16) -> Option<Stats> {
+pub fn member_stats(progress: Option<&crate::progress::Progress>, neo: u16) -> Option<Stats> {
     let m = progress?.member(neo)?;
     Some(Stats {
         level: m.level as i32,
@@ -1798,7 +1798,7 @@ pub(crate) fn member_stats(progress: Option<&crate::progress::Progress>, neo: u1
 
 /// `member_stats` with the strength, magic and defense of the rebuilt status (`PartyData::member_status`:
 /// the lvup row, the record and the equipment) when the party data is loaded.
-pub(crate) fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>, party: Option<&crate::shared::party::MemberStatus>, neo: u16) -> Option<Stats> {
+pub fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>, party: Option<&crate::shared::party::MemberStatus>, neo: u16) -> Option<Stats> {
     let mut s = member_stats(progress, neo)?;
     if let (Some(party), Some(rec)) = (party, progress.and_then(|p| p.member(neo))) {
         (s.strength, s.magic, s.defense) = party.member_status(neo, &rec);
@@ -3223,7 +3223,7 @@ mod tests {
     fn place_rng_follows_the_games_generator() {
         let mut r = PlaceRng::default();
         // Literal values of seed * 0x10dcd (mod 2^32) / 2^32 from the start seed 0x2545f491: 0x5b01351d, 0x24c70139, 0x8fa4dfa5.
-        let seq: Vec<f32> = (0..3).map(|_| r.next()).collect();
+        let seq: Vec<f32> = (0..3).map(|_| r.next_unit()).collect();
         for (v, want) in seq.iter().zip([0.355_487_17_f32, 0.143_661_58, 0.561_109_5]) {
             assert!((v - want).abs() < 1e-6, "{v} vs {want}");
         }

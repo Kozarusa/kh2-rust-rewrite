@@ -140,20 +140,20 @@ pub struct AiTrace {
 }
 
 impl AiTrace {
-    pub(crate) fn line(&self, tag: &str, msg: &str) {
+    pub fn line(&self, tag: &str, msg: &str) {
         if self.level > 0 {
             info!("bdx {tag} t{}: {msg}", self.tick);
         }
     }
 
     /// One log line per distinct note (data gaps, approximations hit).
-    pub(crate) fn note(&mut self, tag: &str, msg: String) {
+    pub fn note(&mut self, tag: &str, msg: String) {
         if self.notes.insert(msg.clone()) {
             warn!("bdx {tag}: {msg}");
         }
     }
 
-    pub(crate) fn record(&mut self, tag: &str, c: &Call, v: &Value, st: St, why: &str) {
+    pub fn record(&mut self, tag: &str, c: &Call, v: &Value, st: St, why: &str) {
         let (g, i) = call_id(c);
         let name = match c {
             Call::Func { group, index, .. } | Call::Unknown { group, index, .. } => {

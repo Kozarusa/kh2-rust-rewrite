@@ -12,6 +12,7 @@
 
 pub use kh2_game_core::*;
 pub use kh2_sound::*;
+pub use kh2_enemy::*;
 
 pub mod abilities;
 mod plugins;
@@ -19,10 +20,6 @@ mod area_jump;
 mod asset_viewer;
 mod clash;
 mod drive;
-mod enemy;
-mod enemy_ai;
-mod enemy_host;
-mod enemy_obj;
 mod friend_ai;
 mod friend_host;
 mod hud;

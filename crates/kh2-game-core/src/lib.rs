@@ -9,6 +9,7 @@ pub mod camera;
 pub mod camera_blockers;
 pub mod combat;
 pub mod data;
+pub mod frame;
 pub mod fx;
 pub mod harness;
 pub mod hud_gfx;

@@ -102,9 +102,15 @@ fn vsync(c: &Ctx) -> Option<String> {
     Some((c.progress?.rig.vsync? + c.k).to_string())
 }
 
-/// The app steps one game frame per 60 Hz tick: its frame step is 1.0 (the original's field runs 2.0; ported in L1-P5).
+/// The step the app runs at, from the ported frame step (`frame::Vsync`): the app steps one game frame per 60 Hz tick, which is the
+/// original's limit 0 (its menus, step 1.0). The original's field runs limit 1, two vblanks per frame and step 2.0; the app's field
+/// does not, so this stays 1.0 until the frame-order package (L1-P4) runs the field at the original's cadence.
 fn frame_step(_: &Ctx) -> Option<String> {
-    Some(f(1.0))
+    let mut v = crate::frame::Vsync::default();
+    v.init();
+    v.set_frame_limit(0);
+    v.step_frame(crate::frame::Vsync::vblank);
+    Some(f(v.frame_step()))
 }
 
 fn sora_pos(c: &Ctx) -> Option<String> {

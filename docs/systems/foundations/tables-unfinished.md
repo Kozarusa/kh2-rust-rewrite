@@ -63,7 +63,7 @@ byte (`FUN_001d5ec0`: first record whose byte 0 equals the key).
 | +0x42 | u16 | not read [I: padding] | no load at +0x42 in the 0x174000..0x178fff, 0x19f000, 0x1cb000..0x1cc000 ranges (`mips_scan.py --load-off 0x42`) |
 
 **App.** `crates/kh2-anim/src/moveset.rs` (`Moveset::parse`, record fields +0..+0xb, +0x20..+0x35, +0x40) and
-`crates/kh2-app/src/sora.rs` (`AttackLeaps::parse`, `Leap::from_record`: +0xc..+0x1c and +0x3c; every table), `drive.rs` (a form's
+`crates/kh2-player/src/sora.rs` (`AttackLeaps::parse`, `Leap::from_record`: +0xc..+0x1c and +0x3c; every table), `drive.rs` (a form's
 table), `menu_abilities.rs`. The app does not read +0x38 (the queued motion's blend) or +0x42. **Unknown:** the meaning of flag bits
 above 4; whether anything reads +0x42 through a computed base [GAP: the scan covers direct offsets only].
 

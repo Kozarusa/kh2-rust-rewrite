@@ -3,9 +3,9 @@
 [Contract](contract.md) | [Index](../../README.md)
 
 Read from the main executable (SLUS_210.05; decompiled functions in the local study folder, nothing
-copied) and from the `ptya` and `fmab` tables on the user's disc. Code: `crates/kh2-app/src/sora.rs`
+copied) and from the `ptya` and `fmab` tables on the user's disc. Code: `crates/kh2-player/src/sora.rs`
 (`leap_launch`, `AttackLeaps`, `Dash`, `dash_step`, the `Attack` and `QuickRun` states) and
-`crates/kh2-app/src/motor.rs` (`Jump::falling_at`, `Motor::start_leap`, `Jump::release_cuts`).
+`crates/kh2-game-core/src/motor.rs` (`Jump::falling_at`, `Motor::start_leap`, `Jump::release_cuts`).
 Log: `KH2_MOVELOG=1` prints one `move: airborne` / `move: air swing` line per tick with the velocity
 and the real displacement.
 

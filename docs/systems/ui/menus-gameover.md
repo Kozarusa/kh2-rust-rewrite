@@ -71,7 +71,7 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
 `DAT_0033e830 + 3` (the map program) below 0x33: refused when `DAT_0035e3a0` is not 0, allowed when no manager exists
 (`FUN_001b9550`), refused when one does; with the program at 0x33 or above: refused. `FUN_001cb3e8(1, 0xffff)` clears the snapshot (all bytes 0xff = "keep the record's").
 
-### 26.4 What the port does (`crates/kh2-app/src/menu_gameover.rs`, WP-GO1)
+### 26.4 What the port does (`crates/kh2-menu/src/menu_gameover.rs`, WP-GO1)
 
 * `route` is the table of 26.1 (`KoInput` from `Mission::ko_view`, `SummonState` / `SummonData` for Tinker Bell, `DriveState` for the
   form; "in a drive form no game over" is [inferred] from `FUN_001793a8`'s test on `+0xb50` in 1..5, the form field mapping
@@ -147,7 +147,7 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   `death_to_list_to_choice_continue_closes_and_retry_needs_type_3`, `the_snapshot_rule_and_the_continue_destination`,
   `the_knock_out_edge_fires_once_per_fall`, `the_disc_rows_of_the_game_over`, and in `struggle.rs`
   `the_knock_out_view_carries_the_bit_the_kind_and_the_retry_and_quit_jumps`.
-### 26.5 Mickey's rescue (WP-MK1: `crates/kh2-app/src/mickey.rs`, `menu_gameover.rs`)
+### 26.5 Mickey's rescue (WP-MK1: `crates/kh2-party/src/mickey.rs`, `menu_gameover.rs`)
 
 **What Mickey is [V].** Not a summon and not a BDX script. `FUN_001cdb98` (and the identical copy `FUN_001cda78`) is the
 **constructor of a player-class object**: it calls the player base constructor `FUN_00176e00(self, .., 10, ..)`, stores the class

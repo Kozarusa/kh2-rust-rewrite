@@ -304,7 +304,7 @@ Auron 10.29, 10.31 x2, 10.55; Riku 10.14 x4, 10.17, 10.18, 10.29, 10.31, 10.35, 
 | file | function / item | change |
 |---|---|---|
 | `crates/kh2-tables/src/player.rs` | `Memt` | name the record fields (world, flag, not-flag, budgets, 16 members) and the presets; `merged(world, flags)` and `slot_object(byte)` as in the tests |
-| new `party.rs` (kh2-app) | `PartyPlugin` (third plugin tuple of `main.rs`) | `PartySlots` (the four slot bytes per world, hidden list), `PartyMember` component (slot, position 1/2, NeoStatus, AI class, follow mode +0xb78, far counter, warp cooldown, revive timer, last three actions) |
+| new `party.rs` (kh2-party) | `PartyPlugin` (third plugin tuple of `main.rs`) | `PartySlots` (the four slot bytes per world, hidden list), `PartyMember` component (slot, position 1/2, NeoStatus, AI class, follow mode +0xb78, far counter, warp cooldown, revive timer, last three actions) |
 | `party.rs` | spawn | resolve FRIEND_1/2 (FUN_0017cd20), refuse in forms/summons, load model/mset/apdx/BDX, weapons |
 | `party.rs` | `party_ai_tick` | the decision loop of section 4, one function per FUN (follow, steer, warp, choose, emergency) as pure rules plus a system |
 | new `party_rules.rs` | pure rules | `in_danger`, `below_fraction`, `form_takes`, `apply_preset`, follow-mode hysteresis, steer snapping, the action-choice passes; unit tests against the oracle routines |

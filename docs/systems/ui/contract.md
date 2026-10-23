@@ -1,7 +1,7 @@
 # UI: HUD, command menu, menus, shops, journal, save: contract
 
 Ladder step L8. Ledger system name `ui`. Crates: `kh2-image` (`seqd.rs`, `layd.rs`, `imgd.rs`, `text.rs`, `font.rs`, `window.rs`: sequence, layout,
-image, text and message-window readers), `kh2-app` (`hud*.rs`, `menu*.rs` and `menu_journal/`, `items.rs`, `savepoint.rs`).
+image, text and message-window readers), `kh2-game-core` (`hud*.rs`), `kh2-hud` (`hud*.rs`), `kh2-player` (`hud*.rs`), `kh2-app` (`menu*.rs` and `menu_journal/`), `kh2-party` (`items.rs`), `kh2-event` (`savepoint.rs`).
 Sheet ids: `ui.menu`, `ui.save`, `ui.load`, `ui.journal`, `ui.shop`, `ui.tutorial`, `ui.battle_report`, `game.items`, `game.gameover`.
 Scenarios: `scenarios/ui/` (none yet).
 

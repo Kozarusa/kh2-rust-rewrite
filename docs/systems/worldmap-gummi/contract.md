@@ -1,7 +1,7 @@
 # World map and Gummi: contract
 
 Ladder step L12. Ledger system name `worldmap-gummi`. Crates: `kh2-ard` (`worldmap.rs`: `wldf`, `wlds`, `epsd`, `70landing.bar`, `00worldpoint.bin`,
-`wm.bar` ids), `kh2-app` (`worldmap.rs`, `worldmap_ui.rs`, `area_jump.rs`, `menu_save.rs` for the entry from the save point).
+`wm.bar` ids), `kh2-worldmap` (`worldmap.rs`, `worldmap_ui.rs`), `kh2-event` (`area_jump.rs`), `kh2-menu` (`menu_save.rs` for the entry from the save point).
 Sheet ids: none (no `systems.json` row names the world map or the Gummi flight yet). Scenarios: `scenarios/worldmap-gummi/` (none yet).
 
 Status: the world map is an ordinary field area (world byte 0xf, area 0, `ard/wm00.ard`, `map/us/wm00.map`) and the port loads it through the

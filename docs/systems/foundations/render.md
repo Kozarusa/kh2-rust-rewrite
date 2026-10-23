@@ -2,8 +2,8 @@
 
 How map and model textures are sampled and animated, as the original does it. Code:
 `crates/kh2-model/src/texture.rs` (GS-info decode, `Axis` regions), `crates/kh2-model/src/texanim.rs`
-(footer parse and the players), `crates/kh2-app/src/assets.rs` (crop + UV transform),
-`crates/kh2-app/src/texanim.rs` (per-tick plugin).
+(footer parse and the players), `crates/kh2-game-core/src/assets.rs` (crop + UV transform),
+`crates/kh2-game-core/src/texanim.rs` (per-tick plugin).
 
 ## tt04 roofs: the black rectangles (WP-7M step 1)
 

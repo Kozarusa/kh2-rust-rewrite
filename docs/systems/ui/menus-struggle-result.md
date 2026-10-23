@@ -25,7 +25,7 @@ trigger's jump). No help line is set by kind 8 for it [GAP: where the Save menu'
 
 ### 21.3 What the port does
 
-`crates/kh2-app/src/menu_struggle.rs` (`StruggleMenuPlugin`, the fourth plugin tuple of `main.rs`): reads the table at
+`crates/kh2-menu/src/menu_struggle.rs` (`StruggleMenuPlugin`, the fourth plugin tuple of `main.rs`): reads the table at
 the first request, dims the field (`DIM_BRIGHTNESS`), sets `Pause::menu`, draws the rows as the Save menu's pointer list
 (`save.2ld` sequence 0 groups 77 selected, 79 idle, hand 12, placements of `menu_save.rs`) [inferred: kind 8's
 resources 0x753c / 0x7532 were not resolved to a file], Up / Down move and wrap [inferred], J confirms, the cancel is

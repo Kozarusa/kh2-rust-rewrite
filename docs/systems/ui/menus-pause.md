@@ -476,14 +476,14 @@ those files (the HUD and fx fixes edit them): new files only, one small hook eac
 | file (new unless noted) | contents |
 |---|---|
 | `crates/kh2-image/src/layd.rs` + `pub mod layd;` in `lib.rs` | the `.2ld` reader of 1.3.1: `Layd { layers, layouts, seqs }`, `split_imgz` (the offset-table form); tests move from `menu_resources.rs` |
-| `crates/kh2-app/src/menu.rs` | `MenuPlugin`: resource `Menu { open, page, phase, cursors, fade }`, the page state machine of 1.4 (page ids, phases, remembered cursors, results of 1.7), the open/close transition of 1.6; run condition for the field systems |
-| `crates/kh2-app/src/menu_gfx.rs` | loading `camp.2ld`: IMGZ -> Bevy images, SEQD -> `hud_gfx::SeqFile`; drawing a layer = a node playing animation group g of sequence s at (x, y) on the HUD canvas (render layer 7). Reuses `HudScene`/`Node` if the HUD fixes leave them `pub(crate)`; otherwise its own small copy of the draw path |
-| `crates/kh2-app/src/menu_pages.rs` (+ `menu_items.rs`, `menu_abilities.rs`, `menu_config.rs`, ... per stage) | each page's rows and result handling (sections 2.1..2.9) |
-| `crates/kh2-app/src/menu_text.rs` | messages for rows and help: `kh2_image::text::Messages` of `msg/us/sys.bar` through the existing `hud_text` layout (`text::layout`) |
-| `crates/kh2-app/src/progress.rs` (outside this WP; the stage that needs it adds) | setters mirroring 2.2: `equip_weapon(member, item)`, `equip_form_weapon(form, item)`, `equip_armor/accessory/item(member, slot, item)`, `set_ability_equipped(member, slot, on)`, `shortcut(slot)/set_shortcut`, `set_spell_switch(slot, on)` (exists as accessors), `option_word()/set_option_word()` (a u32 at save `+0x31b0`) |
+| `crates/kh2-menu/src/menu.rs` | `MenuPlugin`: resource `Menu { open, page, phase, cursors, fade }`, the page state machine of 1.4 (page ids, phases, remembered cursors, results of 1.7), the open/close transition of 1.6; run condition for the field systems |
+| `crates/kh2-menu/src/menu_gfx.rs` | loading `camp.2ld`: IMGZ -> Bevy images, SEQD -> `hud_gfx::SeqFile`; drawing a layer = a node playing animation group g of sequence s at (x, y) on the HUD canvas (render layer 7). Reuses `HudScene`/`Node` if the HUD fixes leave them `pub(crate)`; otherwise its own small copy of the draw path |
+| `crates/kh2-menu/src/menu_pages.rs` (+ `menu_items.rs`, `menu_abilities.rs`, `menu_config.rs`, ... per stage) | each page's rows and result handling (sections 2.1..2.9) |
+| `crates/kh2-menu/src/menu_text.rs` | messages for rows and help: `kh2_image::text::Messages` of `msg/us/sys.bar` through the existing `hud_text` layout (`text::layout`) |
+| `crates/kh2-game-core/src/progress.rs` (outside this WP; the stage that needs it adds) | setters mirroring 2.2: `equip_weapon(member, item)`, `equip_form_weapon(form, item)`, `equip_armor/accessory/item(member, slot, item)`, `set_ability_equipped(member, slot, on)`, `shortcut(slot)/set_shortcut`, `set_spell_switch(slot, on)` (exists as accessors), `option_word()/set_option_word()` (a u32 at save `+0x31b0`) |
 | `crates/kh2-app/src/main.rs` | `menu::MenuPlugin` into the third tuple |
-| `crates/kh2-app/src/harness.rs` | key names for the menu (Start, confirm, cancel, the shoulder keys, Select) in `KH2_KEYS` |
-| `crates/kh2-app/src/sora.rs` or the pad reader | the pause: while `Menu.open`, no `Pad` input reaches Sora and the `Sim` sets stop (done as a run condition on the `Sim` sets, `schedule::Pause`, 1.8) |
+| `crates/kh2-game-core/src/harness.rs` | key names for the menu (Start, confirm, cancel, the shoulder keys, Select) in `KH2_KEYS` |
+| `crates/kh2-player/src/sora.rs` or the pad reader | the pause: while `Menu.open`, no `Pad` input reaches Sora and the `Sim` sets stop (done as a run condition on the `Sim` sets, `schedule::Pause`, 1.8) |
 
 Keys (proposal, [I]): Enter = Start, J = confirm (the app's attack key), K or Backspace = cancel, `[` and `]` = the shoulder switch (already
 `pad.prev/next`), V = Select/Help (already Select in `docs/systems/player-camera/contract.md`), arrow keys = the list, arrows left/right = Config values; the harness takes the

@@ -1,7 +1,7 @@
 # Player and camera: contract
 
 Ladder step L2. Ledger system name `player-camera`. Crates: `kh2-anim` (`moveset.rs` attack selection rules, `blend.rs`, `triggers.rs`),
-`kh2-app` (`sora.rs`, `motor.rs`, `camera.rs`, `camera_rules.rs`, `camera_blockers.rs`, `intro.rs`).
+`kh2-player` (`sora.rs`), `kh2-game-core` (`motor.rs`, `camera.rs`, `camera_rules.rs`, `camera_blockers.rs`), `kh2-event` (`intro.rs`).
 Sheet ids: `game.player`, `game.sora`, `game.sora.dodge`, `game.intro`. Scenarios: `scenarios/player-camera/` (none yet).
 
 Status: Sora's ground combo, air chain, air swing momentum, Square actions, Quick Run and the follow, look-around and lock-on cameras are ported;

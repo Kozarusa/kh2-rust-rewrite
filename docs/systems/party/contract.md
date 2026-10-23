@@ -1,7 +1,6 @@
 # Party: contract
 
-Ladder step L6. Ledger system name `party`. Crates: `kh2-app` (`party.rs`, `party_rules.rs`, `party_battle.rs`, `party_switch.rs`, `friend_ai.rs`,
-`friend_host.rs`, `mickey.rs`, `hud_party.rs`), `kh2-tables` (`memt` in `player.rs`), `kh2-bdx` (the members run their own BDX scripts).
+Ladder step L6. Ledger system name `party`. Crates: `kh2-party` (`party.rs`, `party_battle.rs`, `friend_ai.rs`, `friend_host.rs`, `mickey.rs`), `kh2-game-core` (`party_rules.rs`), `kh2-menu` (`party_switch.rs`), `kh2-hud` (`hud_party.rs`), `kh2-tables` (`memt` in `player.rs`), `kh2-bdx` (the members run their own BDX scripts).
 Sheet ids: `game.party`, `game.friend_ai`. Scenarios: `scenarios/party/` (none yet).
 
 Status: Donald and Goofy spawn from the area script, follow, warp, run their friend AI target styles 0 to 5 (the BDX scripts attached since WP-7P1),

@@ -77,7 +77,7 @@ Layout triples (enter, leave, hold) at 0x381240: (0xf, 0x11, 0x10), (4, 6, 5), (
 - The end (`FUN_00260540` once closing): waits for the objects, `FUN_00284ae0`, `FUN_00262de0`, `FUN_001038a0` (back to
   the field).
 
-### 22.4 What the port does (`crates/kh2-app/src/menu_shop.rs`)
+### 22.4 What the port does (`crates/kh2-menu/src/menu_shop.rs`)
 
 `reaction_cmd::status` offers Execute 0x7f rows (blocked in a drive form, the part of 0x35fec0 the app has [approx]);
 `reaction_cmd::accept` turns an accepted Shop row into `ShopRequest(event)`. `ShopPlugin` reads the shop file, the item
@@ -316,7 +316,7 @@ only in these three (`mips_scan --store-off 0x112d`), so leaving page 0xb, 0x17 
 
 `menu_shop::synth::pay_rewards` / `cond_met` (the rewards), `Session` (page 0xb as `Page::Rewards`, `Marks`, `see`,
 `entry_mark`, `row_mark`, `has_new`), `menu_shop::{item_place, fresh_at_open, item_tag, buy_tag, first_visit_bit}` and
-`Page::First` (page 7) in `crates/kh2-app/src/menu_shop.rs`; `Progress` keeps the save bytes (`shop_seen` +0x3714,
+`Page::First` (page 7) in `crates/kh2-menu/src/menu_shop.rs`; `Progress` keeps the save bytes (`shop_seen` +0x3714,
 `shop_visit` +0x3724, `Moogle::rewards` +8; all three are in the slot files since WP-PRG1). The tags are the sprite groups 0x77 / 0x78 on
 the file's NEW! art; their place (left of the hand) and the page 0xb rows' columns are the port's [inferred: the rows have
 no plate]. `X` is -5.

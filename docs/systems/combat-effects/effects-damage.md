@@ -3,7 +3,7 @@
 Findings from reading the game's main executable (`SLUS_210.05`, USA): the decompilation, plus
 disassembly of the handlers the decompiler dropped, plus runs of the game's own handlers in the
 `kh2-ee` interpreter. Addresses are virtual addresses in that executable. Nothing here is copied
-code; the ports are in `crates/kh2-fx/src/prog_more.rs` and `crates/kh2-app/src/fx.rs`, and every
+code; the ports are in `crates/kh2-fx/src/prog_more.rs` and `crates/kh2-game-core/src/fx.rs`, and every
 number the game uses comes from the user's disc at run time.
 
 Status words: **verified** = read directly in the game's code or data, or checked against the game's

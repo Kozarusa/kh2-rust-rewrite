@@ -10,7 +10,8 @@
 //! docs/systems/ui/menus-pause.md 1.6.1). This test counts the frames. Callees that would touch the rest of the engine are hooks:
 //! `FUN_001e61d0` (the programs) and `FUN_001e6240` count their calls, `FUN_001e17f8`, `FUN_001e52d8`, `FUN_001e1230`
 //! and `FUN_001e01a8` do nothing; the instance's draw-list flags (+0x91) are clear, so no packet is built; the
-//! reads of the hardware timer `REG_RCNT0_COUNT` (0x10000000, profiling counters only) are pointed at RAM.
+//! reads of the hardware timer `REG_RCNT0_COUNT` (0x10000000, profiling counters only) are served by the
+//! interpreter's hardware register stub.
 
 use std::cell::Cell;
 
@@ -78,16 +79,8 @@ fn the_effect_program_runs_one_frame_per_two_vblanks() {
     ee.hooks.insert(0x001e_52d8, hook_nothing);
     ee.hooks.insert(0x001e_1230, hook_nothing);
     ee.hooks.insert(0x001e_01a8, hook_nothing);
-    // `lui rt, 0x1000` (the timer's page) -> `lui rt, 0x0100` (RAM), only inside FUN_001e3898 and FUN_001e3d00.
-    let mut patched = 0;
-    for pc in (0x001e_3898..0x001e_4218).step_by(4) {
-        let w = ee.r32(pc);
-        if w >> 26 == 0x0f && w & 0xffff == 0x1000 {
-            ee.w32(pc, (w & 0xffff_0000) | 0x0100);
-            patched += 1;
-        }
-    }
-    assert!(patched > 0, "no timer reads found");
+    // The profiling reads of the hardware timer REG_RCNT0_COUNT (0x10000000) are answered by the
+    // interpreter's hardware register stub.
     let field = count(&mut ee, 2.0, 30);
     let menu = count(&mut ee, 1.0, 60);
     let slow = count(&mut ee, 4.0, 15);

@@ -1,24 +1,30 @@
-//! Instruction execution. Encodings: R5900 user manual (core, MMI, COP1) and VU user manual
-//! (COP2 macro instructions).
+//! Instruction execution: the R5900 integer core and the COP1 FPU. Encodings: R5900 user manual
+//! (core, COP1). MMI is in `mmi.rs`, COP2 in `vu.rs`, COP0 in `cop0.rs`.
 
-use super::{Ee, clamp, sx32};
+use super::{Ee, Exception, clamp, sx32};
 
-fn words(v: u128) -> [u32; 4] {
+pub(crate) fn words(v: u128) -> [u32; 4] {
     std::array::from_fn(|i| (v >> (32 * i)) as u32)
 }
-fn from_words(w: [u32; 4]) -> u128 {
+pub(crate) fn from_words(w: [u32; 4]) -> u128 {
     w.iter().enumerate().fold(0, |a, (i, &x)| a | (x as u128) << (32 * i))
 }
-fn halves(v: u128) -> [u16; 8] {
+pub(crate) fn halves(v: u128) -> [u16; 8] {
     std::array::from_fn(|i| (v >> (16 * i)) as u16)
 }
-fn from_halves(h: [u16; 8]) -> u128 {
+pub(crate) fn from_halves(h: [u16; 8]) -> u128 {
     h.iter().enumerate().fold(0, |a, (i, &x)| a | (x as u128) << (16 * i))
 }
-fn vf_bits(v: [f32; 4]) -> u128 {
+pub(crate) fn bytes(v: u128) -> [u8; 16] {
+    v.to_le_bytes()
+}
+pub(crate) fn from_bytes(b: [u8; 16]) -> u128 {
+    u128::from_le_bytes(b)
+}
+pub(crate) fn vf_bits(v: [f32; 4]) -> u128 {
     from_words(v.map(f32::to_bits))
 }
-fn bits_vf(v: u128) -> [f32; 4] {
+pub(crate) fn bits_vf(v: u128) -> [f32; 4] {
     words(v).map(f32::from_bits)
 }
 fn shl(x: u64, s: u32) -> u64 {
@@ -27,17 +33,28 @@ fn shl(x: u64, s: u32) -> u64 {
 fn shr(x: u64, s: u32) -> u64 {
     x.checked_shr(s).unwrap_or(0)
 }
-fn lo64(v: u128) -> u64 {
+pub(crate) fn lo64(v: u128) -> u64 {
     v as u64
 }
-fn with_lo64(v: u128, x: u64) -> u128 {
+pub(crate) fn with_lo64(v: u128, x: u64) -> u128 {
     (v & !(u64::MAX as u128)) | x as u128
 }
-fn with_hi64(v: u128, x: u64) -> u128 {
+pub(crate) fn with_hi64(v: u128, x: u64) -> u128 {
     (v & u64::MAX as u128) | (x as u128) << 64
 }
 
 impl Ee {
+    /// Raises an address error and returns true if `addr` is not aligned to `mask + 1`.
+    #[inline(always)]
+    fn misaligned(&mut self, addr: u32, mask: u32, store: bool) -> bool {
+        if addr & mask == 0 {
+            return false;
+        }
+        self.cop0[8] = addr;
+        self.raise(Exception::AddressError { addr, store });
+        true
+    }
+
     pub(crate) fn exec(&mut self, w: u32) {
         let op = w >> 26;
         let rs = ((w >> 21) & 31) as usize;
@@ -60,6 +77,13 @@ impl Ee {
                     0x01 => self.branch(s >= 0, bt, false),
                     0x02 => self.branch(s < 0, bt, true),
                     0x03 => self.branch(s >= 0, bt, true),
+                    // Trap on compare with an immediate: tgei tgeiu tlti tltiu teqi tnei.
+                    0x08 => self.trap(s >= simm as i64),
+                    0x09 => self.trap(a >= simm),
+                    0x0A => self.trap(s < simm as i64),
+                    0x0B => self.trap(a < simm),
+                    0x0C => self.trap(a == simm),
+                    0x0E => self.trap(a != simm),
                     0x10..=0x13 => {
                         let cond = if rt & 1 == 0 { s < 0 } else { s >= 0 };
                         self.set(31, sx32(self.pc.wrapping_add(8)));
@@ -79,21 +103,29 @@ impl Ee {
             0x05 => self.branch(a != b, bt, false),
             0x06 => self.branch(a as i64 <= 0, bt, false),
             0x07 => self.branch(a as i64 > 0, bt, false),
-            0x08 | 0x09 => self.set(rt, sx32((a as u32).wrapping_add(simm as u32))),
+            0x08 => match (a as u32 as i32).checked_add(simm as i32) {
+                Some(v) => self.set(rt, sx32(v as u32)),
+                None => self.raise(Exception::Overflow),
+            },
+            0x09 => self.set(rt, sx32((a as u32).wrapping_add(simm as u32))),
             0x0A => self.set(rt, ((a as i64) < simm as i64) as u64),
             0x0B => self.set(rt, (a < simm) as u64),
             0x0C => self.set(rt, a & imm as u64),
             0x0D => self.set(rt, a | imm as u64),
             0x0E => self.set(rt, a ^ imm as u64),
             0x0F => self.set(rt, sx32((imm as u32) << 16)),
-            0x10 => self.unimpl(w, "cop0"),
+            0x10 => self.cop0_op(w, rs, rt, rd, funct),
             0x11 => self.cop1(w, rs, rt, rd, sa as usize, funct),
             0x12 => self.cop2(w, rs, rt, rd),
             0x14 => self.branch(a == b, bt, true),
             0x15 => self.branch(a != b, bt, true),
             0x16 => self.branch(a as i64 <= 0, bt, true),
             0x17 => self.branch(a as i64 > 0, bt, true),
-            0x18 | 0x19 => self.set(rt, a.wrapping_add(simm)),
+            0x18 => match (a as i64).checked_add(simm as i64) {
+                Some(v) => self.set(rt, v as u64),
+                None => self.raise(Exception::Overflow),
+            },
+            0x19 => self.set(rt, a.wrapping_add(simm)),
             0x1A | 0x1B => {
                 let k = addr & 7;
                 let m = self.r64(addr & !7);
@@ -120,6 +152,9 @@ impl Ee {
                 self.set(rt, v)
             }
             0x21 => {
+                if self.misaligned(addr, 1, false) {
+                    return;
+                }
                 let v = self.r16(addr) as i16 as i64 as u64;
                 self.set(rt, v)
             }
@@ -138,6 +173,9 @@ impl Ee {
                 }
             }
             0x23 => {
+                if self.misaligned(addr, 3, false) {
+                    return;
+                }
                 let v = sx32(self.r32(addr));
                 self.set(rt, v)
             }
@@ -146,15 +184,26 @@ impl Ee {
                 self.set(rt, v)
             }
             0x25 => {
+                if self.misaligned(addr, 1, false) {
+                    return;
+                }
                 let v = self.r16(addr) as u64;
                 self.set(rt, v)
             }
             0x27 => {
+                if self.misaligned(addr, 3, false) {
+                    return;
+                }
                 let v = self.r32(addr) as u64;
                 self.set(rt, v)
             }
             0x28 => self.write(addr, &[b as u8]),
-            0x29 => self.write(addr, &(b as u16).to_le_bytes()),
+            0x29 => {
+                if self.misaligned(addr, 1, true) {
+                    return;
+                }
+                self.write(addr, &(b as u16).to_le_bytes())
+            }
             0x2A | 0x2E => {
                 let k = addr & 3;
                 let m = self.r32(addr & !3) as u64;
@@ -168,7 +217,12 @@ impl Ee {
                 };
                 self.w32(addr & !3, v as u32);
             }
-            0x2B => self.w32(addr, b as u32),
+            0x2B => {
+                if self.misaligned(addr, 3, true) {
+                    return;
+                }
+                self.w32(addr, b as u32)
+            }
             0x2C | 0x2D => {
                 let k = addr & 7;
                 let m = self.r64(addr & !7);
@@ -182,7 +236,12 @@ impl Ee {
                 self.write(addr & !7, &v.to_le_bytes());
             }
             0x2F | 0x33 => {} // cache, pref
-            0x31 => self.fpr[rt] = f32::from_bits(self.r32(addr)),
+            0x31 => {
+                if self.misaligned(addr, 3, false) {
+                    return;
+                }
+                self.fpr[rt] = f32::from_bits(self.r32(addr))
+            }
             0x36 => {
                 let v = self.r128(addr & !15);
                 if rt != 0 {
@@ -190,19 +249,40 @@ impl Ee {
                 }
             }
             0x37 => {
+                if self.misaligned(addr, 7, false) {
+                    return;
+                }
                 let v = self.r64(addr);
                 self.set(rt, v)
             }
-            0x39 => self.w32(addr, self.fpr[rt].to_bits()),
+            0x39 => {
+                if self.misaligned(addr, 3, true) {
+                    return;
+                }
+                self.w32(addr, self.fpr[rt].to_bits())
+            }
             0x3E => {
                 let v = vf_bits(self.vf[rt]);
                 self.write(addr & !15, &v.to_le_bytes());
             }
-            0x3F => self.write(addr, &b.to_le_bytes()),
+            0x3F => {
+                if self.misaligned(addr, 7, true) {
+                    return;
+                }
+                self.write(addr, &b.to_le_bytes())
+            }
             _ => self.unimpl(w, "opcode"),
         }
     }
 
+    #[inline(never)]
+    fn trap(&mut self, cond: bool) {
+        if cond {
+            self.raise(Exception::Trap);
+        }
+    }
+
+    #[inline(never)]
     fn special(&mut self, w: u32, rs: usize, rt: usize, rd: usize, sa: u32, funct: u32) {
         let (a, b) = (self.g(rs), self.g(rt));
         let (a32, b32) = (a as u32, b as u32);
@@ -228,6 +308,9 @@ impl Ee {
                     self.set(rd, a)
                 }
             }
+            // The syscall number is in v1 (the SDK passes negative numbers for interrupt context).
+            0x0C => self.raise(Exception::Syscall(self.g32(super::reg::V1) as i32)),
+            0x0D => self.raise(Exception::Break((w >> 6) & 0xF_FFFF)),
             0x0F => {} // sync
             0x10 => self.set(rd, lo64(self.hi)),
             0x11 => self.hi = with_lo64(self.hi, a),
@@ -243,8 +326,16 @@ impl Ee {
                 self.set(rd, sx32(p as u32));
             }
             0x1A | 0x1B => self.divide(a32, b32, funct == 0x1A, false),
-            0x20 | 0x21 => self.set(rd, sx32(a32.wrapping_add(b32))),
-            0x22 | 0x23 => self.set(rd, sx32(a32.wrapping_sub(b32))),
+            0x20 => match (a32 as i32).checked_add(b32 as i32) {
+                Some(v) => self.set(rd, sx32(v as u32)),
+                None => self.raise(Exception::Overflow),
+            },
+            0x21 => self.set(rd, sx32(a32.wrapping_add(b32))),
+            0x22 => match (a32 as i32).checked_sub(b32 as i32) {
+                Some(v) => self.set(rd, sx32(v as u32)),
+                None => self.raise(Exception::Overflow),
+            },
+            0x23 => self.set(rd, sx32(a32.wrapping_sub(b32))),
             0x24 => self.set(rd, a & b),
             0x25 => self.set(rd, a | b),
             0x26 => self.set(rd, a ^ b),
@@ -253,8 +344,23 @@ impl Ee {
             0x29 => self.sa = a32,
             0x2A => self.set(rd, ((a as i64) < (b as i64)) as u64),
             0x2B => self.set(rd, (a < b) as u64),
-            0x2C | 0x2D => self.set(rd, a.wrapping_add(b)),
-            0x2E | 0x2F => self.set(rd, a.wrapping_sub(b)),
+            0x2C => match (a as i64).checked_add(b as i64) {
+                Some(v) => self.set(rd, v as u64),
+                None => self.raise(Exception::Overflow),
+            },
+            0x2D => self.set(rd, a.wrapping_add(b)),
+            0x2E => match (a as i64).checked_sub(b as i64) {
+                Some(v) => self.set(rd, v as u64),
+                None => self.raise(Exception::Overflow),
+            },
+            0x2F => self.set(rd, a.wrapping_sub(b)),
+            // tge tgeu tlt tltu teq tne
+            0x30 => self.trap(a as i64 >= b as i64),
+            0x31 => self.trap(a >= b),
+            0x32 => self.trap((a as i64) < b as i64),
+            0x33 => self.trap(a < b),
+            0x34 => self.trap(a == b),
+            0x36 => self.trap(a != b),
             0x38 => self.set(rd, b << sa),
             0x3A => self.set(rd, b >> sa),
             0x3B => self.set(rd, ((b as i64) >> sa) as u64),
@@ -265,7 +371,7 @@ impl Ee {
         }
     }
 
-    fn divide(&mut self, a: u32, b: u32, signed: bool, pipe1: bool) {
+    pub(crate) fn divide(&mut self, a: u32, b: u32, signed: bool, pipe1: bool) {
         let (q, r) = if signed {
             let (x, y) = (a as i32, b as i32);
             if y == 0 {
@@ -287,6 +393,7 @@ impl Ee {
         }
     }
 
+    #[inline(never)]
     fn cop1(&mut self, w: u32, fmt: usize, ft: usize, fs: usize, fd: usize, funct: u32) {
         const C: u32 = 1 << 23;
         match fmt {
@@ -343,344 +450,12 @@ impl Ee {
             _ => self.unimpl(w, "cop1"),
         }
     }
-
-    fn vi_read(&self, r: usize) -> u32 {
-        match r {
-            0 => 0,
-            1..=15 => self.vi[r] & 0xFFFF,
-            22 => self.q.to_bits(),
-            _ => self.vi[r],
-        }
-    }
-
-    fn vi_write(&mut self, r: usize, v: u32) {
-        match r {
-            0 => {}
-            1..=15 => self.vi[r] = v & 0xFFFF,
-            22 => self.q = f32::from_bits(v),
-            _ => self.vi[r] = v,
-        }
-    }
-
-    fn i_reg(&self) -> f32 {
-        f32::from_bits(self.vi[21])
-    }
-
-    fn vset(&mut self, fd: usize, dest: u32, v: [f32; 4]) {
-        if fd == 0 {
-            return;
-        }
-        for (i, x) in v.into_iter().enumerate() {
-            if dest & (8 >> i) != 0 {
-                self.vf[fd][i] = clamp(x);
-            }
-        }
-    }
-
-    fn aset(&mut self, dest: u32, v: [f32; 4]) {
-        for (i, x) in v.into_iter().enumerate() {
-            if dest & (8 >> i) != 0 {
-                self.vacc[i] = clamp(x);
-            }
-        }
-    }
-
-    fn cop2(&mut self, w: u32, fmt: usize, rt: usize, rd: usize) {
-        if w & (1 << 25) == 0 {
-            match fmt {
-                0x01 => self.set128(rt, vf_bits(self.vf[rd])),
-                0x02 => self.set(rt, sx32(self.vi_read(rd))),
-                0x05 => {
-                    if rd != 0 {
-                        self.vf[rd] = bits_vf(self.gpr[rt])
-                    }
-                }
-                0x06 => self.vi_write(rd, self.g32(rt)),
-                _ => self.unimpl(w, "cop2"),
-            }
-            return;
-        }
-        let dest = (w >> 21) & 15;
-        let ft = ((w >> 16) & 31) as usize;
-        let fs = ((w >> 11) & 31) as usize;
-        let fd = ((w >> 6) & 31) as usize;
-        let funct = w & 63;
-        let (s, t) = (self.vf[fs], self.vf[ft]);
-        let acc = self.vacc;
-        let bc = t[(funct & 3) as usize];
-        let (q, i) = (self.q, self.i_reg());
-        let map = |f: &dyn Fn(usize) -> f32| -> [f32; 4] { std::array::from_fn(f) };
-        if funct < 0x3C {
-            match funct {
-                0x00..=0x03 => self.vset(fd, dest, map(&|k| s[k] + bc)),
-                0x04..=0x07 => self.vset(fd, dest, map(&|k| s[k] - bc)),
-                0x08..=0x0B => self.vset(fd, dest, map(&|k| acc[k] + s[k] * bc)),
-                0x0C..=0x0F => self.vset(fd, dest, map(&|k| acc[k] - s[k] * bc)),
-                0x10..=0x13 => self.vset(fd, dest, map(&|k| s[k].max(bc))),
-                0x14..=0x17 => self.vset(fd, dest, map(&|k| s[k].min(bc))),
-                0x18..=0x1B => self.vset(fd, dest, map(&|k| s[k] * bc)),
-                0x1C => self.vset(fd, dest, map(&|k| s[k] * q)),
-                0x1D => self.vset(fd, dest, map(&|k| s[k].max(i))),
-                0x1E => self.vset(fd, dest, map(&|k| s[k] * i)),
-                0x1F => self.vset(fd, dest, map(&|k| s[k].min(i))),
-                0x20 => self.vset(fd, dest, map(&|k| s[k] + q)),
-                0x21 => self.vset(fd, dest, map(&|k| acc[k] + s[k] * q)),
-                0x22 => self.vset(fd, dest, map(&|k| s[k] + i)),
-                0x23 => self.vset(fd, dest, map(&|k| acc[k] + s[k] * i)),
-                0x24 => self.vset(fd, dest, map(&|k| s[k] - q)),
-                0x25 => self.vset(fd, dest, map(&|k| acc[k] - s[k] * q)),
-                0x26 => self.vset(fd, dest, map(&|k| s[k] - i)),
-                0x27 => self.vset(fd, dest, map(&|k| acc[k] - s[k] * i)),
-                0x28 => self.vset(fd, dest, map(&|k| s[k] + t[k])),
-                0x29 => self.vset(fd, dest, map(&|k| acc[k] + s[k] * t[k])),
-                0x2A => self.vset(fd, dest, map(&|k| s[k] * t[k])),
-                0x2B => self.vset(fd, dest, map(&|k| s[k].max(t[k]))),
-                0x2C => self.vset(fd, dest, map(&|k| s[k] - t[k])),
-                0x2D => self.vset(fd, dest, map(&|k| acc[k] - s[k] * t[k])),
-                0x2E => self.vset(fd, dest & 0xE, [acc[0] - s[1] * t[2], acc[1] - s[2] * t[0], acc[2] - s[0] * t[1], 0.0]),
-                0x2F => self.vset(fd, dest, map(&|k| s[k].min(t[k]))),
-                0x30 => self.vi_write(fd, self.vi_read(fs).wrapping_add(self.vi_read(ft))),
-                0x31 => self.vi_write(fd, self.vi_read(fs).wrapping_sub(self.vi_read(ft))),
-                0x32 => {
-                    let imm = ((((w >> 6) & 31) as i32) << 27 >> 27) as u32;
-                    self.vi_write(ft, self.vi_read(fs).wrapping_add(imm))
-                }
-                0x34 => self.vi_write(fd, self.vi_read(fs) & self.vi_read(ft)),
-                0x35 => self.vi_write(fd, self.vi_read(fs) | self.vi_read(ft)),
-                _ => self.unimpl(w, "vu upper"),
-            }
-            return;
-        }
-        let op = (((w >> 6) & 31) << 2) | (funct & 3);
-        let fsf = ((w >> 21) & 3) as usize;
-        let ftf = ((w >> 23) & 3) as usize;
-        let scale = |n: u32| (1u32 << n) as f32;
-        match op {
-            0x00..=0x03 => self.aset(dest, map(&|k| s[k] + bc)),
-            0x04..=0x07 => self.aset(dest, map(&|k| s[k] - bc)),
-            0x08..=0x0B => self.aset(dest, map(&|k| acc[k] + s[k] * bc)),
-            0x0C..=0x0F => self.aset(dest, map(&|k| acc[k] - s[k] * bc)),
-            0x10..=0x13 => {
-                let n = [0, 4, 12, 15][(op & 3) as usize];
-                let v = map(&|k| s[k].to_bits() as i32 as f32 / scale(n));
-                self.vset(ft, dest, v);
-            }
-            0x14..=0x17 => {
-                if ft != 0 {
-                    let n = [0, 4, 12, 15][(op & 3) as usize];
-                    for (k, sk) in s.iter().enumerate() {
-                        if dest & (8 >> k) != 0 {
-                            self.vf[ft][k] = f32::from_bits((*sk * scale(n)) as i32 as u32);
-                        }
-                    }
-                }
-            }
-            0x18..=0x1B => self.aset(dest, map(&|k| s[k] * bc)),
-            0x1C => self.aset(dest, map(&|k| s[k] * q)),
-            0x1D => self.vset(ft, dest, map(&|k| s[k].abs())),
-            0x1E => self.aset(dest, map(&|k| s[k] * i)),
-            0x1F => {
-                let wv = t[3].abs();
-                let mut flags = 0u32;
-                for (k, sk) in s.iter().enumerate().take(3) {
-                    if *sk > wv {
-                        flags |= 1 << (2 * k);
-                    }
-                    if *sk < -wv {
-                        flags |= 2 << (2 * k);
-                    }
-                }
-                self.vi[18] = ((self.vi[18] << 6) | flags) & 0xFF_FFFF;
-            }
-            0x20 => self.aset(dest, map(&|k| s[k] + q)),
-            0x21 => self.aset(dest, map(&|k| acc[k] + s[k] * q)),
-            0x22 => self.aset(dest, map(&|k| s[k] + i)),
-            0x23 => self.aset(dest, map(&|k| acc[k] + s[k] * i)),
-            0x24 => self.aset(dest, map(&|k| s[k] - q)),
-            0x25 => self.aset(dest, map(&|k| acc[k] - s[k] * q)),
-            0x26 => self.aset(dest, map(&|k| s[k] - i)),
-            0x27 => self.aset(dest, map(&|k| acc[k] - s[k] * i)),
-            0x28 => self.aset(dest, map(&|k| s[k] + t[k])),
-            0x29 => self.aset(dest, map(&|k| acc[k] + s[k] * t[k])),
-            0x2A => self.aset(dest, map(&|k| s[k] * t[k])),
-            0x2C => self.aset(dest, map(&|k| s[k] - t[k])),
-            0x2D => self.aset(dest, map(&|k| acc[k] - s[k] * t[k])),
-            0x2E => self.aset(dest & 0xE, [s[1] * t[2], s[2] * t[0], s[0] * t[1], 0.0]),
-            0x2F | 0x3B => {} // vnop, vwaitq
-            0x30 => self.vset(ft, dest, s),
-            0x31 => self.vset(ft, dest, [s[1], s[2], s[3], s[0]]),
-            0x38 => {
-                let (n, d) = (s[fsf], t[ftf]);
-                self.q = clamp(if d == 0.0 { f32::MAX.copysign(n) * d.signum() } else { n / d });
-            }
-            0x39 => self.q = t[ftf].abs().sqrt(),
-            0x3A => {
-                let d = t[ftf].abs().sqrt();
-                self.q = clamp(if d == 0.0 { f32::MAX.copysign(s[fsf]) } else { s[fsf] / d });
-            }
-            0x3C => self.vi_write(ft, s[fsf].to_bits() & 0xFFFF),
-            0x3D => {
-                let v = f32::from_bits(self.vi_read(fs) as u16 as i16 as i32 as u32);
-                if ft != 0 {
-                    for k in 0..4 {
-                        if dest & (8 >> k) != 0 {
-                            self.vf[ft][k] = v;
-                        }
-                    }
-                }
-            }
-            _ => self.unimpl(w, "vu lower"),
-        }
-    }
-
-    fn mmi(&mut self, w: u32, rs: usize, rt: usize, rd: usize, sa: u32, funct: u32) {
-        let (a, b) = (self.gpr[rs], self.gpr[rt]);
-        let (wa, wb) = (words(a), words(b));
-        match funct {
-            0x00 | 0x01 | 0x20 | 0x21 => {
-                let pipe1 = funct >= 0x20;
-                let (x, y) = (wa[0], wb[0]);
-                let p = if funct & 1 == 0 { (x as i32 as i64).wrapping_mul(y as i32 as i64) as u64 } else { x as u64 * y as u64 };
-                let (l, h) = if pipe1 { ((self.lo >> 64) as u32, (self.hi >> 64) as u32) } else { (self.lo as u32, self.hi as u32) };
-                let s = (((h as u64) << 32) | l as u64).wrapping_add(p);
-                let (nl, nh) = (sx32(s as u32), sx32((s >> 32) as u32));
-                if pipe1 {
-                    self.lo = with_hi64(self.lo, nl);
-                    self.hi = with_hi64(self.hi, nh);
-                } else {
-                    self.lo = with_lo64(self.lo, nl);
-                    self.hi = with_lo64(self.hi, nh);
-                }
-                self.set(rd, nl);
-            }
-            0x04 => {
-                let lz = |x: u32| if (x as i32) < 0 { (!x).leading_zeros() - 1 } else { x.leading_zeros() - 1 };
-                self.set(rd, lz(wa[0]) as u64 | (lz(wa[1]) as u64) << 32);
-            }
-            0x08 => self.mmi0(w, rd, wa, wb, a, b, sa),
-            0x09 => self.mmi2(w, rd, wa, wb, a, b, sa),
-            0x10 => self.set(rd, (self.hi >> 64) as u64),
-            0x11 => self.hi = with_hi64(self.hi, a as u64),
-            0x12 => self.set(rd, (self.lo >> 64) as u64),
-            0x13 => self.lo = with_hi64(self.lo, a as u64),
-            0x18 | 0x19 => {
-                let p = if funct == 0x18 { (wa[0] as i32 as i64).wrapping_mul(wb[0] as i32 as i64) as u64 } else { wa[0] as u64 * wb[0] as u64 };
-                self.lo = with_hi64(self.lo, sx32(p as u32));
-                self.hi = with_hi64(self.hi, sx32((p >> 32) as u32));
-                self.set(rd, sx32(p as u32));
-            }
-            0x1A | 0x1B => self.divide(wa[0], wb[0], funct == 0x1A, true),
-            0x28 => self.mmi1(w, rd, wa, wb, a, b, sa),
-            0x29 => self.mmi3(w, rd, wa, wb, a, b, sa),
-            // PMFHL.LW / .UW: the low or high pipe's product, as the soft-float multiply reads it.
-            0x30 if sa <= 1 => {
-                let (lo, hi) = (words(self.lo), words(self.hi));
-                self.set128(rd, if sa == 0 { from_words([lo[0], hi[0], lo[2], hi[2]]) } else { from_words([lo[1], hi[1], lo[3], hi[3]]) });
-            }
-            0x34 | 0x36 | 0x37 => {
-                let h = halves(b).map(|x| match funct {
-                    0x34 => x << sa,
-                    0x36 => x >> sa,
-                    _ => ((x as i16) >> sa) as u16,
-                });
-                self.set128(rd, from_halves(h));
-            }
-            0x3C | 0x3E | 0x3F => {
-                let v = wb.map(|x| match funct {
-                    0x3C => x << sa,
-                    0x3E => x >> sa,
-                    _ => ((x as i32) >> sa) as u32,
-                });
-                self.set128(rd, from_words(v));
-            }
-            _ => self.unimpl(w, "mmi"),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn mmi0(&mut self, w: u32, rd: usize, wa: [u32; 4], wb: [u32; 4], _a: u128, _b: u128, sa: u32) {
-        let r = match sa {
-            0x00 => from_words(std::array::from_fn(|k| wa[k].wrapping_add(wb[k]))),
-            0x01 => from_words(std::array::from_fn(|k| wa[k].wrapping_sub(wb[k]))),
-            0x02 => from_words(std::array::from_fn(|k| if (wa[k] as i32) > (wb[k] as i32) { u32::MAX } else { 0 })),
-            0x03 => from_words(std::array::from_fn(|k| (wa[k] as i32).max(wb[k] as i32) as u32)),
-            0x12 => from_words([wb[0], wa[0], wb[1], wa[1]]),
-            0x13 => from_words([wb[0], wb[2], wa[0], wa[2]]),
-            _ => return self.unimpl(w, "mmi0"),
-        };
-        self.set128(rd, r);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn mmi1(&mut self, w: u32, rd: usize, wa: [u32; 4], wb: [u32; 4], a: u128, b: u128, sa: u32) {
-        let r = match sa {
-            0x01 => from_words(wb.map(|x| (x as i32).unsigned_abs().min(i32::MAX as u32))),
-            0x02 => from_words(std::array::from_fn(|k| if wa[k] == wb[k] { u32::MAX } else { 0 })),
-            0x03 => from_words(std::array::from_fn(|k| (wa[k] as i32).min(wb[k] as i32) as u32)),
-            0x10 => from_words(std::array::from_fn(|k| wa[k].saturating_add(wb[k]))),
-            0x12 => from_words([wb[2], wa[2], wb[3], wa[3]]),
-            0x1B => {
-                // qfsrv: rd = low 128 bits of (rs:rt) >> SA
-                let s = self.sa & 127;
-                if s == 0 { b } else { (b >> s) | (a << (128 - s)) }
-            }
-            _ => return self.unimpl(w, "mmi1"),
-        };
-        self.set128(rd, r);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn mmi2(&mut self, w: u32, rd: usize, wa: [u32; 4], wb: [u32; 4], a: u128, b: u128, sa: u32) {
-        let r = match sa {
-            0x08 => self.hi,
-            0x09 => self.lo,
-            0x0E => (a << 64) | (b & u64::MAX as u128),
-            0x12 => a & b,
-            0x13 => a ^ b,
-            0x1E => from_words([wb[2], wb[1], wb[0], wb[3]]),
-            0x1F => from_words([wb[1], wb[2], wb[0], wb[3]]),
-            _ => {
-                let _ = wa;
-                return self.unimpl(w, "mmi2");
-            }
-        };
-        self.set128(rd, r);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn mmi3(&mut self, w: u32, rd: usize, wa: [u32; 4], wb: [u32; 4], a: u128, b: u128, sa: u32) {
-        match sa {
-            0x08 => {
-                self.hi = a;
-                return;
-            }
-            0x09 => {
-                self.lo = a;
-                return;
-            }
-            _ => {}
-        }
-        let r = match sa {
-            0x0E => (b & !(u64::MAX as u128)) | (a >> 64),
-            0x12 => a | b,
-            0x13 => !(a | b),
-            0x1B => {
-                let h = halves(b);
-                from_halves([h[0], h[0], h[0], h[0], h[4], h[4], h[4], h[4]])
-            }
-            0x1E => from_words([wb[0], wb[2], wb[1], wb[3]]),
-            _ => {
-                let _ = wa;
-                return self.unimpl(w, "mmi3");
-            }
-        };
-        self.set128(rd, r);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Fault;
 
     fn asm_r(op: u32, rs: u32, rt: u32, rd: u32, sa: u32, funct: u32) -> u32 {
         (op << 26) | (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct
@@ -702,6 +477,17 @@ mod tests {
         e
     }
 
+    /// Runs `code` and returns the fault it ended with.
+    fn run_fault(code: &[u32]) -> Fault {
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        for (i, w) in code.iter().enumerate() {
+            e.w32(base + 4 * i as u32, *w);
+        }
+        e.w32(base + 4 * code.len() as u32, asm_r(0, 31, 0, 0, 0, 8));
+        e.call(base, &[], &[], 0x01F0_0000).unwrap_err()
+    }
+
     #[test]
     fn integer_and_branch_delay() {
         // addiu v0, zero, 5; beq zero, zero, +2; addiu v0, v0, 1 (delay slot); addiu v0, v0, 100; addiu v0, v0, 10
@@ -717,34 +503,263 @@ mod tests {
     }
 
     #[test]
-    fn vu_macro_mul_add() {
-        let mut e = Ee::new();
-        e.vf[1] = [1.0, 2.0, 3.0, 4.0];
-        e.vf[2] = [10.0, 20.0, 30.0, 40.0];
-        // vmulax.xyzw ACC, vf1, vf2x  (special2 op 0x18: fd field 6, funct 0x3C)
-        e.exec((0x12 << 26) | (1 << 25) | (15 << 21) | (2 << 16) | (1 << 11) | (6 << 6) | 0x3C);
-        assert_eq!(e.vacc, [10.0, 20.0, 30.0, 40.0]);
-        // vmaddy.xyzw vf3, vf1, vf2y : fd = acc + vf1*20
-        e.exec((0x12 << 26) | (1 << 25) | (15 << 21) | (2 << 16) | (1 << 11) | (3 << 6) | 0x09);
-        assert_eq!(e.vf[3], [30.0, 60.0, 90.0, 120.0]);
-        // vdiv Q, vf1x, vf2y  -> 1/20
-        e.exec((0x12 << 26) | (1 << 25) | (1 << 23) | (2 << 16) | (1 << 11) | (0x0E << 6) | 0x3C);
-        assert!((e.q - 0.05).abs() < 1e-7);
+    fn syscall_without_handler_faults_with_the_number() {
+        // R5900 manual, SYSCALL: the exception code is Sys; the SDK puts the number in v1.
+        let f = run_fault(&[asm_i(9, 0, 3, 0xFFFE), asm_r(0, 0, 0, 0, 0, 0x0C)]); // v1 = -2
+        assert!(matches!(f, Fault::Exception { exc: Exception::Syscall(-2), .. }), "{f:?}");
     }
 
     #[test]
-    fn mmi_extend_and_copy() {
+    fn syscall_table_runs_the_host_handler_and_continues() {
+        use std::cell::Cell;
+        use std::rc::Rc;
         let mut e = Ee::new();
-        e.gpr[1] = from_words([1, 2, 3, 4]);
-        e.gpr[2] = from_words([5, 6, 7, 8]);
-        // pextlw v1(3), at(1), v0(2)
-        e.exec(asm_r(0x1C, 1, 2, 3, 0x12, 0x08));
-        assert_eq!(words(e.gpr[3]), [5, 1, 6, 2]);
-        // pcpyld a0(4), at, v0 -> lo = v0.lo, hi = at.lo
-        e.exec(asm_r(0x1C, 1, 2, 4, 0x0E, 0x09));
-        assert_eq!(words(e.gpr[4]), [5, 6, 1, 2]);
-        // pcpyud a1(5), at, v0 -> lo = at.hi, hi = v0.hi
-        e.exec(asm_r(0x1C, 1, 2, 5, 0x0E, 0x29));
-        assert_eq!(words(e.gpr[5]), [3, 4, 7, 8]);
+        let seen = Rc::new(Cell::new(0u64));
+        let s2 = seen.clone();
+        // The handler reads a0 and returns a0 + 1 in v0; the program counter is already past the syscall.
+        e.syscalls.insert(0x3C, move |ee: &mut Ee| {
+            s2.set(ee.gpr[4] as u64);
+            ee.gpr[2] = ee.gpr[4] + 1;
+        });
+        let base = 0x0010_0000u32;
+        for (i, w) in [asm_i(9, 0, 3, 0x3C), asm_i(9, 0, 4, 41), asm_r(0, 0, 0, 0, 0, 0x0C), asm_i(9, 2, 2, 100), asm_r(0, 31, 0, 0, 0, 8), 0].iter().enumerate() {
+            e.w32(base + 4 * i as u32, *w);
+        }
+        let v0 = e.call(base, &[], &[], 0x01F0_0000).unwrap();
+        assert_eq!(seen.get(), 41);
+        assert_eq!(v0, 142, "the instruction after the syscall ran with the handler's v0");
+    }
+
+    #[test]
+    fn syscall_handler_may_switch_context() {
+        use crate::Stop;
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        // Thread A: v1 = 7; syscall; (never resumed here). Thread B at base + 0x100: v0 = 99; jr ra.
+        for (i, w) in [asm_i(9, 0, 3, 7), asm_r(0, 0, 0, 0, 0, 0x0C), asm_i(9, 0, 2, 1), asm_r(0, 31, 0, 0, 0, 8), 0].iter().enumerate() {
+            e.w32(base + 4 * i as u32, *w);
+        }
+        for (i, w) in [asm_i(9, 0, 2, 99), asm_r(0, 31, 0, 0, 0, 8), 0].iter().enumerate() {
+            e.w32(base + 0x100 + 4 * i as u32, *w);
+        }
+        e.syscalls.insert(7, move |ee: &mut Ee| {
+            let mut c = ee.context();
+            c.pc = 0x0010_0100;
+            c.npc = 0x0010_0104;
+            ee.set_context(&c);
+        });
+        e.gpr[31] = crate::SENTINEL as u128;
+        e.pc = base;
+        e.npc = base + 4;
+        assert_eq!(e.run(100).unwrap(), Stop::Returned);
+        assert_eq!(e.gpr[2] as u64, 99, "execution went to the other thread");
+    }
+
+    #[test]
+    fn break_reports_its_code() {
+        // gcc's divide-by-zero check is `break 7` (code in bits 25:6).
+        let f = run_fault(&[asm_r(0, 0, 0, 0, 0, 0x0D) | (7 << 6)]);
+        assert!(matches!(f, Fault::Exception { exc: Exception::Break(7), .. }), "{f:?}");
+    }
+
+    #[test]
+    fn misaligned_accesses_raise_address_errors() {
+        // R5900 manual, load/store: lw/sw need 4, lh/sh 2, ld/sd 8 byte alignment; lq/sq ignore the low bits.
+        let cases = [
+            (asm_i(0x23, 4, 2, 0), false), // lw
+            (asm_i(0x2B, 4, 2, 0), true),  // sw
+            (asm_i(0x21, 4, 2, 0), false), // lh
+            (asm_i(0x29, 4, 2, 0), true),  // sh
+            (asm_i(0x37, 4, 2, 0), false), // ld
+            (asm_i(0x3F, 4, 2, 0), true),  // sd
+        ];
+        for (word, store) in cases {
+            let mut e = Ee::new();
+            let base = 0x0010_0000u32;
+            e.w32(base, word);
+            let r = e.call(base, &[0x0020_0001], &[], 0x01F0_0000);
+            let Err(Fault::Exception { exc: Exception::AddressError { addr, store: s }, pc }) = r else { panic!("{word:08x}: {r:?}") };
+            assert_eq!((addr, s, pc), (0x0020_0001, store, base), "{word:08x}");
+            assert_eq!(e.cop0[8], 0x0020_0001, "BadVAddr");
+        }
+        // Aligned halfword and quadword accesses are fine; lq with a low-bit address truncates.
+        let mut e = Ee::new();
+        e.w32(0x0020_0000, 0xAABB_CCDD);
+        e.w32(0x0010_0000, asm_i(0x1E, 4, 2, 0));
+        e.w32(0x0010_0004, asm_r(0, 31, 0, 0, 0, 8));
+        e.call(0x0010_0000, &[0x0020_0007], &[], 0x01F0_0000).unwrap();
+        assert_eq!(e.gpr[2] as u32, 0xAABB_CCDD);
+    }
+
+    #[test]
+    fn misaligned_jump_target_raises_an_address_error_on_fetch() {
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        e.w32(base, asm_r(0, 4, 0, 0, 0, 8)); // jr a0
+        let r = e.call(base, &[0x0010_0102], &[], 0x01F0_0000);
+        assert!(matches!(r, Err(Fault::Exception { exc: Exception::AddressError { addr: 0x0010_0102, store: false }, .. })), "{r:?}");
+    }
+
+    #[test]
+    fn signed_overflow_traps_but_unsigned_forms_wrap() {
+        // add/addi/sub raise Overflow (ExcCode 12); addu/addiu/subu wrap.
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        e.w32(base, asm_r(0, 4, 5, 2, 0, 0x20)); // add v0, a0, a1
+        let r = e.call(base, &[0x7FFF_FFFF, 1], &[], 0x01F0_0000);
+        assert!(matches!(r, Err(Fault::Exception { exc: Exception::Overflow, .. })), "{r:?}");
+        e.w32(base, asm_r(0, 4, 5, 2, 0, 0x21)); // addu
+        e.w32(base + 4, asm_r(0, 31, 0, 0, 0, 8));
+        e.call(base, &[0x7FFF_FFFF, 1], &[], 0x01F0_0000).unwrap();
+        assert_eq!(e.gpr[2] as u64, 0xFFFF_FFFF_8000_0000);
+        e.w32(base, asm_i(8, 4, 2, 1)); // addi v0, a0, 1
+        let r = e.call(base, &[0x7FFF_FFFF], &[], 0x01F0_0000);
+        assert!(matches!(r, Err(Fault::Exception { exc: Exception::Overflow, .. })), "{r:?}");
+        e.w32(base, asm_r(0, 4, 5, 2, 0, 0x22)); // sub
+        let r = e.call(base, &[0x8000_0000u64 as u32 as i32 as i64 as u64, 1], &[], 0x01F0_0000);
+        assert!(matches!(r, Err(Fault::Exception { exc: Exception::Overflow, .. })), "{r:?}");
+    }
+
+    #[test]
+    fn conditional_traps_fire_on_their_condition() {
+        // teq a0, a1 (funct 0x34) and tne (0x36).
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        e.w32(base, asm_r(0, 4, 5, 0, 0, 0x34));
+        e.w32(base + 4, asm_r(0, 31, 0, 0, 0, 8));
+        assert!(e.call(base, &[3, 4], &[], 0x01F0_0000).is_ok());
+        let r = e.call(base, &[3, 3], &[], 0x01F0_0000);
+        assert!(matches!(r, Err(Fault::Exception { exc: Exception::Trap, .. })), "{r:?}");
+    }
+
+    #[test]
+    fn closures_capture_state_and_hooks_return_to_ra() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let mut e = Ee::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let l2 = log.clone();
+        // The hook at 0x100800 stands in for a function: it logs a0 and returns a0 * 2.
+        e.hooks.insert(0x0010_0800, move |ee: &mut Ee| {
+            l2.borrow_mut().push(ee.gpr[4] as u64);
+            ee.gpr[2] = ee.gpr[4] * 2;
+        });
+        let base = 0x0010_0000u32;
+        // addiu sp,sp,-16; sw ra,0(sp); jal 0x100800; nop; lw ra,0(sp); addiu sp,sp,16; jr ra; nop
+        for (i, w) in [asm_i(9, 29, 29, 0xFFF0), asm_i(0x2B, 29, 31, 0), (3 << 26) | (0x0010_0800 >> 2), 0, asm_i(0x23, 29, 31, 0), asm_i(9, 29, 29, 16), asm_r(0, 31, 0, 0, 0, 8), 0]
+            .iter()
+            .enumerate()
+        {
+            e.w32(base + 4 * i as u32, *w);
+        }
+        assert_eq!(e.call(base, &[21], &[], 0x01F0_0000).unwrap(), 42);
+        assert_eq!(*log.borrow(), vec![21]);
+        // Removing a hook takes effect on the next call.
+        e.hooks.remove(&0x0010_0800);
+        e.w32(0x0010_0800, asm_r(0, 31, 0, 0, 0, 8));
+        e.call(base, &[5], &[], 0x01F0_0000).unwrap();
+        assert_eq!(log.borrow().len(), 1);
+    }
+
+    #[test]
+    fn nested_call_from_a_hook_leaves_the_outer_return_intact() {
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        // Inner function at 0x100400: v0 = a0 + 1.
+        e.w32(0x0010_0400, asm_i(9, 4, 2, 1));
+        e.w32(0x0010_0404, asm_r(0, 31, 0, 0, 0, 8));
+        e.hooks.insert(0x0010_0800, |ee: &mut Ee| {
+            let a = ee.gpr[4] as u64;
+            let r = ee.call(0x0010_0400, &[a], &[], 0x01EF_0000).unwrap();
+            ee.gpr[2] = r as u128 * 10;
+        });
+        for (i, w) in [asm_i(9, 29, 29, 0xFFF0), asm_i(0x2B, 29, 31, 0), (3 << 26) | (0x0010_0800 >> 2), 0, asm_i(0x23, 29, 31, 0), asm_i(9, 29, 29, 16), asm_r(0, 31, 0, 0, 0, 8), 0]
+            .iter()
+            .enumerate()
+        {
+            e.w32(base + 4 * i as u32, *w);
+        }
+        assert_eq!(e.call(base, &[4], &[], 0x01F0_0000).unwrap(), 50);
+    }
+
+    #[test]
+    fn a_hook_reaching_itself_is_reported() {
+        let mut e = Ee::new();
+        e.w32(0x0010_0400, asm_r(0, 31, 0, 0, 0, 8));
+        e.hooks.insert(0x0010_0400, |ee: &mut Ee| {
+            let _ = ee.call(0x0010_0400, &[], &[], 0x01EF_0000);
+        });
+        // The inner call fails with Reentrant (ignored by the closure); the outer call completes.
+        assert!(e.call(0x0010_0400, &[], &[], 0x01F0_0000).is_ok());
+    }
+
+    #[test]
+    fn probes_run_before_the_instruction_and_the_run_continues() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let mut e = Ee::new();
+        let seen = Rc::new(Cell::new(0u64));
+        let s2 = seen.clone();
+        e.probes.insert(0x0010_0004, move |ee: &mut Ee| s2.set(ee.gpr[2] as u64));
+        let out = {
+            let base = 0x0010_0000u32;
+            for (i, w) in [asm_i(9, 0, 2, 7), asm_i(9, 2, 2, 1), asm_r(0, 31, 0, 0, 0, 8), 0].iter().enumerate() {
+                e.w32(base + 4 * i as u32, *w);
+            }
+            e.call(base, &[], &[], 0x01F0_0000).unwrap()
+        };
+        assert_eq!(seen.get(), 7, "the probe saw the state before the addiu");
+        assert_eq!(out, 8);
+    }
+
+    #[test]
+    fn hardware_register_accesses_work_and_are_logged() {
+        let mut e = Ee::new();
+        let base = 0x0010_0000u32;
+        // lui t0,0x1000; ori t0,t0,0x3000 (GIF_CTRL); li t1,5; sw t1,0(t0); lw v0,0(t0); jr ra
+        for (i, w) in [asm_i(0x0F, 0, 8, 0x1000), asm_i(0x0D, 8, 8, 0x3000), asm_i(9, 0, 9, 5), asm_i(0x2B, 8, 9, 0), asm_i(0x23, 8, 2, 0), asm_r(0, 31, 0, 0, 0, 8), 0]
+            .iter()
+            .enumerate()
+        {
+            e.w32(base + 4 * i as u32, *w);
+        }
+        assert_eq!(e.call(base, &[], &[], 0x01F0_0000).unwrap(), 5);
+        let w = e.hw.log.back().unwrap();
+        assert_eq!((w.addr, w.value, w.size), (0x1000_3000, 5, 4));
+        // The uncached alias 0xB0003000 reaches the same register.
+        e.w32(0xB000_3000, 9);
+        assert_eq!(e.hw.peek(0x1000_3000), 9);
+    }
+
+    #[test]
+    fn scratchpad_dma_copies_in_normal_mode() {
+        let mut e = Ee::new();
+        for i in 0..8u32 {
+            e.w32(0x0020_0000 + 4 * i, 0x1000 + i);
+        }
+        // SPR_TO (channel 9): MADR 0x200000, SADR 0x100, QWC 2, CHCR STR (normal mode).
+        e.w32(0x1000_D410, 0x0020_0000);
+        e.w32(0x1000_D480, 0x100);
+        e.w32(0x1000_D420, 2);
+        e.w32(0x1000_D400, 0x100);
+        assert_eq!(e.r32(0x7000_0100), 0x1000);
+        assert_eq!(e.r32(0x7000_011C), 0x1007);
+        // SPR_FROM (channel 8) copies back to another place.
+        e.w32(0x1000_D010, 0x0030_0000);
+        e.w32(0x1000_D080, 0x100);
+        e.w32(0x1000_D020, 2);
+        e.w32(0x1000_D000, 0x100);
+        assert_eq!(e.r32(0x0030_001C), 0x1007);
+        assert_eq!(e.r32(0x1000_D000) & 0x100, 0, "the channel is done");
+    }
+
+    #[test]
+    fn overlay_loads_at_the_window_and_is_callable() {
+        let mut e = Ee::new();
+        // v0 = a0 + 5; jr ra; nop
+        let code: Vec<u8> = [asm_i(9, 4, 2, 5), asm_r(0, 31, 0, 0, 0, 8), 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+        assert_eq!(e.load_overlay(&code), Some(crate::OVERLAY_BASE + 12));
+        assert_eq!(e.call(crate::OVERLAY_BASE, &[37], &[], 0x01F0_0000).unwrap(), 42);
+        assert_eq!(e.load_overlay(&vec![0; 64 << 20]), None);
     }
 }

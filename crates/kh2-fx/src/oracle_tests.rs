@@ -6,10 +6,9 @@
 //! are replaced by hooks that record their arguments. Skipped without a disc (KH2_ISO or
 //! local/iso.txt).
 //!
-//! The interpreter has no VU0 flag registers; the Sno model draw's clip and back-face tests read
-//! them (`cfc2` of the status and MAC flags), so [`install_vu_flags`] models them here: a probe on
-//! every FMAC instruction of the routine computes the zero and sign bits of its result the way the
-//! VU user's manual states them, before the interpreter runs the instruction.
+//! The Sno model draw's clip and back-face tests read the VU0 status and MAC flags (`cfc2`); the
+//! interpreter sets them as the hardware does. The shape draw uses PEXTLB and PEXTLH, which the
+//! interpreter executes itself.
 
 use std::cell::RefCell;
 
@@ -46,113 +45,6 @@ thread_local! {
     /// Sno: (amplitude, taper flag byte as a word, alpha register argument, the projection's z
     /// translation at 0x1db1038 as the draw sees it) of each model draw.
     static SNO: RefCell<Vec<(f32, u32, u32, f32)>> = const { RefCell::new(Vec::new()) };
-}
-
-// ---- VU0 flag model ---------------------------------------------------------------------------------
-
-/// The result and destination mask of the FMAC instruction `w` on the interpreter's current
-/// registers, for the instructions that update the MAC and status flags (VU user's manual: the
-/// add, sub, mul, madd, msub families with their broadcast, Q and I forms, their ACC forms, and the
-/// outer products; max, mini, abs, move and the conversions leave the flags alone).
-fn fmac_result(ee: &Ee, w: u32) -> Option<([f32; 4], u32)> {
-    if w >> 26 != 0x12 || w & (1 << 25) == 0 {
-        return None;
-    }
-    let dest = (w >> 21) & 15;
-    let (ft, fs) = (((w >> 16) & 31) as usize, ((w >> 11) & 31) as usize);
-    let funct = w & 63;
-    let (s, t, acc) = (ee.vf[fs], ee.vf[ft], ee.vacc);
-    let bc = t[(funct & 3) as usize];
-    let (q, i) = (ee.q, f32::from_bits(ee.vi[21]));
-    let v = |f: &dyn Fn(usize) -> f32| -> [f32; 4] { std::array::from_fn(f) };
-    let r = if funct < 0x3C {
-        match funct {
-            0x00..=0x03 => v(&|k| s[k] + bc),
-            0x04..=0x07 => v(&|k| s[k] - bc),
-            0x08..=0x0B => v(&|k| acc[k] + s[k] * bc),
-            0x0C..=0x0F => v(&|k| acc[k] - s[k] * bc),
-            0x18..=0x1B => v(&|k| s[k] * bc),
-            0x1C => v(&|k| s[k] * q),
-            0x1E => v(&|k| s[k] * i),
-            0x20 => v(&|k| s[k] + q),
-            0x21 => v(&|k| acc[k] + s[k] * q),
-            0x22 => v(&|k| s[k] + i),
-            0x23 => v(&|k| acc[k] + s[k] * i),
-            0x24 => v(&|k| s[k] - q),
-            0x25 => v(&|k| acc[k] - s[k] * q),
-            0x26 => v(&|k| s[k] - i),
-            0x27 => v(&|k| acc[k] - s[k] * i),
-            0x28 => v(&|k| s[k] + t[k]),
-            0x29 => v(&|k| acc[k] + s[k] * t[k]),
-            0x2A => v(&|k| s[k] * t[k]),
-            0x2C => v(&|k| s[k] - t[k]),
-            0x2D => v(&|k| acc[k] - s[k] * t[k]),
-            0x2E => [acc[0] - s[1] * t[2], acc[1] - s[2] * t[0], acc[2] - s[0] * t[1], 0.0],
-            _ => return None,
-        }
-    } else {
-        let op = (((w >> 6) & 31) << 2) | (funct & 3);
-        match op {
-            0x00..=0x03 => v(&|k| s[k] + bc),
-            0x04..=0x07 => v(&|k| s[k] - bc),
-            0x08..=0x0B => v(&|k| acc[k] + s[k] * bc),
-            0x0C..=0x0F => v(&|k| acc[k] - s[k] * bc),
-            0x18..=0x1B => v(&|k| s[k] * bc),
-            0x1C => v(&|k| s[k] * q),
-            0x1E => v(&|k| s[k] * i),
-            0x20 => v(&|k| s[k] + q),
-            0x21 => v(&|k| acc[k] + s[k] * q),
-            0x22 => v(&|k| s[k] + i),
-            0x23 => v(&|k| acc[k] + s[k] * i),
-            0x24 => v(&|k| s[k] - q),
-            0x25 => v(&|k| acc[k] - s[k] * q),
-            0x26 => v(&|k| s[k] - i),
-            0x27 => v(&|k| acc[k] - s[k] * i),
-            0x28 => v(&|k| s[k] + t[k]),
-            0x29 => v(&|k| acc[k] + s[k] * t[k]),
-            0x2A => v(&|k| s[k] * t[k]),
-            0x2C => v(&|k| s[k] - t[k]),
-            0x2D => v(&|k| acc[k] - s[k] * t[k]),
-            0x2E => [s[1] * t[2], s[2] * t[0], s[0] * t[1], 0.0],
-            _ => return None,
-        }
-    };
-    let dest = if funct == 0x2E || (funct >= 0x3C && (((w >> 6) & 31) << 2 | (funct & 3)) == 0x2E) { dest & 0xE } else { dest };
-    Some((r, dest))
-}
-
-/// Probe: the MAC flag (bits 0-3 zero for w, z, y, x; bits 4-7 sign) of the instruction about to
-/// run, and the status flag's zero and sign bits (0 and 1) with their sticky copies (6 and 7).
-fn vu_flags(ee: &mut Ee) {
-    let w = ee.r32(ee.pc);
-    let Some((r, dest)) = fmac_result(ee, w) else { return };
-    let mut mac = 0u32;
-    for (k, x) in r.iter().enumerate() {
-        if dest & (8 >> k) != 0 {
-            if *x == 0.0 {
-                mac |= 1 << (3 - k);
-            }
-            if *x < 0.0 {
-                mac |= 1 << (7 - k);
-            }
-        }
-    }
-    ee.vi[17] = mac;
-    let (z, s) = ((mac & 0xf != 0) as u32, (mac & 0xf0 != 0) as u32);
-    ee.vi[16] = (ee.vi[16] & 0xfc0) | z | s << 1 | z << 6 | s << 7;
-}
-
-/// Installs [`vu_flags`] on every flag-setting FMAC instruction in `[lo, hi)`.
-fn install_vu_flags(ee: &mut Ee, lo: u32, hi: u32) -> usize {
-    let mut n = 0;
-    for pc in (lo..hi).step_by(4) {
-        let w = ee.r32(pc);
-        if fmac_result(ee, w).is_some() {
-            ee.probes.insert(pc, vu_flags);
-            n += 1;
-        }
-    }
-    n
 }
 
 fn hook_shape_draw(ee: &mut Ee) {
@@ -717,8 +609,8 @@ fn raw_model(flags: u32, verts: &[[i16; 3]], normals: &[[i16; 3]], tris: &[[u16;
 
 /// The game's model draw (FUN_0020ab40, run in the interpreter) against `sno_draw`: for a small
 /// model with stored normals that differ from the radial directions, every vertex's texture
-/// coordinate moves by the screen displacement the port computes (the interpreter has no VU flag
-/// registers, so the game's back-face and clip tests never reject here; those are not compared).
+/// coordinate moves by the screen displacement the port computes (the model is placed so that the
+/// game's back-face and clip tests accept every triangle; those tests are compared separately).
 #[test]
 fn sno_geometry_matches_the_game() {
     let Some(elf) = exe() else { return };
@@ -751,8 +643,10 @@ fn sno_geometry_matches_the_game() {
             ee.write(SHAPE, &raw);
             ee.w32(RES + 0x10, SHAPETAB);
             ee.w32(SHAPETAB + 3 * 0x24 + 0x1c, SHAPE + 0x10);
-            // Projection rows: x and y scaled, w = z.
-            let proj = [300.0f32, 0.0, 0.0, 0.0, 0.0, 300.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+            // The disc's projection with a 300-pixel focal length (x and y scaled, w = z, screen centre
+            // 2048), so that the game's clip and back-face tests, which read the flags, accept the model.
+            let (p22, p32) = Projection::from_exe(&elf).expect("projection constants").z_row();
+            let proj = [300.0f32, 0.0, 0.0, 0.0, 0.0, 300.0, 0.0, 0.0, 2048.0, 2048.0, p22, 1.0, 0.0, 0.0, p32, 0.0];
             for (i, x) in proj.iter().enumerate() {
                 ee.wf32(0x1db1000 + 4 * i as u32, *x);
             }
@@ -847,8 +741,6 @@ fn sno_game_tris(elf: &[u8], raw: &[u8], proj: &Mat4, p: &Program, amp: f32, m_c
     ee.hooks.insert(0x20c110, hook_bump);
     ee.hooks.insert(0x1e4a88, hook_kick);
     ee.hooks.insert(0x2f8f60, hook_zero);
-    let n = install_vu_flags(&mut ee, 0x20ab40, 0x20b3a0);
-    assert!(n >= 60, "{n} FMAC instructions found in the model draw");
     BUMP.with(|b| *b.borrow_mut() = 0);
     TRIS.with(|c| c.borrow_mut().clear());
     ee.write(SHAPE, raw);
@@ -863,7 +755,7 @@ fn sno_game_tris(elf: &[u8], raw: &[u8], proj: &Mat4, p: &Program, amp: f32, m_c
 }
 
 /// The model draw's clip test, back-face test and depth bias against the port, with the VU0
-/// status and MAC flags modelled (see [`install_vu_flags`]): models in front of the camera with
+/// status and MAC flags the interpreter sets: models in front of the camera with
 /// and without the cull flag, models partly outside the 4096-pixel window or in front of the
 /// near plane, and a biased z row. The triangles the game kicks must be the port's, in order, with
 /// the same screen x, y and z words (12.4 fixed) and the same displacement.
@@ -999,50 +891,6 @@ const SHAPE_MAT: u32 = 0x01f0_4100;
 const SHAPE_FRAME: u32 = 0x01f0_5000;
 const SPLICE: u32 = 0x01f0_6000;
 
-thread_local! {
-    /// The original words of the MMI instructions [`install_pext`] stands in for, by address.
-    static PEXT: RefCell<std::collections::HashMap<u32, u32>> = RefCell::new(std::collections::HashMap::new());
-}
-
-/// Probe: PEXTLB (MMI0 sa 26) or PEXTLH (sa 22), which the interpreter lacks, done here; the word
-/// in memory was replaced by a nop so the interpreter steps over it. PEXTLB interleaves the low 8
-/// bytes of rt (even) and rs (odd), PEXTLH the low 4 halfwords (R5900 manual).
-fn pext(ee: &mut Ee) {
-    let Some(w) = PEXT.with(|m| m.borrow().get(&ee.pc).copied()) else { return };
-    let (rs, rt, rd, sa) = (((w >> 21) & 31) as usize, ((w >> 16) & 31) as usize, ((w >> 11) & 31) as usize, (w >> 6) & 31);
-    let (a, b) = (ee.gpr[rs].to_le_bytes(), ee.gpr[rt].to_le_bytes());
-    let mut out = [0u8; 16];
-    if sa == 26 {
-        for i in 0..8 {
-            out[2 * i] = b[i];
-            out[2 * i + 1] = a[i];
-        }
-    } else {
-        for i in 0..4 {
-            out[4 * i..4 * i + 2].copy_from_slice(&b[2 * i..2 * i + 2]);
-            out[4 * i + 2..4 * i + 4].copy_from_slice(&a[2 * i..2 * i + 2]);
-        }
-    }
-    if rd != 0 {
-        ee.gpr[rd] = u128::from_le_bytes(out);
-    }
-}
-
-/// Puts [`pext`] on every PEXTLB / PEXTLH in `[lo, hi)`.
-fn install_pext(ee: &mut Ee, lo: u32, hi: u32) -> usize {
-    let mut n = 0;
-    for pc in (lo..hi).step_by(4) {
-        let w = ee.r32(pc);
-        if w >> 26 == 0x1c && w & 63 == 8 && matches!((w >> 6) & 31, 22 | 26) {
-            PEXT.with(|m| m.borrow_mut().insert(pc, w));
-            ee.w32(pc, 0);
-            ee.probes.insert(pc, pext);
-            n += 1;
-        }
-    }
-    n
-}
-
 /// A raw DPD shape of one frame: `quad` selects the free-quad sprite layout (frame flag 8). Each
 /// sprite is (corners or rectangle in 12.4, texture rectangle in 4.12, color record).
 fn raw_one_frame_shape(quad: bool, sprites: &[([i16; 8], [i16; 4], [u8; 8])]) -> Vec<u8> {
@@ -1086,8 +934,6 @@ fn shape_draw_texture_coordinates_match_the_game() {
     for quad in [false, true] {
         let mut ee = Ee::new();
         ee.load_elf(&elf).expect("elf");
-        install_vu_flags(&mut ee, 0x21a660, 0x21b800);
-        install_pext(&mut ee, 0x21a660, 0x21b800);
         let sprites: Vec<([i16; 8], [i16; 4], [u8; 8])> = vec![
             ([-0x100, -0xf0, 0xf0, 0x110, -0x80, 0x120, 0x60, 0x90], [528, 16, 480, 464], [0x80, 0x40, 0x20, 0x80, 0x48, 0, 0, 0]),
             ([-0x40, -0x40, 0x40, 0x40, -0x30, 0x50, 0x48, 0x38], [3 * 64, 2 * 64, 26 * 64, 26 * 64], [0x60, 0x70, 0x80, 0x40, 0x44, 0, 0, 3]),

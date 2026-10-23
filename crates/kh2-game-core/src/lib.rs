@@ -24,6 +24,7 @@ pub mod rig;
 pub mod rig_values;
 pub mod rng;
 pub mod schedule;
+pub mod task;
 pub mod shared;
 pub mod skel;
 pub mod texanim;

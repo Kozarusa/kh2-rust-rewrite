@@ -1,4 +1,4 @@
-# Jiminy's Journal
+# Jiminy's Journal: entry, data, pages 0 to 3, scroll bar, NEW tags, lists (20.1 to 20.9)
 
 [Contract](contract.md) | [Index](../../README.md)
 

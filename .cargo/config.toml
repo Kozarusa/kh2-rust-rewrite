@@ -1,0 +1,13 @@
+# Shared build settings for every checkout and worktree (Phase 0 R16, local/specs/RIG.md 1.8 and 2.7, measured 2026-10-22).
+# They merge with the [profile] tables of Cargo.toml (opt-level stays there).
+#
+# Debug info is the cost, not the linker: line tables keep file and line in backtraces and panics, drop the variable and type
+# info nobody here reads in a debugger, and cut the cold build by about a quarter and the PDB to about a third. Dependencies
+# carry no debug info at all.
+# Not set, on purpose: `linker = "rust-lld"` (measured: no gain, the link is not the bottleneck); Cranelift (needs nightly);
+# `jobs` (a per-user setting in ~/.cargo/config.toml).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

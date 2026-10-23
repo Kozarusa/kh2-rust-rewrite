@@ -346,7 +346,7 @@ fn input(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut h: ResMut<Harness
 }
 
 /// A model with its motion set (`obj/<model>.mdlx`, `obj/<mset>.mset`) and its effect file.
-pub(crate) fn read_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
+pub fn read_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
     let m = disc.read(&format!("obj/{model}.mdlx")).and_then(|d| kh2_model::mdlx(&d))?;
     let s = disc.read(&format!("obj/{mset}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
     let apdx = format!("obj/{model}.apdx");
@@ -356,7 +356,7 @@ pub(crate) fn read_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>>
 
 /// A weapon: its model with the hand's motion set, or with no motions at all when the `wmst` row
 /// names none (the game then loads none and the weapon keeps its rest pose, `FUN_00184190`).
-pub(crate) fn weapon_rig(disc: &Disc, w: &WeaponFiles) -> Option<Arc<Rig>> {
+pub fn weapon_rig(disc: &Disc, w: &WeaponFiles) -> Option<Arc<Rig>> {
     match &w.mset {
         Some(s) => read_rig(disc, &w.model, s),
         None => {
@@ -401,7 +401,7 @@ fn load_assets(disc: &Disc, rules: &DriveRules, form: u8, world: u16, hand1_item
 }
 
 /// Registers a rig's effect file with the effect library so its motion effects run.
-pub(crate) fn register_effects(disc: &Disc, lib: &mut EffectLib, rig: &Rig) {
+pub fn register_effects(disc: &Disc, lib: &mut EffectLib, rig: &Rig) {
     let Some(name) = &rig.apdx else { return };
     if lib.objects.contains_key(name) {
         return;

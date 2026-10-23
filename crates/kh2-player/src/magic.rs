@@ -431,7 +431,7 @@ fn setup(
 }
 
 /// `KH2_KEYS` entries for the menu keys the harness does not map (T, G, B), pressed the same way.
-pub(crate) fn harness_keys(time: Res<Time>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+pub fn harness_keys(time: Res<Time>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     let Ok(spec) = std::env::var("KH2_KEYS") else { return };
     let (t, dt) = (time.elapsed_secs(), time.delta_secs());
     for item in spec.split(',') {
@@ -1687,7 +1687,7 @@ const VM_SHARED_STRIDE: u32 = 0x100;
 /// An effect a spell script holds a handle to: an element of the spell's file bound to the caster
 /// (host 1.139) or placed in the world (host 1.138, then 0.38 position and 0.39 scale).
 #[derive(Clone)]
-pub(crate) struct VmFx {
+pub struct VmFx {
     id: u16,
     pax: Arc<LoadedPax>,
     fixed: bool,
@@ -1711,7 +1711,7 @@ impl VmFx {
 /// What the spell scripts share across casts: the effect handles (Reflect keeps one in its persistent
 /// block from cast to cast) and the persistent blocks of host 2.21 by key.
 #[derive(Default)]
-pub(crate) struct VmWorld {
+pub struct VmWorld {
     fx: Vec<VmFx>,
     shared: Vec<(u32, Vec<u8>)>,
     /// The bits of the global flag word 0x35d268 the scripts hold (bit 3, hosts 1.187 / 1.188).

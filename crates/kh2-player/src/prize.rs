@@ -637,22 +637,22 @@ pub fn kind_looks(params: &[u8]) -> Vec<KindLook> {
 /// One sprite of a frame ready to draw: its quad (local units, Y up) and the material of its own
 /// texture (TEX0 with its palette offset) and blend: the sprites of a frame differ in both (the HP
 /// orb mixes an additive 0x48 sprite and a blend 0x44 one).
-pub(crate) struct SpriteDraw {
-    pub(crate) mesh: Handle<Mesh>,
-    pub(crate) material: Handle<StandardMaterial>,
+pub struct SpriteDraw {
+    pub mesh: Handle<Mesh>,
+    pub material: Handle<StandardMaterial>,
 }
 
 /// A sprite frame: its sprites in draw order.
-pub(crate) struct FrameDraw {
-    pub(crate) sprites: Vec<SpriteDraw>,
+pub struct FrameDraw {
+    pub sprites: Vec<SpriteDraw>,
 }
 
 #[derive(Default)]
-pub(crate) struct KindDraw {
-    pub(crate) scale: f32,
+pub struct KindDraw {
+    pub scale: f32,
     /// Frames of the kind's shape; `loops` when the last frame's flag has 0x80.
-    pub(crate) frames: Vec<FrameDraw>,
-    pub(crate) loops: bool,
+    pub frames: Vec<FrameDraw>,
+    pub loops: bool,
 }
 
 #[derive(Resource)]
@@ -801,7 +801,7 @@ fn build_draws(
 
 /// The sprite meshes of the first `kinds` kinds of a prize effect file's `pppRyjMegaBirthPrize` program
 /// (also the Struggle orbs' `obj/PRIZE_TT.mdlx`, `struggle.rs`): the draws, the kinds' looks, the shape count.
-pub(crate) fn kind_draws(
+pub fn kind_draws(
     pax: &crate::fx::LoadedPax,
     kinds: usize,
     meshes: &mut Assets<Mesh>,
@@ -895,7 +895,7 @@ fn flip(v: Vec3) -> Vec3 {
 /// a ball of the kind's radius against walls, downward it stops on the highest floor it crosses
 /// [inferred: the game uses its character mover `FUN_00143840`, not ported; this keeps its results:
 /// the end point and whether it stands on a floor].
-pub(crate) fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
+pub fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
     let Some(w) = world else { return Sweep { end: start + vel, on_floor: false } };
     let (s, v) = (flip(start), flip(vel));
     let mut p = s;

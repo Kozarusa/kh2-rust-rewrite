@@ -102,7 +102,7 @@ pub fn run() {
     let start = std::env::args().nth(1).unwrap_or_else(|| "tt04".into());
     CLOCK.get_or_init(Instant::now);
     // The window opens unfocused and below every other window, so background runs never cover the
-    // user's screen. KH2_FRONT=1 (set by local/playtest.bat) restores a normal window.
+    // user's screen. KH2_FRONT=1 (set by tools/playtest.bat) restores a normal window.
     let front = std::env::var_os("KH2_FRONT").is_some();
     let level = if front { bevy::window::WindowLevel::Normal } else { bevy::window::WindowLevel::AlwaysOnBottom };
     App::new()

@@ -105,7 +105,7 @@ node's box once.
 - **Sounds:** none of the scene's own were read (`FUN_00276550` / `FUN_002765a0` are the message file, 20.7); the menu sounds are muted anyway.
 - **The wipe** (`FUN_00296470`: `pause.2ld` group 5 as object 0x7554) is not played; the camp's cursor on the way back
   stays where it was [inferred].
-- **Footage:** no reference clip shows the journal (`local/VIDEOS.md`); the screen was compared with nothing but the code.
+- **Footage:** no reference clip shows the journal (`agents/RECIPES.md` R6); the screen was compared with nothing but the code.
 
 ### 20.6 Decompile index (WP-MN9)
 
@@ -246,7 +246,7 @@ node's box once.
   read beyond their first calls; whether they draw an empty frame without data was not established, so they stay
   refused. The help line's colour (flag 8 cleared: the group's colour) is kept at 0xe5e5e5 [inferred]. Page 0's
   cursor and follower are drawn on the cell (the same draw code runs there) on top of the 0x96 group. No footage of
-  the journal exists (`local/VIDEOS.md`).
+  the journal exists (`agents/RECIPES.md` R6).
 - **Decompile index (MN11).** `FUN_00278468` (instructions), `FUN_002785a0`, `FUN_002785d8`, `FUN_00277740`,
   `FUN_00277860`, `FUN_002774e8`, `FUN_00277928`, `FUN_00277258`, `FUN_00277338`, `FUN_002776e0`, `FUN_002779f8`,
   `FUN_00277b20`, `FUN_00277b40`, `FUN_00277e70`, `FUN_00277eb0`, `FUN_00277ec0`, `FUN_00278658`, `FUN_00276bb0`,

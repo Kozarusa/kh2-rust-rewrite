@@ -110,8 +110,13 @@ Only the USA release is supported. Other discs are refused, because table layout
 | `crates/kh2-anim` | Motion sets, ANB motions and triggers, pose evaluation |
 | `crates/kh2-app` | The game (`kh2-game`, Bevy 0.19) as a library plus a thin binary, with plugins in domain bundles: areas, skinned characters, Sora, Heartless, combat, camera, HUD |
 | `crates/kh2` | Command-line tool |
+| `crates/kh2-looprec` | Loopback recorder: what the machine plays, as a wav (reference recordings for loudness comparisons) |
 | `docs/` | `README.md` (index of the system docs), `METHOD.md` (how we work), `systems/foundations/research.md` (sources), `changelog/` |
-| `local/` | Your machine only (git-ignored): ISO path, downloaded name list, extracted files |
+| `tools/` | Process scripts: gate (`verify.ps1`), acceptance (`accept.ps1`), review, merge, PCSX2 and research helpers. Machine paths come from the untracked `local/machine.ps1` (template `tools/machine.example.ps1`) |
+| `agents/` | How the project is worked on: the user's rules, the orchestrator and worker guides, recipes, the user's reported differences, brief templates |
+| `scenarios/` | Diff-rig scenarios (original versus port): save-state names, pad scripts, checkpoints, tolerances; no game data |
+| `.cargo/` | Shared build settings (debug info, profiles) |
+| `local/` | Your machine only (git-ignored): machine paths, ISO path, downloaded name list, extracted files, handoff and live briefs |
 
 ## How it is built
 

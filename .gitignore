@@ -1,5 +1,8 @@
 # WHITELIST. Everything is ignored unless listed below.
-# Only our own source, sheets (structure + status, never game data), docs and license texts are tracked.
+# Only our own source, sheets (structure + status, never game data), docs and license texts are tracked, plus (RULES C5,
+# 2026-10-22) the process tooling: tools/ (scripts), agents/ (rules, guides, brief templates), scenarios/ (rig scenarios) and
+# .cargo/ (build settings). None of them may hold game data, decompiled text, save states, recordings or machine paths
+# (those live in the untracked local/machine.ps1).
 # Never tracked: the ISO, anything extracted or decompiled from it, caches, the OpenKH filename list
 # (downloaded by `kh2 fetch-names` into local/), build output, screenshots.
 /*
@@ -15,7 +18,10 @@
 !/sheets/
 !/docs/
 !/third_party/
+!/tools/
+!/agents/
 !/scenarios/
+!/.cargo/
 
 # Inside tracked folders: still never commit binaries or game-derived files.
 *.iso
@@ -29,6 +35,14 @@
 *.exe
 *.dll
 target/
+# Save states and recordings never enter tools/, agents/ or scenarios/.
+*.p2s
+*.p2m2
+*.mp4
+*.webp
+*.jpg
+__pycache__/
+*.pyc
 **/local/
 # The Save menu's slot files (progress::save_dir; KH2_SAVE_DIR may name any folder, it is the user's own).
 local/saves/

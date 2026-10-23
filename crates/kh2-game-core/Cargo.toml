@@ -1,0 +1,24 @@
+[package]
+name = "kh2-game-core"
+description = "kh2-rs game core: schedule, disc assets, data, world, motor, skeletons, camera, combat, effects, rules and the shared ECS types of the game crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-archive.workspace = true
+kh2-model.workspace = true
+kh2-anim.workspace = true
+kh2-map.workspace = true
+kh2-tables.workspace = true
+kh2-fx.workspace = true
+kh2-audio.workspace = true
+kh2-ps2.workspace = true
+kh2-bar.workspace = true
+kh2-bdx.workspace = true
+kh2-image.workspace = true
+kh2-ard = { path = "../kh2-ard" }
+bevy = "0.19"
+
+[dev-dependencies]
+kh2-ee.workspace = true

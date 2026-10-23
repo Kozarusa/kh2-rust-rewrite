@@ -52,7 +52,7 @@ impl Default for Abilities {
 
 impl Abilities {
     /// The controller's view of the ability block.
-    pub fn from_block(a: &crate::abilities::Abilities) -> Abilities {
+    pub fn from_block(a: &crate::shared::abilities::Abilities) -> Abilities {
         let w = &a.block().bits;
         let high = (4..8).fold(0u128, |h, i| h | u128::from(w[i]) << (32 * (i - 4)));
         Abilities { bits: a.bits(), high, max_ground: a.ground_combo(), max_air: a.air_combo(), max_finishers: a.finishers() }
@@ -335,7 +335,7 @@ impl Sora {
     /// the cast on Sora himself, he is untouchable for 60 ticks. Returns whether it started.
     /// The caller is Cure's cast in `magic.rs` (since commit 7ab807f) and the tests.
     pub fn start_leaf_bracer(&mut self, abilities: &Abilities, target_is_caster: bool) -> bool {
-        let Some(t) = crate::abilities::leaf_bracer_frames(abilities.has_bit(crate::abilities::BIT_LEAF_BRACER), target_is_caster) else { return false };
+        let Some(t) = crate::shared::abilities::leaf_bracer_frames(abilities.has_bit(crate::shared::abilities::BIT_LEAF_BRACER), target_is_caster) else { return false };
         self.leaf_bracer = t;
         if std::env::var_os("KH2_ABILITYLOG").is_some() {
             info!("abilities: Leaf Bracer: Cure on Sora, untouchable for {t} ticks (host 1.91 -> +0xb00)");

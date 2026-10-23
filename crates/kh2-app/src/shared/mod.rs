@@ -2,3 +2,4 @@
 //! crate reads from a higher one. Each source module re-exports its group (`pub use crate::shared::<name>::*;`).
 
 pub mod sora;
+pub mod abilities;

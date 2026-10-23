@@ -39,11 +39,23 @@ pub fn run() {
     // user's screen. KH2_FRONT=1 (set by tools/playtest.bat) restores a normal window.
     let front = std::env::var_os("KH2_FRONT").is_some();
     let level = if front { bevy::window::WindowLevel::Normal } else { bevy::window::WindowLevel::AlwaysOnBottom };
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "kh2-rs".into(), focused: front, window_level: level, ..default() }),
-            ..default()
-        }))
-        .add_plugins(plugins::GamePlugins { iso, start })
-        .run();
+    let turbo = kh2_game_core::harness::turbo();
+    if turbo {
+        // Turbo runs are silent: no sound device and no music (the audio scenario stays real time).
+        // SAFETY: still single-threaded here, before the app (and any thread that reads the environment) starts.
+        unsafe {
+            std::env::set_var("KH2_NO_SOUND", "1");
+            std::env::set_var("KH2_NO_MUSIC", "1");
+        }
+    }
+    let present_mode = if turbo { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window { title: "kh2-rs".into(), focused: front, window_level: level, present_mode, ..default() }),
+        ..default()
+    }));
+    if turbo {
+        kh2_game_core::harness::configure_turbo(&mut app);
+    }
+    app.add_plugins(plugins::GamePlugins { iso, start }).run();
 }

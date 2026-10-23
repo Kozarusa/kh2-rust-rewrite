@@ -11,7 +11,9 @@
 # It tests the checkout this script lives in (run that checkout's own copy). KH2_ISO comes from local\machine.ps1; the
 # KH2_STATE files of the scenarios are untracked local\ files (this checkout's copy, else the main checkout's).
 # The game runs without the memory cap (memory rule of 2026-10-22: normal game runs are uncapped).
-# Planned (R15-2, TODO: the orchestrator removes this line when it lands): -Turbo -Jobs 8 runs the games in parallel in turbo mode.
+# -Turbo -Jobs 8: the games run with KH2_TURBO=1 (fixed tick per frame, as fast as the CPU allows, silent), up to -Jobs at once,
+# each with its own log and PNG; KH2_KEYS and KH2_SHOT_AT seconds become exact tick counts. Scenarios with Audio run afterwards,
+# alone and in real time. Use 6 jobs while a build runs beside it. The summary lines are in finish order.
 # Build first (cargo build -p kh2-app --bin kh2-game, or verify.ps1) -- the exe must be the code you want to test,
 # and no other kh2-game window may be open. Game windows open and close during the run; do not touch the keyboard
 # (the harness injects keys, but your own input would be mixed in).
@@ -21,7 +23,9 @@ param(
     [string]$Out = '',
     [string]$Exe = 'target\debug\kh2-game.exe',
     [string[]]$Only = @(),
-    [switch]$SkipAudio
+    [switch]$SkipAudio,
+    [switch]$Turbo,
+    [int]$Jobs = 8
 )
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })   # -File passes "a,b" as one string
 . (Join-Path $PSScriptRoot 'env.ps1')
@@ -191,7 +195,7 @@ $scenarios = @(
 @{ Name = 'ca10-m_ex510'; Area = 'ca10'; Env = (EnEnv @{ KH2_PROGRAMS = '0,a,0'; KH2_WAVE_GROUP = 'b_20' }); Keys = (Jrun 13 60); ShotAt = 25; Expect = @('SetObjParam', 'M_EX510 hit:'); Soft = @('experience: enmp 55 defeated'); Absent = $enAbsent; Look = 'treasure cave, dark thin-limbed Heartless (M_EX510) and M_EX420 near Sora, hit rings and damage numbers; HUD present' },
 @{ Name = 'ca15-m_ex690'; Area = 'ca15'; Env = (EnEnv @{ KH2_PROGRAMS = '0,15,0'; KH2_WAVE_GROUP = 'b_20'; KH2_ENTRANCE = '1' }); Keys = ('7:W:2,10:Q,' + (Jrun 12 60)); ShotAt = 25; Expect = @('SetObjParam', 'M_EX690 hit:', 'experience: enmp 67 defeated'); Absent = $enAbsent; Look = 'Sora in a rocky ship-wreck passage fighting an M_EX690 Heartless, hit ring and damage number; HUD present' },
 @{ Name = 'eh17-m_ex870'; Area = 'eh17'; Env = (EnEnv @{ KH2_PROGRAMS = '0,1,0'; KH2_WAVE_GROUP = 'b_00'; KH2_WAVE_AT_GROUP = '45,-61' }); Keys = ('9:Q,' + (Jrun 12 60)); ShotAt = 16; Expect = @('M_EX870', 'create_object: M_EX960'); Absent = $enAbsent; Look = 'hooded floating Heartless figures (M_EX870 and M_EX960) beside Sora; HUD present' },
-@{ Name = 'hb01-m_ex770'; Area = 'hb01'; Env = (EnEnv @{ KH2_PROGRAMS = '0,1,0'; KH2_WAVE_GROUP = 'b_00'; KH2_WAVE_AT_GROUP = '1' }); Keys = ('8:Q,' + (Jrun 10 60)); ShotAt = 25; Expect = @('SetObjParam', 'M_EX770 hit:', 'experience: enmp 37 defeated'); Absent = $enAbsent; Look = 'brown spiked top-shaped Heartless (M_EX770) beside Sora on the ice, hit sparks and damage number; HUD present' },
+@{ Name = 'hb01-m_ex770'; Area = 'hb01'; Env = (EnEnv @{ KH2_PROGRAMS = '0,1,0'; KH2_WAVE_GROUP = 'b_00'; KH2_WAVE_AT_GROUP = '1' }); Keys = ('8:Q,' + (Jrun 9.2 60)); ShotAt = 25; Expect = @('SetObjParam', 'M_EX770 hit:', 'experience: enmp 37 defeated'); Absent = $enAbsent; Look = 'brown spiked top-shaped Heartless (M_EX770) beside Sora on the ice, hit sparks and damage number; HUD present' },
 @{ Name = 'hb09-m_ex910'; Area = 'hb09'; Env = (EnEnv @{ KH2_PROGRAMS = '0,33,0'; KH2_WAVE_GROUP = 'b_40' }); Keys = ('8:Q,' + (Jrun 12 110)); ShotAt = 75; Expect = @('SetObjParam', 'M_EX910 hit:', 'experience: enmp 46 defeated'); Absent = $enAbsent; Look = 'hb09 alley, dark cloaked blade-armed Heartless (M_EX910) and Dusks near Sora; the kind appears only after about 37 s' },
 @{ Name = 'he05-m_ex750'; Area = 'he05'; Env = (EnEnv @{ KH2_PROGRAMS = '0,1,0'; KH2_WAVE_GROUP = 'b_00'; KH2_ENTRANCE = '0'; KH2_YAW = '3.14' }); Keys = ('2:W:8,11:Q,' + (Jrun 12 60)); ShotAt = 25; Expect = @('SetObjParam', 'M_EX750 hit:', 'experience: enmp 14 defeated'); Absent = $enAbsent; Look = 'green rocky valley, small orange four-petal flowers with teal centres (M_EX750) near Sora, hit sparks; HUD present' },
 @{ Name = 'lockon-ring'; Area = 'tt00'; Env = @{ KH2_YAW = '1.57' }; Keys = '6:Q:0.4'; ShotAt = 8; Expect = @('taking screenshot'); Look = 'violet ring with rotating inner arcs on the locked Shadow, no brackets' },
@@ -210,27 +214,32 @@ $scenarios = @(
 $globalAbsent = @('Path not found')
 
 $summary = @()
-foreach ($s in $scenarios) {
-    if ($Only.Count -gt 0 -and $Only -notcontains $s.Name) { continue }
-    if ($SkipAudio -and $s.Audio) { continue }
+$logTail = @{}
+
+# Starts one scenario's game (its own log and PNG; the environment is rebuilt for each start) and returns the running process.
+function Start-Scenario($s, [bool]$turboRun) {
     $log = Join-Path $Out ($s.Name + '.log'); $png = Join-Path $Out ($s.Name + '.png')
+    Remove-Item $log, $png -ErrorAction SilentlyContinue
     Get-ChildItem Env: | Where-Object { $_.Name -like 'KH2_*' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
     $env:KH2_ISO = $iso
     $env:KH2_SCREENSHOT = $png
     $env:KH2_SHOT_AT = [string]$s.ShotAt
+    if ($turboRun) { $env:KH2_TURBO = '1' }
     if (-not $s.Audio) { $env:KH2_NO_SOUND = '1'; $env:KH2_NO_MUSIC = '1' }
     if ($s.Keys) { $env:KH2_KEYS = $s.Keys }
     foreach ($k in $s.Env.Keys) { Set-Item "Env:$k" $s.Env[$k] }
-    Write-Host ("running {0} ({1}, ~{2}s) ..." -f $s.Name, $s.Area, $s.ShotAt)
+    Write-Host ("running {0} ({1}, ~{2}s{3}) ..." -f $s.Name, $s.Area, $s.ShotAt, $(if ($turboRun) { ', turbo' } else { '' }))
     # cmd /c strips the outer quotes of the whole line, so the line gets an extra pair around it. The game inherits the
-    # environment; the timeout path below kills kh2-game by name.
+    # environment; the timeout path kills this scenario's own process tree only (other games may be running).
     $cmdline = '/c ""' + $exeFull + '" ' + $s.Area + ' > "' + $log + '" 2>&1"'
     $p = Start-Process cmd -ArgumentList $cmdline -PassThru -WindowStyle Minimized
-    if (-not $p.WaitForExit(($s.ShotAt + 120) * 1000)) {
-        Stop-Process -Name kh2-game -Force -ErrorAction SilentlyContinue
-        $p.Kill()
-        $status = 'FAIL (timeout)'
-    } else { $status = 'PASS' }
+    [pscustomobject]@{ S = $s; P = $p; Log = $log; Png = $png; Deadline = (Get-Date).AddSeconds($s.ShotAt + $(if ($turboRun) { 300 } else { 120 })); TimedOut = $false }
+}
+
+# Checks a finished scenario's log and PNG and returns its summary line.
+function Complete-Scenario($j) {
+    $s = $j.S; $log = $j.Log; $png = $j.Png
+    $status = if ($j.TimedOut) { 'FAIL (timeout)' } else { 'PASS' }
     $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
     $notes = @()
     if ($text -match 'panicked at') { $status = 'FAIL'; $notes += 'panic in log' }
@@ -245,8 +254,39 @@ foreach ($s in $scenarios) {
     if ($errc -gt 0) { $notes += "$errc ERROR line(s) in log" }
     $line = '{0,-14} {1,-6} {2}  | look at {3}: {4}' -f $s.Name, $status, ($notes -join '; '), (Split-Path $png -Leaf), $s.Look
     Write-Host $line
-    $summary += $line
+    return $line
 }
+
+# Turbo runs are fast and silent, so the audio scenarios run afterwards, one at a time, in real time.
+$todo = @($scenarios | Where-Object { ($Only.Count -eq 0 -or $Only -contains $_.Name) -and -not ($SkipAudio -and $_.Audio) })
+$parallel = @($todo | Where-Object { -not ($Turbo -and $_.Audio) })
+$serial = @($todo | Where-Object { $Turbo -and $_.Audio })
+$maxJobs = if ($Turbo) { [math]::Max(1, $Jobs) } else { 1 }
+$sweepStart = Get-Date
+$running = @(); $queue = [System.Collections.Generic.Queue[object]]::new()
+foreach ($s in $parallel) { $queue.Enqueue($s) }
+while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+    while ($queue.Count -gt 0 -and $running.Count -lt $maxJobs) { $running += Start-Scenario $queue.Dequeue() $Turbo }
+    Start-Sleep -Milliseconds 300
+    $still = @()
+    foreach ($j in $running) {
+        if (-not $j.P.HasExited -and (Get-Date) -gt $j.Deadline) {
+            & taskkill /T /F /PID $j.P.Id 2>&1 | Out-Null
+            $j.TimedOut = $true
+        }
+        if ($j.P.HasExited) { $summary += Complete-Scenario $j } else { $still += $j }
+    }
+    $running = $still
+}
+foreach ($s in $serial) {
+    $j = Start-Scenario $s $false
+    while (-not $j.P.HasExited) {
+        if ((Get-Date) -gt $j.Deadline) { & taskkill /T /F /PID $j.P.Id 2>&1 | Out-Null; $j.TimedOut = $true; break }
+        Start-Sleep -Milliseconds 300
+    }
+    $summary += Complete-Scenario $j
+}
+Write-Host ('sweep wall time: {0:N1} min' -f ((Get-Date) - $sweepStart).TotalMinutes)
 $summary | Set-Content (Join-Path $Out 'summary.txt')
 Write-Host "summary: $Out\summary.txt"
 if ($summary | Where-Object { $_ -match ' FAIL' }) { exit 1 }

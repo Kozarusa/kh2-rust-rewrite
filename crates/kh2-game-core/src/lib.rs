@@ -16,6 +16,7 @@ pub mod hud_gfx;
 pub mod hud_text;
 pub mod magic_rules;
 pub mod motor;
+pub mod objlist;
 pub mod party_rules;
 pub mod progress;
 pub mod progress_flags;
@@ -28,6 +29,7 @@ pub mod schedule;
 pub mod task;
 pub mod shared;
 pub mod skel;
+pub mod status_pool;
 pub mod texanim;
 pub mod world;
 

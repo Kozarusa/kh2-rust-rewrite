@@ -138,8 +138,8 @@ the area name, the help bar), plays the **open sound** (`FUN_0023e738(0xb,
 | 0x25 | `FUN_002920d8` | the **Help** overlay (the tutorial pages, 2.7) |
 
 Page 0 is entered with `FUN_00295a00`/`FUN_00295a30` (`DAT_0036d1dc` is the requested next page, copied to the current page
-when the leave animation ends). `DAT_0036d1e0` is the page's phase: 0 selecting, 1 entering, 2 leaving; `FUN_00295a90`
-advances it. Each page remembers its cursor (`FUN_00252f98(page, index, scroll)`, read back by `FUN_00252fb8/00252fe8`).
+when the leave animation ends). `DAT_0036d1e0` is the page's phase: 0 entering, 1 selecting, 2 leaving (traced in PCSX2, 1.9;
+an earlier reading had 0 and 1 swapped); `FUN_00295a90` advances it. Each page remembers its cursor (`FUN_00252f98(page, index, scroll)`, read back by `FUN_00252fb8/00252fe8`).
 
 ### 1.5 Closing [V]
 
@@ -281,6 +281,31 @@ Time numbers: the close fades those labels to alpha 0 (`label_fade`) and hides e
 digit refresh showed a digit only when its group changed. Reproduced at tt03 with `KH2_NO_ENEMIES=1 KH2_KEYS=6:Enter,8:Enter,9.5:Enter`,
 `KH2_SHOT_AT=11` (before: plates and NEW tags only; after: all text). Tests `menu::tests::a_reopen_restores_the_label_fades`,
 `the_refresh_shows_a_digit_whose_group_did_not_change`.
+
+### 1.9 The menu's state in memory, traced (WP-RIG-4) [V by trace]
+
+Traced in the patched PCSX2 from the user's state .06 (Roxas, Mansion: Computer Room) with pad bytes injected at the pad-read stop
+0x167370 (local/specs/RIG.md 1.3) and the words below read at every pad-1 stop (one per vsync in the menu). Two runs, each
+deterministic in k (vsyncs since the state): run 1 Start at k 200, Down 260, Down 290, Up 320, Cross 350 (Abilities, page 0xf),
+Circle 460, Circle 500 (close); run 2 Start 200, Cross 260 (Items, page 1), Down 300 (Stock row), Cross 330 (page 0xa), Down 380,
+Circle 410, 450, 490. Screenshots looked at (local/rig/rig4/menu1-340.png: the top list with the hand on Abilities; menu1-420.png: the
+Abilities page with the Roxas row). The scenario values are `scenarios/values.toml` `menu.*`; all compare exactly.
+
+| address | values seen | reading |
+|---|---|---|
+| `0x33e764` | 0 field; 1 from k 203 (the first stop with step 1.0) to the close; 3 at k 520..521 (run 1), then 0 | the scene state: menu scene running; 3 the return (`FUN_001038a0` writes 3, 1.1) |
+| `0x3b10d0` | -1 field; 7 from the Start stop k 202 until the return (k 522) | the requested scene (`FUN_001033a8` writes it) |
+| `0x33e788` | 1 from k 202 to the return | the scene change pending (`FUN_00103678` sets 1) |
+| `0x36d1d4` | 0 top list; 0xf after Cross on Abilities (k 363); 1 after Cross on Items (k 273); 0xa after Cross on Stock (k 342); 0 again after Circle | the current page (`GetMode` 0x2959c0). Stale (20) in the field |
+| `0x36d1dc` | the next page from the confirm until the switch (k 351..362: 0xf; k 461..471: 0), -1 otherwise | the requested page (1.4) |
+| `0x36d1e0` | 0 for the page's first 45 stops (k 203..247 on opening; 363..378 on page 0xf), then 1 (every cursor move happened in phase 1), 2 from the confirm to the switch | the phase: 0 entering, 1 selecting, 2 leaving |
+| `0x36d1f0` | 0 from k 203; 1 from the closing Circle (k 501 run 1, k 491 run 2); stale 1 in the field | closing (`FUN_00295ba0`, 1.5) |
+| `*0x36ce9c +0` (s16) | page 0: 0, 1 (k 261), 2 (k 291), 1 (k 321); back on page 0 after Abilities: 1 (remembered); page 1: 1 on Stock (k 301); page 0xa: 0 then 2 after Down (k 381, the grid's next row) | the list widget of the current page: the cursor row on screen. The pointer is 0x1f214a0 in both runs while the camp runs (from k 207), 0 outside |
+| `*0x36ce9c +0x12` (s16) | 0 in every traced page | the scroll (the index is cursor + scroll, `FUN_002977a8`) |
+| `0x354f70` | 0 at every stop of both runs | not a camp value (the 1.1 gate's word) |
+
+The first k at which the list takes input (`menu.open_done` of RIG.md 2.8) is the first stop with phase 1: k 248 in both runs
+(45 stops after the first menu stop k 203). The other two widgets (`0x36cea0`, `0x36cea4`) kept cursor 0 in both runs.
 
 ## 2. The screens
 

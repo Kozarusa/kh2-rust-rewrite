@@ -959,7 +959,7 @@ pub fn tick(
     distort: Res<DistortHandle>,
     projection: Res<FxProjection>,
     mut lens_draws: ResMut<lens::LensDraws>,
-    mut se: MessageWriter<crate::audio::PlaySe>,
+    mut se: MessageWriter<crate::shared::sound::PlaySe>,
 ) {
     let view_inv = camera.single().map(|(c, _)| game_camera(c.to_matrix())).unwrap_or(Mat4::IDENTITY);
     // The game's projection for the camera's field of view (camera.rs makes the vertical field from the
@@ -1347,8 +1347,8 @@ pub fn effect_sound_position(bind: &Mat4) -> Vec3 {
 /// destroy test, so an effect that ends on its first tick still sounds). A camera-space element
 /// (flag 0x20000) keeps the unplaced request [inferred: its record holds view-space coordinates, which
 /// the request's camera transform FUN_002c27b0 would apply a second time].
-pub fn effect_sound_request(se: u32, apdx: Option<String>, flags: u32, bind: &Mat4) -> crate::audio::PlaySe {
-    let req = crate::audio::PlaySe::number(se, apdx);
+pub fn effect_sound_request(se: u32, apdx: Option<String>, flags: u32, bind: &Mat4) -> crate::shared::sound::PlaySe {
+    let req = crate::shared::sound::PlaySe::number(se, apdx);
     if flags & ELEMENT_IN_CAMERA_SPACE != 0 { req } else { req.at(effect_sound_position(bind)) }
 }
 
@@ -1494,9 +1494,9 @@ mod tests {
         assert!((pos - effect_sound_position(&bind)).length() < 1e-4);
         let cam = effect_sound_request(29, None, ELEMENT_IN_CAMERA_SPACE, &bind);
         assert_eq!(cam.pos, None);
-        let far = crate::audio::placement(world.pos, Some(&Transform::IDENTITY));
+        let far = crate::shared::sound::placement(world.pos, Some(&Transform::IDENTITY));
         assert!(far.0 < 0x3fff, "a placed effect sound is not at full volume: {:#x}", far.0);
-        assert_eq!(crate::audio::placement(cam.pos, Some(&Transform::IDENTITY)).0, 0x3fff);
+        assert_eq!(crate::shared::sound::placement(cam.pos, Some(&Transform::IDENTITY)).0, 0x3fff);
     }
 
     /// WP-AU5: the sound of a fixed-placed effect plays where the effect is, in world metres.

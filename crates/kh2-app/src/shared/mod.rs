@@ -11,3 +11,4 @@ pub mod enemy_obj;
 pub mod struggle;
 pub mod area_jump;
 pub mod reaction;
+pub mod summon;

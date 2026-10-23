@@ -995,7 +995,7 @@ fn command_menu(
     mut uses: ResMut<ItemUse>,
     sora: Query<&Sora>,
     (drive, progress, battle, abilities): MenuState,
-    (summon, mut summon_queue): (Option<Res<crate::summon::SummonState>>, Option<ResMut<crate::summon::SummonQueue>>),
+    (summon, mut summon_queue): (Option<Res<crate::shared::summon::SummonState>>, Option<ResMut<crate::shared::summon::SummonQueue>>),
     members: Query<&crate::party::PartyMember>,
     mut drive_queue: Option<ResMut<crate::drive::DriveQueue>>,
 ) {
@@ -1086,7 +1086,7 @@ fn command_menu(
             // A summon command, Dismiss or one of Genie's "Drive!" forms (535..538): summon.rs runs it (event 11 on his script
             // for a form, FUN_00177c20 -> FUN_0016b420).
             _ if summon_request(c, cmd).is_some() && summon_queue.is_some() => {
-                let req = summon_request(c, cmd).unwrap_or(crate::summon::SummonRequest::Dismiss);
+                let req = summon_request(c, cmd).unwrap_or(crate::shared::summon::SummonRequest::Dismiss);
                 info!("items: {} chosen ({req:?})", data.cmd_name(cmd));
                 summon_queue.as_deref_mut().into_iter().for_each(|q| q.0.push(req));
                 true
@@ -1199,8 +1199,8 @@ pub fn drive_request(c: &Cmd) -> Option<crate::drive::DriveRequest> {
 
 /// The request the summon system gets for a chosen command (summon.rs): Summon and Dismiss by their `Execute`, one of Genie's
 /// "Drive!" forms (`Execute` 535..538) as `Form`.
-pub fn summon_request(c: &Cmd, cmd: u16) -> Option<crate::summon::SummonRequest> {
-    use crate::summon::SummonRequest;
+pub fn summon_request(c: &Cmd, cmd: u16) -> Option<crate::shared::summon::SummonRequest> {
+    use crate::shared::summon::SummonRequest;
     match c.execute {
         cmd_id::DISMISS => Some(SummonRequest::Dismiss),
         cmd_id::SUMMON => Some(SummonRequest::Summon(cmd)),
@@ -1525,7 +1525,7 @@ mod tests {
     /// `SummonRequest::Form`. Without Genie the deck and the forms list are as before.
     #[test]
     fn second_deck_shows_drive_with_genie_and_issues_the_form() {
-        use crate::summon::SummonRequest;
+        use crate::shared::summon::SummonRequest;
         let cmds = table();
         let genie = Setup { genie: Some(vec![535, 537]), ..Setup::default() };
         let mut l = CommandLists::default();

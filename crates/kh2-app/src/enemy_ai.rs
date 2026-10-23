@@ -419,7 +419,7 @@ fn ai_update(
         MessageWriter<crate::shared::prize::CollectAll>,
     ),
     (summon, mut summon_stop_logged, mut forced_done, mut defeated): (
-        Option<Res<crate::summon::SummonState>>,
+        Option<Res<crate::shared::summon::SummonState>>,
         Local<bool>,
         Local<bool>,
         MessageWriter<crate::progress::EnemyDefeated>,

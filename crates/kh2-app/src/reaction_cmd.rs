@@ -525,7 +525,7 @@ fn native_offers(
     // The one part walk of FUN_0019cb70 is `npc::part_offer` (the townspeople and the save points use
     // it too). An enemy has no spawn-record command, so a part with id 0x83 finds none (0xffff names
     // no row) and is skipped.
-    let Some(o) = crate::npc::part_offer(rules, table, u16::MAX, (&on, &off), (epos, eyaw), &player, (player_pos, player_yaw), (ctx, window)) else { return };
+    let Some(o) = part_offer(rules, table, u16::MAX, (&on, &off), (epos, eyaw), &player, (player_pos, player_yaw), (ctx, window)) else { return };
     if best.is_some_and(|(p, d)| o.priority < p || (o.priority == p && d <= o.dist)) {
         return;
     }
@@ -556,7 +556,7 @@ fn auto_limit_offer(
     drive: Option<Res<crate::drive::DriveState>>,
     battle: Res<crate::sora::Battle>,
     area: Option<Res<crate::area::AreaRecord>>,
-    talk: Option<Res<crate::npc::Talk>>,
+    talk: Option<Res<Talk>>,
     gate_params: crate::limit::GateParams,
     log: Res<Log>,
 ) {
@@ -631,7 +631,7 @@ fn accept(
     mut sora: Query<&mut Sora>,
     targets: Query<&Enemy>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
-    mut talk: Option<ResMut<crate::npc::Talk>>,
+    mut talk: Option<ResMut<Talk>>,
     mut shop: Option<ResMut<crate::shared::reaction::ShopRequest>>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
     mut limit_start: MessageWriter<crate::limit::StartLimit>,

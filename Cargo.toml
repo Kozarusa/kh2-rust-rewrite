@@ -29,6 +29,7 @@ kh2-game-core = { path = "crates/kh2-game-core" }
 kh2-sound = { path = "crates/kh2-sound" }
 kh2-enemy = { path = "crates/kh2-enemy" }
 kh2-player = { path = "crates/kh2-player" }
+kh2-party = { path = "crates/kh2-party" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev]

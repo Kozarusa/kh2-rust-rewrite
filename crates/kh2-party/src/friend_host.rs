@@ -96,7 +96,7 @@ pub struct SearchPart {
 
 /// The object handle a search part's enemy has in the members' scripts (the history of the search block
 /// keeps it from search to search): past the hand objects, the entity's index.
-pub(crate) fn enemy_handle(e: Entity) -> u32 {
+pub fn enemy_handle(e: Entity) -> u32 {
     ENEMY_HANDLE + (e.to_bits() as u32 & 0xff_ffff)
 }
 
@@ -123,11 +123,11 @@ pub struct WeaponObj {
 }
 
 /// Handles of the members' hand objects (host 1.234), past the attack and effect handles.
-pub(crate) const WEAPON_HANDLE: u32 = 0x7d00_0000;
+pub const WEAPON_HANDLE: u32 = 0x7d00_0000;
 
 /// Object handles the members' target record names for the other member and an enemy.
-pub(crate) const TARGET_OTHER: u32 = 0x7c00_0001;
-pub(crate) const TARGET_ENEMY: u32 = 0x7c00_0002;
+pub const TARGET_OTHER: u32 = 0x7c00_0001;
+pub const TARGET_ENEMY: u32 = 0x7c00_0002;
 
 /// An effect handle of the member's script and what became of its instance.
 #[derive(Clone, Debug, PartialEq)]
@@ -208,20 +208,20 @@ const ATTACK_HANDLE: u32 = 0x7a00_0000;
 const EFFECT_HANDLE: u32 = 0x7b00_0000;
 
 /// The member's script host.
-pub(crate) struct FriendHost<'a, 'b> {
-    pub(crate) inner: BevyHost<'a>,
-    pub(crate) fields: &'b mut FriendFields,
+pub struct FriendHost<'a, 'b> {
+    pub inner: BevyHost<'a>,
+    pub fields: &'b mut FriendFields,
     /// The `atkp` rows (the attack objects' rows, FUN_0019e788).
-    pub(crate) game: &'b crate::data::GameData,
+    pub game: &'b crate::data::GameData,
     /// Host 1.247's numbers from the executable (`None`: not readable; the call is then missing).
-    pub(crate) free: Option<&'b crate::party_rules::FreePointConsts>,
+    pub free: Option<&'b crate::party_rules::FreePointConsts>,
     /// The enemies' target parts host 6.5 walks (`friend_ai` lists them each tick).
-    pub(crate) targets: &'b [SearchPart],
+    pub targets: &'b [SearchPart],
 }
 
 /// FUN_001141d0: the address of the first 0x80-byte entry of `entries` (the list at `at`) whose first
 /// word is `id`, 0 when none does.
-pub(crate) fn entry_address(at: u32, entries: &[u8], id: u32) -> u32 {
+pub fn entry_address(at: u32, entries: &[u8], id: u32) -> u32 {
     (0..entries.len() / 0x80)
         .find(|&k| entries[k * 0x80..k * 0x80 + 4] == id.to_le_bytes())
         .map_or(0, |k| at + 0x80 * k as u32)

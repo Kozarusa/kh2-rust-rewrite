@@ -100,7 +100,7 @@ pub struct FriendBrain {
 }
 
 /// Registers the systems (called by `party::PartyPlugin`, which runs them after its own tick).
-pub(crate) fn register(app: &mut App) {
+pub fn register(app: &mut App) {
     app.init_resource::<FriendScripts>()
         .init_resource::<MemberAttacks>().add_systems(FixedUpdate, (friend_attach, friend_update).chain().after(crate::party::PartyTick).in_set(Sim::Enemy));
 }
@@ -134,7 +134,7 @@ fn friend_attach(mut commands: Commands, disc: Res<Disc>, mut scripts: ResMut<Fr
 /// crossed (the dispatcher 0x188498). The members' scripts wait on bit 0 of +0x239 for the cast (Donald's
 /// R089a after motion 192, whose trigger 9 lies at tick 26). [inferred] Frame triggers are counted from the
 /// motion's first frame, as `party` does for the item motion (docs/systems/party/party-friend-ai.md section 10).
-pub(crate) fn trigger_bits(anim: &Animator) -> [u8; 2] {
+pub fn trigger_bits(anim: &Animator) -> [u8; 2] {
     let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return [0; 2] };
     let g = |f: f32| (f - m.frame_start) * crate::data::LOGIC_HZ / m.fps.max(1.0);
     let mut bits = [0u8; 2];
@@ -155,7 +155,7 @@ pub(crate) fn trigger_bits(anim: &Animator) -> [u8; 2] {
 /// tests, FUN_001be190 marks, FUN_001be300 counts down), by (member, victim). [inferred] Kept apart
 /// from the spells' memory in `magic.rs`: the groups of the two never meet.
 #[derive(Default)]
-pub(crate) struct VictimMemory(pub(crate) HashMap<(Entity, Entity), crate::magic_rules::HitMemory>);
+pub struct VictimMemory(pub HashMap<(Entity, Entity), crate::magic_rules::HitMemory>);
 
 /// FUN_001a2cc0's sweep: after a move of more than two frame units (+4 bit 4, FUN_001a2fc8) the
 /// volume is tested at the position and then in steps of `min(radius, height)` toward the previous
@@ -203,7 +203,7 @@ fn attack_volume(c: Vec3, radius: f32, height: f32) -> crate::combat::Volume {
 /// enemies' hurt shapes. A hit takes the victim's memory (`HitMemory`: once per group until the row's
 /// Interval) and the row variant of the hit count (FUN_0019e7e0, `magic_rules::variant`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn step_attacks(
+pub fn step_attacks(
     me: Entity,
     model: &str,
     origin: Vec3,
@@ -295,11 +295,11 @@ pub(crate) fn step_attacks(
 }
 
 /// Ticks an ended effect's record is kept for the script's polls (0.49) before it is dropped.
-pub(crate) const FX_FORGET: u32 = 600;
+pub const FX_FORGET: u32 = 600;
 
 /// The frames of a member's hand objects (its `Fighter` attack bodies after the body), for the bone
 /// numbers 0x4003.. (`fx::object_bone`).
-pub(crate) fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>) -> Vec<Option<crate::fx::ObjectFrame>> {
+pub fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>) -> Vec<Option<crate::fx::ObjectFrame>> {
     f.map_or(Vec::new(), |f| f.attack_bodies.iter().skip(1).map(|w| Some(crate::fx::ObjectFrame::of(anims.get(*w).ok()?, gts.get(*w).ok()?.to_matrix()))).collect())
 }
 
@@ -307,7 +307,7 @@ pub(crate) fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Quer
 /// the frame its bone names (FUN_0016aa18; `fx::object_bone` for the numbers with 0x4000, the bone's
 /// world matrix otherwise) times the element's translation (game axes, Y and Z flipped). Bevy space,
 /// from the owner's last drawn pose (one tick old).
-pub(crate) fn element_position(pax: &crate::fx::LoadedPax, id: u16, owner: Entity, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>, hands: &[Option<crate::fx::ObjectFrame>]) -> Option<Vec3> {
+pub fn element_position(pax: &crate::fx::LoadedPax, id: u16, owner: Entity, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>, hands: &[Option<crate::fx::ObjectFrame>]) -> Option<Vec3> {
     let (a, g) = (anims.get(owner).ok()?, gts.get(owner).ok()?);
     let e = pax.pax.elements_for(id).next()?;
     let t = e.translation;

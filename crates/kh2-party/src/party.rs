@@ -75,7 +75,7 @@ impl Plugin for PartyPlugin {
 
 /// The party's own systems (spawn, tick, fade); the members' scripts run after them.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct PartyTick;
+pub struct PartyTick;
 
 /// The tables the weapon lookup reads (FUN_0016ef28 -> FUN_001845b0 `went`, FUN_00184640 `wmst`).
 #[derive(Default)]
@@ -89,7 +89,7 @@ struct WeaponTables {
 pub struct PartyData {
     consts: Option<Consts>,
     /// Per AI class, its parameter block and action records (`party_battle::ClassAi`).
-    pub(crate) ai: HashMap<u8, ClassAi>,
+    pub ai: HashMap<u8, ClassAi>,
     /// FUN_0017da30's slot orders (0x37a5c8).
     orders: [[u8; 4]; 4],
     /// 0x3784ac: style 2 halves the battle distance (FUN_0010df08).
@@ -107,7 +107,7 @@ pub struct PartyData {
     weapons: WeaponTables,
     /// `lvup`, `item` and `item_stat`: the tables a member's status is rebuilt from (also inserted as the
     /// `MemberStatus` resource for the enemy crate).
-    pub(crate) status: crate::shared::party::MemberStatus,
+    pub status: crate::shared::party::MemberStatus,
     /// Stage 4's executable values: FUN_00110f90's MP-gate weights (0x378598, 0x37859c), FUN_0010c800's
     /// degrees to radians (0x3784a0), the item handlers' fractions (0x3785c8 HP, 0x3785d4 MP) and choice
     /// orders (0x352e28 / 0x352e3c HP, 0x352e50 / 0x352e60 MP).
@@ -202,7 +202,7 @@ impl Ramp {
 
 /// FUN_001a7500: the index a NeoStatus has in the hidden-member list (Sora 1 and Roxas 14: 0, Donald 2: 1,
 /// Goofy 3: 2, anybody else 3).
-pub(crate) fn hidden_index(neo: u16) -> u32 {
+pub fn hidden_index(neo: u16) -> u32 {
     match neo {
         1 | 14 => 0,
         2 => 1,
@@ -214,7 +214,7 @@ pub(crate) fn hidden_index(neo: u16) -> u32 {
 /// FUN_001c77a8: whether drive form `form` takes member `neo` away (Valor: Goofy, Wisdom: Donald, Limit,
 /// Master, Final and Anti: both; 0 and past 5 none). The drive module keeps its own copy of this table
 /// (`drive::rules::companions`, a party of both members is checked there).
-pub(crate) fn form_takes(form: u8, neo: u16) -> bool {
+pub fn form_takes(form: u8, neo: u16) -> bool {
     match form {
         1 => neo == 3,
         2 => neo == 2,
@@ -308,7 +308,7 @@ impl PartyHidden {
 }
 
 impl PartyData {
-    pub(crate) fn load(disc: &Disc) -> PartyData {
+    pub fn load(disc: &Disc) -> PartyData {
         let exe = disc.read_root("SLUS_210.05");
         let consts = exe.as_deref().and_then(Consts::from_exe);
         if consts.is_none() {
@@ -358,7 +358,7 @@ impl PartyData {
 
     /// The scale a heal on KO'd member `neo` takes (FUN_0017cee8): `DAT_0037a560` with Hyper Healing equipped
     /// (WP-PL3 `party_rules::revive_scale`, read from the saved record's abilities), else `sstm` +0x54.
-    pub(crate) fn revive_scale_of(&self, abilities: &[(u16, bool)]) -> f32 {
+    pub fn revive_scale_of(&self, abilities: &[(u16, bool)]) -> f32 {
         rules::revive_scale(abilities, self.revive_full, self.revive_scale())
     }
 
@@ -370,7 +370,7 @@ impl PartyData {
     /// 0 counts as 1), the first table (Sora's) when that index is past the table count or its offset
     /// is 0, and the row of the level held at the table's level count. A level of 0 is taken as 1
     /// [inferred: FUN_001b50c0 would read before the table].
-    pub(crate) fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
+    pub fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
         self.status.member_status(neo, rec)
     }
 
@@ -379,7 +379,7 @@ impl PartyData {
     /// `item_stat` AP byte (`+7`) of every equipped item, and the resistances `+0x1a8..+0x1ae`, 100 scaled by each
     /// item's bytes `+8..+0xe` in the order weapons, armor, accessories (`crate::data::fold_resistances`; the order
     /// is [inferred] from the call order). The ability passives `FUN_001a0c08` also applies are not read.
-    pub(crate) fn member_ap_resistances(&self, neo: u16, rec: &crate::progress::Member) -> (i32, [i32; 7]) {
+    pub fn member_ap_resistances(&self, neo: u16, rec: &crate::progress::Member) -> (i32, [i32; 7]) {
         self.status.member_ap_resistances(neo, rec)
     }
 
@@ -392,7 +392,7 @@ impl PartyData {
     }
 
     /// The scale a heal on a KO'd member takes (`FUN_0017cee8` through `FUN_00186238`: `sstm` +0x54), 1.0 without the record.
-    pub(crate) fn revive_scale(&self) -> f32 {
+    pub fn revive_scale(&self) -> f32 {
         if self.sstm.is_some() { self.sstm_f32(0x54) } else { 1.0 }
     }
 
@@ -402,7 +402,7 @@ impl PartyData {
     }
 
     /// FUN_0017da30's slot order of a motion-state row.
-    pub(crate) fn order(&self, row: usize) -> [u8; 4] {
+    pub fn order(&self, row: usize) -> [u8; 4] {
         self.orders[row.min(3)]
     }
 
@@ -671,28 +671,28 @@ pub struct PartyMember {
     chosen: Vec<String>,
     /// The motion slot the member's script asked for last (FUN_0017e220 remapped), played while the
     /// member stands; `friend_ai` writes it.
-    pub(crate) script_slot: Option<usize>,
+    pub script_slot: Option<usize>,
     /// The script asked for a motion this tick (FUN_0017e220 starts it again even when it plays), and the
     /// motion it queued after it (host 1.13, FUN_0017e170).
-    pub(crate) script_restart: bool,
-    pub(crate) script_queue: Option<usize>,
+    pub script_restart: bool,
+    pub script_queue: Option<usize>,
     /// The script's movement this tick (1.111: the ground part of direction x speed, per frame) and its
     /// facing (app yaw), carried out while it runs a special (Goofy's `tornado`).
-    pub(crate) script_move: Option<Vec3>,
-    pub(crate) script_yaw: Option<f32>,
+    pub script_move: Option<Vec3>,
+    pub script_yaw: Option<f32>,
     /// +0xb00, the invincibility timer (FUN_00175aa8 writes it, FUN_00175ab0 counts it down in the party
     /// tick, FUN_00175ad8 refuses hits while it is above 0).
-    pub(crate) invuln: f32,
+    pub invuln: f32,
     /// FUN_0017da30's state row now (1 battle, 2 field).
-    pub(crate) motion_row: usize,
-    pub(crate) free: bool,
+    pub motion_row: usize,
+    pub free: bool,
     /// Stage 3: the status block (+0x48c): HP +0, maximum +4, minimum +8, MP +0x180, maximum +0x184,
     /// the MP charge +0x1bc / +0x1c0.
     pub hp: i32,
     pub hp_max: i32,
     pub mp: i32,
     pub mp_max: i32,
-    pub(crate) charge: crate::magic_rules::Charge,
+    pub charge: crate::magic_rules::Charge,
     /// +0x7f8 bit 4 (KO, FUN_00186580), the revive timer +0xb40 and the handle of system effect 0xe
     /// (+0xb44) while the member lies in motion 0x36.
     pub ko: bool,
@@ -712,35 +712,35 @@ pub struct PartyMember {
     queued: Vec<QueuedUse>,
     /// FUN_00113d48: the mode the script is asked to switch to (FUN_00186e70 on +0x300; `friend_ai`
     /// carries it out) and the MP cost the script pays through host 1.276 (+0xaf4).
-    pub(crate) mode_request: Option<String>,
-    pub(crate) pending_mp: u8,
+    pub mode_request: Option<String>,
+    pub pending_mp: u8,
     /// The script's mode now (`friend_ai` writes it): the script is busy (+0x390) while it runs a
     /// special's mode [inferred].
-    pub(crate) script_mode: Option<String>,
+    pub script_mode: Option<String>,
     /// FUN_00113d48 put the special's (or Cure's) target into +0x9f4; kept while its mode runs.
     special_target: bool,
     /// Who that target record names, and the hits the script's attack objects delivered on it (hosts
     /// 2.10 / 2.17, riend_ai fills them; party_script_hits carries them out).
     special_who: Option<ScriptTarget>,
-    pub(crate) script_hits: Vec<i16>,
+    pub script_hits: Vec<i16>,
     /// The point of the target record (+0x9f4) host 1.120 answers: the centre of the hurt shape the
     /// member targets (game units, the app's axes), kept while the member is not free.
-    pub(crate) target_point: Option<Vec3>,
+    pub target_point: Option<Vec3>,
     /// The radius of that hurt shape (host 6.9 measures to its surface).
-    pub(crate) target_radius: f32,
+    pub target_radius: f32,
     /// The hand object off the hand (Goofy's `blade`, `friend_ai`): its root (game units, the app's axes), its
     /// facing (app yaw) and the motion the script asked for; `member_hands` draws it there.
-    pub(crate) thrown: Option<(Vec3, f32, Option<i32>)>,
+    pub thrown: Option<(Vec3, f32, Option<i32>)>,
     /// +0x7f8 bit 0x10 (FUN_001c7600): the member is hidden (invulnerable, not ticked, not drawn once its
     /// fade-out ends) until `show` (FUN_001c7ab0) brings it back.
-    pub(crate) hidden: bool,
+    pub hidden: bool,
     /// The fade ramp (+0x82c) of a hide or a show; `alpha` follows it.
     ramp: Option<Ramp>,
 }
 
 /// Whom a special's target record names, for the effects bound to its object (host 1.149).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum SpecialOn {
+pub enum SpecialOn {
     Player,
     Me,
     Other,
@@ -765,17 +765,17 @@ const VOICE_DANGER: u16 = 9;
 
 impl PartyMember {
     /// Position (game units, the app's axes) and facing (app yaw).
-    pub(crate) fn position(&self) -> Vec3 {
+    pub fn position(&self) -> Vec3 {
         self.motor.pos
     }
 
-    pub(crate) fn yaw(&self) -> f32 {
+    pub fn yaw(&self) -> f32 {
         self.motor.yaw
     }
 
     /// Host 1.160 (FUN_0018f490) on the member's target record (+0x9f4): it names `e` (part 0) from now on,
     /// and the special's record too while one runs (Goofy's `blade` callback R10f7 after a hit).
-    pub(crate) fn retarget(&mut self, e: Entity) {
+    pub fn retarget(&mut self, e: Entity) {
         let t = Target { entity: e, shape: 0 };
         self.target_changed = self.target.is_none_or(|o| o.entity != e);
         self.target = Some(t);
@@ -788,7 +788,7 @@ impl PartyMember {
     /// the enemy's shape found (the special's record too: it is the same record), or is cleared (then no
     /// longer valid for 1.140). [inferred] The app's own re-target pass (`party_tick`) still runs while a
     /// special does and may pick the nearest enemy again after a clear.
-    pub(crate) fn search_target(&mut self, found: Option<(Entity, usize)>) {
+    pub fn search_target(&mut self, found: Option<(Entity, usize)>) {
         let t = found.map(|(entity, shape)| Target { entity, shape });
         self.target_changed = t != self.target;
         self.target = t;
@@ -806,12 +806,12 @@ impl PartyMember {
     }
 
     /// The member's target record (+0x9f4) is valid (host 1.140).
-    pub(crate) fn target_valid(&self) -> bool {
+    pub fn target_valid(&self) -> bool {
         self.special_target || self.target.is_some()
     }
 
     /// The object of the target record while a special runs (FUN_00113d48 copied phase 1's record).
-    pub(crate) fn special_on(&self) -> Option<SpecialOn> {
+    pub fn special_on(&self) -> Option<SpecialOn> {
         Some(match self.special_who? {
             ScriptTarget::Party(battle::Who::Player) => SpecialOn::Player,
             ScriptTarget::Party(battle::Who::Me) => SpecialOn::Me,
@@ -828,7 +828,7 @@ impl PartyMember {
     /// Puts the member at `at` (game units, the app's axes) facing `yaw`, on the ground, with no
     /// movement left: the re-creation of `FUN_0017d290` (`FUN_0010be80(yaw, object, entity, position)`)
     /// after a summon (WP-F1 item 4). `follow_party` writes the transform from the motor.
-    pub(crate) fn place(&mut self, at: Vec3, yaw: f32) {
+    pub fn place(&mut self, at: Vec3, yaw: f32) {
         self.motor.pos = at;
         self.motor.yaw = yaw;
         self.motor.vel = Vec3::ZERO;
@@ -844,11 +844,11 @@ impl PartyMember {
     /// `DAT_0037c04c` to 0 over `frames` (FUN_001abf40), and the bit is set. The member stops whatever it was
     /// doing (a warp's fade, an attack, an item): it is not ticked while hidden. Returns whether it hid now.
     /// Whether the member's script (`friend_ai`) runs this tick: a hidden member (+0x7f8 bit 0x10) is not ticked.
-    pub(crate) fn runs_script(&self) -> bool {
+    pub fn runs_script(&self) -> bool {
         !self.hidden
     }
 
-    pub(crate) fn hide(&mut self, frames: f32, fades_from: f32) -> bool {
+    pub fn hide(&mut self, frames: f32, fades_from: f32) -> bool {
         if self.hidden {
             return false;
         }
@@ -868,7 +868,7 @@ impl PartyMember {
 
     /// FUN_001c7ab0: the member comes back through FUN_0017d290 at `at` facing `yaw`, bit 0x10 clear, with a
     /// fade-in ramp from 0 to `DAT_0037c068` over `DAT_0037c064` frames.
-    pub(crate) fn show(&mut self, at: Vec3, yaw: f32, to: f32, frames: f32) {
+    pub fn show(&mut self, at: Vec3, yaw: f32, to: f32, frames: f32) {
         self.hidden = false;
         self.place(at, yaw);
         let ramp = Ramp::new(0.0, to, frames);
@@ -901,7 +901,7 @@ impl PartyMember {
     /// FUN_001769e0 -> FUN_00186368 with minus `cost` (host 1.276): nothing while KO'd; MP below 0 starts
     /// the MP charge (FUN_00186440: the `prty` MpDrive of the +0x12c row x `DAT_0037a974`, MP 0),
     /// otherwise MP drops (FUN_001a0180), as Sora's spells pay (`magic_rules::pay`).
-    pub(crate) fn pay_mp(&mut self, cost: u8) {
+    pub fn pay_mp(&mut self, cost: u8) {
         if self.ko || self.hp_max == 0 {
             return;
         }

@@ -42,6 +42,7 @@ Still open: the title screen, new game, config at the title, journal lighting, a
 | `FUN_002b3d80`, `FUN_002b4170`, `FUN_002acfb8`, `FUN_002afca0` | journal page builders (moogle, report, treasures) |
 | `FUN_001cec00`, `FUN_001793a8`, `FUN_001cb118`, `FUN_001ad378`, `FUN_001ad9a0` | game over decision, list build, revive path |
 | `FUN_00156520`, `FUN_00157a50`, `FUN_001540a0`, `FUN_00154498` | Sora's panel and target gauge |
+| `0x33e764`, `0x3b10d0`, `0x36d1d4`, `0x36d1dc`, `0x36d1e0`, `0x36d1f0`, `*0x36ce9c +0 / +0x12` | camp state traced in PCSX2 (WP-RIG-4): scene state, requested scene, page, next page, phase (0 entering, 1 selecting, 2 leaving), closing, list cursor and scroll; evidence `menus-pause.md` 1.9, rig names `scenarios/values.toml` `menu.*` |
 
 ## Open gaps
 - Camp: the button set it runs under, the AP rule of the Abilities screen, the dim and transition curves (taken from footage), pages 3, 4, 0x16,

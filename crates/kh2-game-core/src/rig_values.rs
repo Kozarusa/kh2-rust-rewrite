@@ -7,7 +7,12 @@
 //! * `sora.object`: the original's player object pointer; the port has no address space.
 //! * `place.battle`: the original's battle mode word; the port's `Battle` is a tick count, not the same word [no mapping known].
 //! * `cam.look`: the camera's look-at point is private to the camera system (`camera::CamState`), not exposed.
-//! * `menu.word_354f70`: unverified in the original (RIG-4 names the real menu values).
+//! * `menu.word_354f70`: 0 at every stop of the original's menu runs (RIG-4); not a menu value, kept for the old traces.
+//! * `sora.motion`, `sora.motion_frame` (actor +0x154, +0x170, traced in RIG-4): `Sora` keeps no general motion id or motion time
+//!   (only `damage_motion` inside hit reactions); the playing clip lives in the player crate's animation state, outside `Ctx`.
+//! * `menu.*` (traced in RIG-4: scene state 0x33e764, scene 0x3b10d0, page 0x36d1d4, next page 0x36d1dc, phase 0x36d1e0, closing
+//!   0x36d1f0, the list widget's cursor and scroll through 0x36ce9c): the port's page, phase and cursors are the menu crate's `Menu`
+//!   resource, which `Ctx` does not carry (the shared `MenuPhase` has only closed/opening/open/closing, no page or cursor).
 
 use bevy::prelude::*;
 
@@ -44,7 +49,22 @@ pub const GETTERS: &[(&str, Getter)] = &[
 ];
 
 /// Names of `values.toml` the port has no getter for (see the module comment).
-pub const MISSING: &[&str] = &["sora.object", "place.battle", "cam.look", "menu.word_354f70"];
+pub const MISSING: &[&str] = &[
+    "sora.object",
+    "place.battle",
+    "cam.look",
+    "menu.word_354f70",
+    "sora.motion",
+    "sora.motion_frame",
+    "menu.scene_state",
+    "menu.scene",
+    "menu.page",
+    "menu.next_page",
+    "menu.phase",
+    "menu.closing",
+    "menu.cursor",
+    "menu.scroll",
+];
 
 pub fn read(name: &str, ctx: &Ctx) -> Option<String> {
     GETTERS.iter().find(|(n, _)| *n == name).and_then(|(_, g)| g(ctx))

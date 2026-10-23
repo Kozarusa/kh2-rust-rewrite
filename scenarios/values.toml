@@ -78,8 +78,67 @@ type = "f32"
 count = 3
 unit = "cm"
 
-# Read by the first pause-menu run of RIG.md 1.2 next to the frame step; what it means is not known. RIG-4 names the real menu values.
+# Sora's motion (RIG-4, traced in state .06: walk, run, idle, attack; docs/systems/player-camera/contract.md, motion controller at
+# object +0x140). The pointer 0x35c998 is the actor itself: +0x154 = controller +0x14, the motion id last requested (idle 0, walk 1,
+# run 2, the first ground attack 151 in that state); +0x170 = controller +0x30, the playing motion's time in frames (2.0 per field
+# frame, back to the loop start at the end, e.g. 40 for the run). Compare both exactly.
+[sora.motion]
+path = [0x35c998, 0x154]
+type = "i32"
+unit = "motion id"
+note = "traced RIG-4: 0 idle, 1 walk (half stick), 2 run (full stick), 151 the attack of state .06"
+
+[sora.motion_frame]
+path = [0x35c998, 0x170]
+type = "f32"
+unit = "frames"
+note = "traced RIG-4: restarts at 0 or the step on a new motion, +2 per field frame, wraps at the loop length (+0x16c [inferred])"
+
+# The camp menu (RIG-4, traced in state .06 over the pages 0, 1, 0xa and 0xf; docs/systems/ui/menus-pause.md 1.4 and 1.9).
+# Compare all exactly. The page words keep their last value while no menu runs: read them only while menu.scene_state is 1.
+[menu.scene_state]
+path = [0x33e764]
+type = "i32"
+note = "traced: 0 in the field, 1 from the first menu frame (k 203 in camp-open-06) to the close, 3 for the two closing frames"
+
+[menu.scene]
+path = [0x3b10d0]
+type = "i32"
+note = "traced: -1 in the field, 7 from the Start frame to the return (the scene requested by 0x1033a8)"
+
+[menu.page]
+path = [0x36d1d4]
+type = "i32"
+note = "traced: the current page (0 top list, 1 Items, 0xa Stock, 0xf Abilities); stale while closed"
+
+[menu.next_page]
+path = [0x36d1dc]
+type = "i32"
+note = "traced: the requested page during a page's leave animation, -1 otherwise"
+
+[menu.phase]
+path = [0x36d1e0]
+type = "i32"
+note = "traced: 0 entering, 1 selecting (the list takes input), 2 leaving"
+
+[menu.closing]
+path = [0x36d1f0]
+type = "i32"
+note = "traced: 1 from the closing cancel to the end of the menu; stale 1 in the field"
+
+# The list widget of the current page: pointer 0x36ce9c (0 outside the menu), cursor row +0 and scroll +0x12 (s16, 0x2977a8).
+[menu.cursor]
+path = [0x36ce9c, 0x0]
+type = "i16"
+note = "traced: the row (a cell on the Stock grid) on screen; the index is cursor + scroll"
+
+[menu.scroll]
+path = [0x36ce9c, 0x12]
+type = "i16"
+note = "the list's first shown row (0 in every traced page) [inferred from 0x2977a8]"
+
+# Read by the first pause-menu run of RIG.md 1.2; RIG-4: 0 at every stop of the field and of the menu runs, so not a menu value.
 [menu.word_354f70]
 path = [0x354f70]
 type = "u32"
-note = "unverified: read in the RIG prototype (menu.py); 0 in every user state"
+note = "0 in every user state and every stop of the RIG-4 menu runs (docs: the 0x138748 gate, 'a menu is up' outside the camp scene [inferred])"

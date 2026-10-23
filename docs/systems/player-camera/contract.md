@@ -47,6 +47,10 @@ the event and talk cameras are partly ported. The Roxas player class, camera typ
 - Motion controller at actor +0x140, 0x1c8 bytes (`FUN_0017d768`; end inferred from the next field at +0x308): +8 owner, +0x14 motion
   id, +0x18 serial, +0x1c mode (all -1 at start), +0x20..+0x28 flags, +0x30 time, +0xf0 the owner's effect list, +0xf4 rate,
   +0xf8/+0xf9 range bytes, +0x14c sixteen words of -1.
+- Motion addresses traced (WP-RIG-4, PCSX2, state .06): the player pointer 0x35c998 is the actor base; actor +0x154 (controller +0x14)
+  read 0 idle, 1 walk, 2 run, 151 the ground attack; actor +0x158 = id * 4 + 2 there (the slot); actor +0x170 (controller +0x30) the
+  motion time, +2.0 per field frame, wrapping at actor +0x16c (180 idle, 72 walk, 40 run, 50 attack in that state) [inferred: the loop
+  length]. Rig names `sora.motion`, `sora.motion_frame` (`scenarios/values.toml`).
 - Movers are shared descriptors, not per-actor blocks: `FUN_00179868(id)` reads the pointer table at 0x35ca48 (ids 0 to 0x3f) built by
   `FUN_00179880` at 0x1c88eb0; `FUN_0016b648` calls the descriptor's enter slot and stores it at actor +0xc. All mover state is in the
   actor block (+0x10, +0x20, +0xf0, +0x880). The port stores the descriptor's static address and keeps the table as constants.

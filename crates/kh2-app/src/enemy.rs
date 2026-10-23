@@ -1683,7 +1683,7 @@ pub fn fire_group_triggers(mut events: MessageReader<crate::struggle::GlobalEven
 
 /// What the class-5 pull reads: the executable's numbers and the attack objects of the spells and of
 /// the party members (their places by group).
-type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::magic::SpellAttacks>>, Option<Res<'w, crate::friend_ai::MemberAttacks>>);
+type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::shared::magic::SpellAttacks>>, Option<Res<'w, crate::friend_ai::MemberAttacks>>);
 
 /// The hit reactions of the enemies (`Hurt`, `Blown`) and the movement they need. A scripted enemy
 /// (`AiBrain`) moves and animates itself in `enemy_ai.rs` whenever no reaction plays.
@@ -1892,8 +1892,8 @@ pub fn receive_hits(
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::shared::drive::DriveRules>>, Option<Res<crate::shared::drive::DriveState>>),
-    (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::magic::MagicState>>),
-    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
+    (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::shared::magic::MagicState>>),
+    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::shared::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
     (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
     mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
 ) {
@@ -3294,7 +3294,7 @@ mod tests {
             if dmg != dflt_dmg {
                 checked += 1;
             }
-            if id == crate::magic::ATKP_FIRE {
+            if id == crate::shared::magic::ATKP_FIRE {
                 eprintln!("fire (atkp {id}): SubId 2 Power {} -> damage {dmg}; default SubId {} Power {} -> damage {dflt_dmg}", own.power, dflt.sub_id, base.power);
             }
         }

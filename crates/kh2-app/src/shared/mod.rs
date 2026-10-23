@@ -5,3 +5,4 @@ pub mod sora;
 pub mod abilities;
 pub mod prize;
 pub mod drive;
+pub mod magic;

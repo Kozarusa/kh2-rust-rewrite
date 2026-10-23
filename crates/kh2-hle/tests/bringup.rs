@@ -164,3 +164,55 @@ fn new_game_reaches_the_first_field_frame_and_the_player_moves_under_the_stick()
     h.hw.hw.assert_clean();
     assert!(h.iop.borrow().unknown.is_empty());
 }
+
+/// HYB-7: the checkpoints on which a cold PCSX2 boot with the same pad script agreed with the HLE
+/// (script `scenarios/hle/new-game-nocard.pad`; PCSX2 ran it with a memory card and the opening movie
+/// played in real time, its script clock paused during the movie). Agreed exactly: the place order
+/// title, 02-01-00, 02-02-00, 02-07-00; the first player position (bit-identical floats); the frame step
+/// 1.0 at the title and 2.0 in the field; the position where the stick-up walk ends; the C library RNG
+/// seed 0x875b2f. Not agreed (timing, not asserted): the vsync of each place change and the RNG state
+/// after the seed. About 11 billion instructions: `cargo test --release -p kh2-hle --test bringup -- --ignored`.
+#[test]
+#[ignore = "long: NEW GAME to the field is about 11 billion guest instructions"]
+fn new_game_checkpoints_agree_with_the_pcsx2_trace() {
+    let Some(mut h) = hle("hle pcsx2 checkpoints") else { return };
+    h.iop.borrow_mut().pad = PadScript::parse(include_str!("../../../scenarios/hle/new-game-nocard.pad")).expect("script");
+    let step = |h: &mut Hle| f32::from_bits(h.hw.machine.ee.r32(0x356f40));
+    let mut places: Vec<(u8, u8, u8)> = Vec::new();
+    let (mut title_step, mut field_step) = (None, None);
+    let mut first = None;
+    let mut seed_checked = false;
+    while h.hw.machine.ee.steps < 12_000_000_000 {
+        h.run_frames(5, 1_000_000_000).expect("no fault");
+        let p = h.place();
+        if !seed_checked && h.frame_count() > 10 {
+            let ptr = h.hw.machine.ee.r32(0x373cf0);
+            assert_eq!(h.hw.machine.ee.r32(ptr + 0xa8), 0x0087_5b2f, "srand seed");
+            seed_checked = true;
+        }
+        let t = (p.world, p.area, p.entrance);
+        if places.last() != Some(&t) {
+            places.push(t);
+        }
+        if t == (255, 255, 255) && title_step.is_none() && h.frame_count() > 300 {
+            title_step = Some(step(&mut h));
+        }
+        if t == (2, 7, 0) && p.player.is_some() {
+            field_step = Some(step(&mut h));
+            first = p.player;
+            break;
+        }
+    }
+    assert_eq!(places, [(255, 255, 255), (2, 1, 0), (2, 2, 0), (2, 7, 0)]);
+    assert_eq!(title_step, Some(1.0));
+    assert_eq!(field_step, Some(2.0));
+    let p = first.expect("first field frame");
+    // PCSX2: bits 0xc50f1975, 0x00000000, 0xc4ca091f.
+    assert_eq!([p[0].to_bits(), p[1].to_bits(), p[2].to_bits()], [0xc50f_1975, 0, 0xc4ca_091f]);
+    // The stick goes up at vsync 18400 and the player walks to the same stopping point as on PCSX2.
+    while h.hw.machine.kernel.borrow().clock.vsyncs < 18_700 {
+        h.run_frames(10, 1_000_000_000).expect("no fault");
+    }
+    let e = h.place().player.expect("player");
+    assert!((e[0] + 1400.29).abs() < 0.01 && (e[1] + 5.0).abs() < 0.01 && (e[2] + 2602.56).abs() < 0.01, "{e:?}");
+}

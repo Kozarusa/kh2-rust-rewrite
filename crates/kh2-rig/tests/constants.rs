@@ -52,6 +52,8 @@ fn states() -> Vec<(String, P2s)> {
     let Some(dir) = std::env::var_os("KH2_SSTATES").map(PathBuf::from).or_else(|| std::env::var_os("USERPROFILE").map(|u| PathBuf::from(u).join("Documents/PCSX2/sstates"))) else { return Vec::new() };
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<_> = rd.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "p2s")).collect();
+    // States the rig wrote itself carry a `<file>.kh2rig` sidecar marker; they may be cold-boot states (no record bits), so skip them.
+    out.retain(|p| !std::path::PathBuf::from(format!("{}.kh2rig", p.display())).exists());
     out.sort();
     out.into_iter().filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), P2s::open(&p).ok()?))).collect()
 }

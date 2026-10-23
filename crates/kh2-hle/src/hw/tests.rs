@@ -269,13 +269,13 @@ fn the_movie_hook_answers_start_poll_and_stop() {
     let mut m = HwMachine::new();
     let mut call = |op: u64, arg: u64| m.machine.ee.call(movie::MOVIE_CALL, &[op, arg], &[], 0x01F0_0000).expect("call");
     assert_eq!(call(0, 0x1234), 0, "start");
-    assert_eq!(call(5, 0), movie::STATE_PREPARED, "poll: prepared");
+    assert_eq!(call(5, 0), movie::STATE_PREPARED as u64, "poll: prepared");
     assert_eq!(call(1, 0), 0, "play: done");
-    assert_eq!(call(5, 0), movie::STATE_FINISHED, "poll: finished, so isMovieEnd 0x225790 is true");
+    assert_eq!(call(5, 0), movie::STATE_FINISHED as u64, "poll: finished, so isMovieEnd 0x225790 is true");
     assert_eq!(call(6, 0), 0, "no picture");
     assert_eq!(call(7, 9), 0, "frame number");
     assert_eq!(call(0, 0x1234), 0, "the next movie");
-    assert_eq!(call(5, 0), movie::STATE_PREPARED);
+    assert_eq!(call(5, 0), movie::STATE_PREPARED as u64);
     assert_eq!(m.movies.borrow().len(), 8);
     assert_eq!(m.movies.borrow()[..3], [(0, 0x1234), (5, 0), (1, 0)]);
 }

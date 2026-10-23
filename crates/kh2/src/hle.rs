@@ -215,3 +215,18 @@ pub fn run(args: &mut Vec<String>, arc: Archive) -> Result<(), String> {
     println!("movie calls: {} (starts: {})", movies.len(), movies.iter().filter(|c| c.0 == 0).count());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dump_items_parse_plain_and_pointer_forms() {
+        let d = parse_dumps("0x356f34,0x33e830:3,*0x35c998+0x70:12").unwrap();
+        assert_eq!(d[0], Dump { addr: 0x356f34, deref: None, len: 4 });
+        assert_eq!(d[1], Dump { addr: 0x33e830, deref: None, len: 3 });
+        assert_eq!(d[2], Dump { addr: 0x35c998, deref: Some(0x70), len: 12 });
+        assert!(parse_dumps("zz").is_err());
+        assert!(parse_dumps("").unwrap().is_empty());
+    }
+}

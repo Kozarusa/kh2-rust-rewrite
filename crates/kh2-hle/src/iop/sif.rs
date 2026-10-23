@@ -21,6 +21,8 @@
 
 use kh2_ee::{Ee, reg};
 
+use crate::bringup::BootEvent;
+
 use super::{CallRecord, Handle, Mem, Request};
 use crate::kernel::Shared;
 
@@ -109,6 +111,7 @@ pub(super) fn install(ee: &mut Ee, kernel: &Shared, iop: &Handle) {
         iop.tick(ee);
         let known = iop.servers.iter().any(|s| s.ids().contains(&sid));
         iop.binds.push((sid, known));
+        iop.timeline.push((ee.steps, BootEvent::Bind(sid)));
         let handle = if known {
             let at = match iop.tokens.iter().position(|t| *t == sid) {
                 Some(i) => i,
@@ -151,6 +154,7 @@ pub(super) fn install(ee: &mut Ee, kernel: &Shared, iop: &Handle) {
         let vsync = iop.vsync(ee.steps);
         let now = k.borrow().clock.now(ee.steps);
         let req = Request { sid, fno, send: &sendbuf, recv_len: rsize, send_addr: send, recv_addr: recv, nowait: mode & 1 != 0, now };
+        let modules_before = iop.modules.borrow().len();
         let mut reply = None;
         for s in iop.servers.iter_mut() {
             if s.ids().contains(&sid) {
@@ -165,6 +169,11 @@ pub(super) fn install(ee: &mut Ee, kernel: &Shared, iop: &Handle) {
                 Vec::new()
             }
         };
+        let loaded: Vec<String> = iop.modules.borrow()[modules_before..].to_vec();
+        for path in loaded {
+            let name = path.rsplit(['\\', '/', ':']).next().unwrap_or("").trim_end_matches(";1").to_uppercase();
+            iop.timeline.push((ee.steps, BootEvent::Module(name)));
+        }
         data.resize(rsize, 0);
         if recv != 0 && rsize > 0 {
             ee.write(recv, &data);

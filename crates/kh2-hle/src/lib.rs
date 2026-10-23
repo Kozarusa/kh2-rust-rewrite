@@ -35,6 +35,7 @@
 //! overflow period (8.79 Hz from a 16-bit counter at bus clock / 256) and CPI 1 for the virtual
 //! clock. Each is labelled where it is written.
 
+pub mod bringup;
 pub mod hw;
 pub mod iop;
 pub mod kernel;

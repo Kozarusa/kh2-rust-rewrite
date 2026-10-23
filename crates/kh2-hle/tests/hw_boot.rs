@@ -1,10 +1,9 @@
 //! The executable's boot on the Rust kernel with the hardware pages: no register access outside
 //! the contract (HYB-boot section 3). Skipped without the disc.
 //!
-//! The title-screen loop (600 frames, syscall mix of section 2.1) needs the IOP services of HYB-4:
-//! the boot waits in the IOP reboot call at 0x166ee8 until they exist, so this test covers the
-//! earliest reachable point, the boot up to that call and the idle time after it. The 600-frame
-//! test lands as a follow-up once HYB-4 is merged.
+//! Without the IOP services the boot waits in the IOP reboot call at 0x166ee8, so this test covers
+//! the boot up to that call and the idle time after it. The title-screen loop with the IOP joined
+//! (600 frames, the VBlank syscall rates of section 2.1) is in `tests/bringup.rs`.
 
 use kh2_ee::Ee;
 use kh2_hle::RunStop;

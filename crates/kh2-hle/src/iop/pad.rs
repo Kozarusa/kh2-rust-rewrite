@@ -8,7 +8,7 @@
 //! libpad layout; the game reads bytes 0 to 5 only]. That function is hooked and fills the buffer
 //! from a [`PadScript`]. The library's own port-state (0x2fd458; 1 = a pad is connected) and
 //! description (0x2fd388) code reads buffers the IOP would write by DMA, so both are hooked to
-//! report a connected pad [inferred from their callers]; the calls they would make to `dbcman`
+//! report a connected DualShock 2 with analog sticks [inferred from their callers]; the calls they would make to `dbcman`
 //! (functions 0x80001303 and 0x8000131a) therefore never happen.
 
 use kh2_ee::{Ee, reg};
@@ -33,6 +33,12 @@ pub const DBC_VERSION: u32 = 0x310;
 pub const PAD_READ: u32 = 0x2fd2b0;
 pub const PAD_STATE: u32 = 0x2fd458;
 pub const PAD_INFO: u32 = 0x2fd388;
+/// The button profile of a DualShock 2, as the description read copies it: every button, both
+/// sticks and every pressure byte present [inferred: libpad2's button profile, one bit per
+/// report field]. The game tests byte 2's low nibble (the four stick axes) for 0xf before it reads
+/// the sticks at all [V: 0x167310 checks pad +0x52, the copy at +0x50 made by 0x2fd388]; with
+/// nothing written the pad counts as digital and the sticks are ignored.
+pub const DS2_PROFILE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
 /// Size of the report written by the read hook.
 pub const REPORT_LEN: usize = 18;
 
@@ -238,6 +244,8 @@ pub(super) fn install(ee: &mut Ee, iop: &Handle) {
     ee.hooks.insert(PAD_INFO, |ee: &mut Ee| {
         let ra = ee.gpr[reg::RA] as u32;
         ee.jump(ra);
-        ee.gpr[reg::V0] = 0;
+        let buf = ee.gpr[reg::A0 + 1] as u32;
+        ee.write(buf, &DS2_PROFILE);
+        ee.gpr[reg::V0] = DS2_PROFILE.len() as u128;
     });
 }

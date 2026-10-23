@@ -28,7 +28,7 @@ use kh2_ps2::gs::Vram;
 use crate::SCALE;
 use crate::assets::Disc;
 use crate::combat::{Fighter, Team};
-use crate::enemy::Enemy;
+use crate::shared::enemy::Enemy;
 use crate::skel::Animator;
 use crate::shared::sora::Sora;
 

@@ -29,23 +29,11 @@ use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::shared::sora::{Rigs, Sora};
 use crate::SCALE;
 
+pub use crate::shared::enemy::{mset_name, EState, Enemy, EnemyClash, Kind};
+
 const IDLE: usize = 0;
 const HURT_FRONT: usize = 10;
 const BLOW: usize = 16;
-
-pub struct Kind {
-    pub name: &'static str,
-    /// Row in `enmp`.
-    pub enmp: u16,
-    /// The object's model name (`obj/<model>.mdlx`, `.mset`, `.apdx`; its `00objentry` row).
-    pub model: &'static str,
-    /// The script's `dead` mode starts element 2 of the object's effect file (the death effect), so
-    /// the damage code starts it when HP reaches 0 (`GameEffect::Death`).
-    pub death_effect: bool,
-    /// The object has a status block, so a hit can hurt it: false for an object whose `00objentry` row has `NeoStatus` 0
-    /// and whose script never calls `set_obj_param` (`M_EX850`): nothing builds the block (FUN_001b2148 is the only builder).
-    pub status: bool,
-}
 
 pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020", death_effect: true, status: true };
 
@@ -327,12 +315,6 @@ impl EnemyRigs {
     pub fn get(&self, kind: &Kind) -> Option<Arc<Rig>> {
         self.0.get(kind.name).cloned()
     }
-}
-
-/// The motion set a model's `00objentry` row names (`AnimationName`, without ".mset"); the model's own name when the
-/// row is missing or names nothing. `M_EX610_RAW` names `M_EX610.mset` and has no `obj/M_EX610_RAW.mset`.
-pub(crate) fn mset_name(animation_name: Option<&str>, model: &str) -> String {
-    animation_name.map(|n| n.trim_end_matches(".mset")).filter(|n| !n.is_empty()).unwrap_or(model).to_string()
 }
 
 fn load_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
@@ -1113,56 +1095,6 @@ pub struct BattleGroups {
     pub off: Vec<u16>,
     /// Harness `KH2_FIRE_EVENT` was applied for this set-up.
     fired: bool,
-}
-
-/// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EState {
-    Idle,
-    Hurt,
-    Blown,
-}
-
-#[derive(Component)]
-pub struct Enemy {
-    pub kind: &'static Kind,
-    pub name: &'static str,
-    pub state: EState,
-    pub hp: i32,
-    pub stats: Stats,
-    pub vel: Vec3,
-    pub grounded: bool,
-    pub yaw: f32,
-    pub timer: f32,
-    pub body: Entity,
-    /// Decaying push of a push reaction, added to the movement every tick.
-    push: Option<Push>,
-    /// Flight of the blow that put the enemy in `EState::Blown`, and whether it came from behind.
-    blow: Option<Blow>,
-    blown_back: bool,
-    /// Reaction class 5 (Magnet): the spell attack object the enemy is drawn toward (its group in
-    /// `magic::SpellAttacks`, actor +0xaac) and the pull's numbers (`reaction_rules::Pull`).
-    pull: Option<(u32, rules::Pull)>,
-    /// Hit sounds played so far; the sound alternates between two entries (actor byte +0x7fc).
-    hit_sounds: u8,
-    /// The spawn kind byte of the enemy's spawn record (host 1.110), -1 without one.
-    pub spawn_kind: i32,
-    /// Spawn parameters 1 and 2 from the record (host 1.39), `None` without a record.
-    pub spawn_params: Option<[i32; 2]>,
-    /// The lowest HP a hit can leave (word 2 of the HP record of the status block, which the game's
-    /// HP change FUN_001a0100 clamps to; scripts set it with host 1.231). 0 unless a script sets it.
-    pub min_hp: i32,
-    /// The `00objentry` id of the spawn record (`Member::object_id`); 0 for the harness's own waves.
-    pub object_id: u32,
-    /// The group record id and the record's serial (+0x1e) of an enemy from an area group, `None` for the
-    /// app's own waves.
-    pub serial: Option<(u16, u16)>,
-}
-
-impl Enemy {
-    pub fn alive(&self) -> bool {
-        self.hp > 0
-    }
 }
 
 /// The executable's numbers of the class 5 pull (`reaction_rules::PullConsts`).
@@ -2085,22 +2017,6 @@ pub fn receive_hits(
             f.landed.clear();
         }
     }
-}
-
-/// An enemy attack volume met a player attack volume (`clash.rs`) and the enemy-class handler of the
-/// game (0x1b2478) reacts: the row's `ReflectedMotion` with a recoil push (FUN_00185d30, power
-/// `ReflectHitBack`, negative for the default). `ReflectAction` (a script action id) is not carried:
-/// the table behind FUN_0019e870 is not decoded. Written for every clash of an enemy volume, also when
-/// the handler's own part does nothing (`motion` `None`): the script part of 0x1b2478 (clash hook and
-/// event 0x13, `enemy_ai.rs`) runs before its flag 0x40 / `RefactSelf` 2 tests.
-#[derive(Message, Clone, Copy, Debug)]
-pub struct EnemyClash {
-    pub enemy: Entity,
-    pub motion: Option<u8>,
-    pub power: f32,
-    /// The attack rows of the enemy's own volume and of the other one.
-    pub own_atkp: i16,
-    pub other_atkp: i16,
 }
 
 /// Plays the clash recoil: the motion, then a push backwards along the enemy's own facing

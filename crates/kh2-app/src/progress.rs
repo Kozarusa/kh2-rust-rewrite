@@ -261,7 +261,7 @@ pub fn pay_defeats(
     mut progress: Option<ResMut<Progress>>,
     abilities: Option<Res<crate::shared::abilities::Abilities>>,
     mut sora: Query<&mut crate::shared::sora::Sora>,
-    enemies: Query<(&crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy_ai::AiBrain>)>,
+    enemies: Query<(&crate::shared::enemy::Enemy, &GlobalTransform, Option<&crate::shared::enemy::AiBrain>)>,
     bodies: Query<(&crate::skel::Animator, &GlobalTransform)>,
     (mut log, area, mut shown, mut fx): (
         ResMut<crate::shared::prize::ObtainedLog>,

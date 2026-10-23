@@ -21,6 +21,8 @@ use crate::reaction_cmd::PlayerReactionCmd;
 use crate::skel::Rig;
 use crate::world::World;
 use crate::SCALE;
+use crate::shared::enemy::{push_mask_edits, AREA_MASK, GROUP_EDITS};
+pub use crate::shared::enemy::{queue_group_edit, set_area_mask, take_group_edits, target_record};
 
 /// Turn rate in radians per tick when a script passes speed 0 ("the object's own rate"). The game reads
 /// it from the object (+0x11c); where that value comes from was not found, this is the rate the
@@ -136,15 +138,6 @@ pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32, mut fre
         }
     }
     Drop { row: row.id, prizes, launches, items, item_launches }
-}
-
-/// The bytes of the object's own target record (host 2.23, `TARGET`): the player, position index 0
-/// [inferred], 0, -1, 0 (the layout of FUN_0018ed40 + FUN_0018f490).
-pub(crate) fn target_record() -> [u8; 20] {
-    let mut r = [0u8; 20];
-    r[0..4].copy_from_slice(&PLAYER.to_le_bytes());
-    r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
-    r
 }
 
 /// Classification of a host call, for the trace and the summary.
@@ -264,38 +257,6 @@ static SHARED_BLOCKS: LazyLock<Mutex<kh2_bdx::shared::SharedBlocks>> = LazyLock:
 
 fn shared_blocks() -> MutexGuard<'static, kh2_bdx::shared::SharedBlocks> {
     SHARED_BLOCKS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Collision group switches the scripts asked for (hosts 1.36 and 1.37), in call order: (group, on). `area::run_area_script` drains them
-/// into `World::enabled_groups`.
-static GROUP_EDITS: LazyLock<Mutex<Vec<(u8, bool)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-
-/// Queues one switch of a collision mesh group (`FUN_0015e9a8` when `on`, `FUN_0015e928` otherwise). Bits above 63 are not in the 64-bit mask.
-pub(crate) fn queue_group_edit(group: u32, on: bool) {
-    push_group_edit(&mut GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()), group, on);
-}
-
-fn push_group_edit(queue: &mut Vec<(u8, bool)>, group: u32, on: bool) {
-    if group < 64 {
-        queue.push((group as u8, on));
-    }
-}
-
-/// The area mask `DAT_0035cd18` (area opcode 0xb) the parameterless hosts 1.46 / 1.47 walk; `area::run_area_script` stores the loaded area's.
-static AREA_MASK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-pub(crate) fn set_area_mask(word: u64) {
-    AREA_MASK.store(word, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Queues the switch of every set bit of `word`, lowest bit first (`FUN_0019d4c0` / `FUN_0019d520` loop 0 to 63).
-fn push_mask_edits(queue: &mut Vec<(u8, bool)>, word: u64, on: bool) {
-    (0..64u32).filter(|b| word >> b & 1 != 0).for_each(|b| push_group_edit(queue, b, on));
-}
-
-/// The queued switches, oldest first; the queue is empty afterwards.
-pub(crate) fn take_group_edits() -> Vec<(u8, bool)> {
-    std::mem::take(&mut *GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Host 1.320's answer (`FUN_00199580`): the sum of the enemy counters of the groups that are set up (the group object's +0x18, which
@@ -1530,6 +1491,7 @@ impl Host for BevyHost<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::shared::enemy::push_group_edit;
     /// Host 1.2 (FUN_00182538): the direction runs from the object to the point in the game's space (Z mirrored), y dropped.
     #[test]
     fn move_toward_points_from_the_object_to_the_point() {

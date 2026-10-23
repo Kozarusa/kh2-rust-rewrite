@@ -6,3 +6,5 @@ pub mod abilities;
 pub mod prize;
 pub mod drive;
 pub mod magic;
+pub mod enemy;
+pub mod enemy_obj;

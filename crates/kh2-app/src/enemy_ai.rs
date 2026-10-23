@@ -42,6 +42,7 @@ use crate::skel::Animator;
 use crate::shared::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
+pub use crate::shared::enemy::AiBrain;
 
 /// Ticks between two printouts of the host call table (with `KH2_BDXLOG`).
 const SUMMARY_EVERY: u64 = 900;
@@ -228,35 +229,6 @@ fn is_query(c: &Call) -> bool {
 
 // ---------------------------------------------------------------------------------------------------
 // Bevy side
-
-/// The BDX runtime of one enemy. Its presence hands the enemy's behaviour to the script.
-#[derive(Component)]
-pub struct AiBrain {
-    rt: Runtime,
-    obj: Obj,
-    tag: String,
-    enmp: u16,
-    flags124: bool,
-    paired: Arc<HashMap<usize, Vec<(String, f32)>>>,
-    player_model: u8,
-    started: bool,
-    dead_sent: bool,
-    errors_seen: usize,
-    /// Animator frame after the previous tick (a looping motion wrapped when it goes down).
-    last_frame: f32,
-    in_air: bool,
-    visible: bool,
-    applied_alpha: f32,
-    original_modes: HashMap<AssetId<StandardMaterial>, AlphaMode>,
-}
-
-impl AiBrain {
-    /// The `enmp` row the enemy's status block stands on: its kind's row, or the one the script's `set_obj_param`
-    /// (host 2.9) rebuilt it from. The defeat payout reads it.
-    pub fn enmp(&self) -> u16 {
-        self.enmp
-    }
-}
 
 pub struct EnemyAiPlugin;
 

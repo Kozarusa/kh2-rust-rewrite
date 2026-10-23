@@ -619,8 +619,8 @@ pub fn motion_sounds(
     mut rng: ResMut<GameRng>,
     info: Res<VoiceInfo>,
     disc: Res<Disc>,
-    enemies: Query<&crate::enemy::Enemy>,
-    speakers: Query<(Entity, &crate::enemy::Enemy)>,
+    enemies: Query<&crate::shared::enemy::Enemy>,
+    speakers: Query<(Entity, &crate::shared::enemy::Enemy)>,
     mut neo_cache: Local<HashMap<&'static str, u16>>,
     mut out: MessageWriter<PlaySe>,
     mut voices: MessageWriter<PlayVoice>,
@@ -681,7 +681,7 @@ pub struct VoiceCtx<'a> {
 
 /// The other party of a voice pick: the NeoStatus of the actor's target object (FUN_00175d18 takes
 /// +0x9f4, the command's target record; the app's is the lock-on or auto target [inferred]).
-fn sora_other(sora: &Query<&Sora>, enemies: &Query<&crate::enemy::Enemy>, disc: &Disc, cache: &mut HashMap<&'static str, u16>) -> u16 {
+fn sora_other(sora: &Query<&Sora>, enemies: &Query<&crate::shared::enemy::Enemy>, disc: &Disc, cache: &mut HashMap<&'static str, u16>) -> u16 {
     sora.single()
         .ok()
         .and_then(|s| s.target)
@@ -764,7 +764,7 @@ pub fn queue_enemy_voice(call: EnemyVoiceCall) {
 /// Plays the queued voice requests of enemy scripts. The speaker is the nearest living enemy of the
 /// requesting script's kind (the host has no entity; the tag names the kind, and two enemies of one
 /// kind are told apart by where they stand).
-pub fn enemy_voice_calls(enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform)>, anims: Query<&Animator>, mut voices: MessageWriter<PlayVoice>) {
+pub fn enemy_voice_calls(enemies: Query<(Entity, &crate::shared::enemy::Enemy, &GlobalTransform)>, anims: Query<&Animator>, mut voices: MessageWriter<PlayVoice>) {
     let calls: Vec<EnemyVoiceCall> = match ENEMY_VOICE_CALLS.lock() {
         Ok(mut q) => std::mem::take(&mut *q),
         Err(_) => return,
@@ -803,7 +803,7 @@ pub fn sora_voices(
     mut rng: ResMut<GameRng>,
     info: Res<VoiceInfo>,
     disc: Res<Disc>,
-    enemies: Query<&crate::enemy::Enemy>,
+    enemies: Query<&crate::shared::enemy::Enemy>,
     mut neo_cache: Local<HashMap<&'static str, u16>>,
     mut voices: MessageWriter<PlayVoice>,
 ) {
@@ -947,7 +947,7 @@ pub fn footsteps(
 /// do, and logs a `footstep enemy` line when it plays one.
 #[allow(clippy::too_many_arguments)]
 pub fn enemy_footsteps(
-    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform)>,
+    enemies: Query<(Entity, &crate::shared::enemy::Enemy, &GlobalTransform)>,
     anims: Query<&Animator>,
     world: Option<Res<crate::world::World>>,
     area: Res<CurrentArea>,

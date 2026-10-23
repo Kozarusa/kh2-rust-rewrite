@@ -27,6 +27,7 @@ use crate::assets::Disc;
 use crate::progress::{Json, Progress};
 use crate::rig_values::{self, Ctx};
 use crate::shared::sora::Sora;
+use crate::shared::ui::{MenuPhase, RigMenu};
 use crate::SCALE;
 
 /// The controller as one view. Bit i of `buttons` is `BUTTONS[i]` of `kh2_rig::pad` (Select, L3, R3, Start, Up, Right, Down, Left,
@@ -301,6 +302,7 @@ fn rig_trace(
     area: Option<Res<AreaRecord>>,
     progress: Option<Res<Progress>>,
     cam: Query<&Transform, With<crate::camera::OrbitCamera>>,
+    (phase, menu, anims): (Option<Res<MenuPhase>>, Option<Res<RigMenu>>, Query<&crate::skel::Animator>),
     mut exit: MessageWriter<AppExit>,
 ) {
     if !clock.started {
@@ -308,7 +310,11 @@ fn rig_trace(
     }
     let k = clock.ticks;
     if trace.at.wants(k) {
-        let ctx = Ctx { k, sora: sora.single().ok(), area: area.as_deref(), progress: progress.as_deref(), cam: cam.single().ok() };
+        let sora = sora.single().ok();
+        // The playing motion: the slot is `id * 4 + variant` (contract.md, the controller's +0x14 holds the id), the frame is the animator's.
+        let motion = sora.and_then(|s| anims.get(s.body).ok()).and_then(|a| Some((i32::try_from(a.slot? / 4).ok()?, a.frame)));
+        let menu = phase.as_deref().zip(menu.as_deref());
+        let ctx = Ctx { k, sora, area: area.as_deref(), progress: progress.as_deref(), cam: cam.single().ok(), menu, motion };
         trace.record(k, &ctx);
     }
     if trace.end.is_some_and(|e| k >= e) {
@@ -456,7 +462,7 @@ mod tests {
         let mut t = RigTrace::create(path.to_str().unwrap(), vec!["clock.vsync".into(), "place.world".into(), "nope".into()], TraceAt::parse("3,5"), Some(5)).unwrap();
         let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         p.rig.vsync = Some(1000);
-        let ctx = Ctx { k: 3, sora: None, area: None, progress: Some(&p), cam: None };
+        let ctx = Ctx { k: 3, sora: None, area: None, progress: Some(&p), cam: None, menu: None, motion: None };
         for k in 0..=5 {
             if t.at.wants(k) {
                 t.record(k, &Ctx { k, ..ctx });

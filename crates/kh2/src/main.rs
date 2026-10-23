@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use kh2_archive::Archive;
 
 mod bdx;
+mod ledger;
 mod oracle;
 use serde_json::Value;
 
@@ -29,6 +30,11 @@ kh2 <command> [--iso PATH]
   state from-p2s F [OUT]  turn a PCSX2 save state into a KH2_STATE file (docs: crates/kh2-rig)
   validate              decode every modelled table and write checkmarks into sheets/
   preflight [--strict]  overlap all sheets and print the checklist
+  ledger import [--reseed]   build sheets/functions.json from ../kh2_ps2 (KH2_PS2), seed systems, scan
+  ledger scan [--demote]     set read/ported/verified from the tree (docs, `/// orig` lines, tests)
+  ledger report [--system S] functions and bytes per status, per system and ladder step
+  ledger brief SYSTEM [CLUSTER|LO-HI]  unread functions with callers, callees, citations (a brief skeleton)
+  ledger merge-check RANGE [--run]     whether a git diff range is a factory-only package (no reviewer)
 
 ISO path: --iso, else $KH2_ISO, else local/iso.txt";
 
@@ -826,6 +832,7 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
             }
         }
         "validate" => validate(args)?,
+        "ledger" => ledger::run(args)?,
         "preflight" => {
             let r = kh2_sheets::preflight(&root());
             print!("{}", r.render(40));

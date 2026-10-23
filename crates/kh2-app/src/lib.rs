@@ -18,12 +18,11 @@ pub use kh2_party::*;
 pub use kh2_event::*;
 pub use kh2_hud::*;
 pub use kh2_menu::*;
+pub use kh2_worldmap::*;
 
 mod plugins;
 mod asset_viewer;
 mod sound_test;
-mod worldmap;
-mod worldmap_ui;
 
 use bevy::prelude::*;
 

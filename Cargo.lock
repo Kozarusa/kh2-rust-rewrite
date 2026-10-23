@@ -3295,6 +3295,7 @@ dependencies = [
  "kh2-ps2",
  "kh2-sound",
  "kh2-tables",
+ "kh2-worldmap",
 ]
 
 [[package]]
@@ -3624,6 +3625,34 @@ dependencies = [
  "kh2-bar",
  "kh2-factory",
  "kh2-sheets",
+]
+
+[[package]]
+name = "kh2-worldmap"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "kh2-anim",
+ "kh2-archive",
+ "kh2-ard",
+ "kh2-audio",
+ "kh2-bar",
+ "kh2-bdx",
+ "kh2-ee",
+ "kh2-enemy",
+ "kh2-event",
+ "kh2-fx",
+ "kh2-game-core",
+ "kh2-hud",
+ "kh2-image",
+ "kh2-map",
+ "kh2-menu",
+ "kh2-model",
+ "kh2-party",
+ "kh2-player",
+ "kh2-ps2",
+ "kh2-sound",
+ "kh2-tables",
 ]
 
 [[package]]

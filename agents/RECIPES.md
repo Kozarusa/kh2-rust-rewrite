@@ -7,8 +7,8 @@
 - The comment `/* LV4: FM <addr> <FM name> (method, confidence, sim); govanify C: src/<file> */` says where the function is in Final Mix
   and where a matching C body is (`$env:KH2_DECOMP\third\govanify-kh2\src`). Trust names at confidence >= 0.8; below 0.6, or "out of
   order", the name is a hint. FM struct offsets may differ from USA.
-- Types: OBJ (actor), MOTION (OBJ +0x140), STATUS (OBJ +0x48c), SAVE_BLOCK (0x33e860, global `g_save`), PARTY_BLOCK, PARTY_MEMBER,
-  FORM_RECORD. Field names are ours (`raw\lv4_structs.json` gives the evidence of each). A parameter comment `LV4 <rule>` says why it is
+- Types (labels of the typed project, for reading only: code and docs say "actor +0x48c", never these labels): OBJ (actor), MOTION
+  (OBJ +0x140), STATUS (OBJ +0x48c), SAVE_BLOCK (0x33e860, global `g_save`), PARTY_BLOCK, PARTY_MEMBER, FORM_RECORD. Field names are ours (`raw\lv4_structs.json` gives the evidence of each). A parameter comment `LV4 <rule>` says why it is
   typed; the `offsets`, `calls`, `down`/`up` rules are inferences.
 - `$env:KH2_DECOMP\raw\fm_usa_match.json`: one row per USA function: usa_addr, fm_addr, name, demangled, confidence, method, sizes, sim,
   out_of_order, usa_in_decomp, module, fm_source. `raw\fm_usa_data.json`: USA to FM data addresses.

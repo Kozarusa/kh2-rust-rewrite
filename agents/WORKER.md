@@ -27,7 +27,7 @@ screenshots: give EXACT commands (env vars included) and paths for every claim; 
 5. Keep base behaviours working: ground combo and air chain (`cargo test -p kh2-app sora`), enemy AI, HUD, camera, magic, forms.
 6. Never `Stop-Process` kh2-game (A10). A running game locks `target\debug\kh2-game.exe`: use `cargo check`/`cargo test` and say so.
 7. Evidence (A4): read the function the brief names first (`$env:KH2_DECOMP\decomp_typed\<image>\<addr>.c`, RECIPES R1), then its
-   callees. Repo text keeps addresses only ("FUN_00180758" or "0x180758"): never a decompiler variable name (`iVar1`, `param_2`), an FM or
+   callees. Repo text keeps addresses only ("FUN_00180758" or "0x180758"): never a decompiler variable name (`iVar<n>`, `param_<n>`), an FM or
    community function name, a decomp field name, or a copied table value (read tables at run time through `kh2-ee` or `kh2_archive`).
    Describe field offsets by owner (`actor +0x588`) with the writer and reader of each field you use. Record every address read in your
    doc's "Decompile index", every fruitless search in "Gaps". At the brief's time cap: record the gap and move on, the feature left out

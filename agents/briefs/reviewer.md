@@ -12,7 +12,7 @@ Input: the brief, the worker's report, branch `wp/<id>` and its worktree. Read-o
    `$env:KH2_DECOMP\decomp_typed\main\<addr>.c`; rerun claimed harness commands (`KH2_NO_SOUND=1 KH2_NO_MUSIC=1`, one run at a time, never
    touch the keyboard) and search for the line; open the claimed PNGs; check that claimed doc sections cite addresses; flag tests that
    assert nothing; rerun claimed rig scenarios when the rig exists.
-3. Hygiene: no assets, no `iVar1`/`param_2` names or FM names in added lines, no machine paths in tracked files, `sheets/systems.json`
+3. Hygiene: no assets, no `iVar<n>`/`param_<n>` names or FM names in added lines, no machine paths in tracked files, `sheets/systems.json`
    untouched, CREDITS.md CRLF.
 
 ```

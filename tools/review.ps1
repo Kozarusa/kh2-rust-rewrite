@@ -9,7 +9,7 @@
 #     files outside are listed as OUTSIDE (not automatically a failure: read the report's
 #     "Outside-ownership edits" and decide; the brief's exceptions are allowed);
 #  3. every test name the report claims (-Tests) exists as `fn <name>` on the branch;
-#  4. hygiene of the diff: no binary/asset files added, no decompiler names (iVar1, param_2, ...) in added lines
+#  4. hygiene of the diff: no binary/asset files added, no decompiler names (iVar<n>, param_<n>, ...) in added lines
 #     under crates/, CREDITS.md still CRLF;
 #  4b. WARN (never fails) for each test fn added on the branch whose body has no assert*! macro / should_panic;
 #  5. trial-merge.ps1 (text merge + cargo check --workspace --tests) against integration.

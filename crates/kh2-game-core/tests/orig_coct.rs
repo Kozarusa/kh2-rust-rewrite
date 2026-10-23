@@ -468,7 +468,7 @@ fn rigs(what: &str, worlds: usize, per: usize, mut body: impl FnMut(&mut Rig, &m
     eprintln!("{what}: {} cases in {:.2} s", worlds * per, t0.elapsed().as_secs_f64());
 }
 
-/// orig 0x141b50: the polygon walker (filter armed by 0x141b30), over all attribute filters and handler kinds.
+/// orig 0x141b50: the polygon walker (filter armed by 0x141b30, handler table 0x32e3b8), over all attribute filters and handler kinds.
 #[test]
 fn orig_141b50_matches_the_game() {
     let mut nonempty = 0;
@@ -1317,4 +1317,43 @@ fn a_roof_stops_a_jump_in_the_game_through_the_sweep() {
             assert!((foot - -250.0).abs() < 1e-3, "no stop: foot y {foot}");
         }
     }
+}
+
+/// orig 0x141500 (the build), 0x141768 (the group word into the meshes' enabled bytes), 0x141840 and 0x141800 (one group
+/// on or off), 0x141720 (the nibble-5 flag), 0x141888 (the box level) and 0x1421b8 (the polygon normal): the object the
+/// port builds over the same file bytes agrees with the one the game built.
+#[test]
+fn the_built_object_matches_the_game() {
+    let mut five = 0;
+    rigs("0x141500", 40, 1, |rig, r, n| {
+        let check = |rig: &mut Rig, what: &str| {
+            let meshes = rig.ee.r32(OBJ_AT + 8);
+            let count = rig.ee.r32(OBJ_AT + 0x24) as usize;
+            assert_eq!(count, rig.oct.mesh_count(), "world {n}: mesh count");
+            for m in 0..count {
+                let on = rig.ee.r8(meshes + 0x14 * m as u32 + 0x10) != 0;
+                assert_eq!(on, rig.oct.mesh_enabled(m), "world {n} {what}: mesh {m}");
+            }
+        };
+        check(rig, "built");
+        assert_eq!(rig.ee.r8(OBJ_AT + 0xd2) != 0, rig.oct.has_nibble_five(), "world {n}: nibble 5");
+        assert_eq!(rig.ee.call(0x141888, &[OBJ_AT as u64], &[], STACK).unwrap() as usize, rig.oct.level(), "world {n}: level");
+        five += rig.oct.has_nibble_five() as usize;
+        for round in 0..6 {
+            let word = r.word();
+            rig.ee.call(0x141768, &[OBJ_AT as u64, word], &[], STACK).unwrap();
+            rig.oct.set_groups(word);
+            check(rig, "word");
+            let g = r.below(70) as u8;
+            let on = r.below(2) == 0;
+            rig.ee.call(if on { 0x141840 } else { 0x141800 }, &[OBJ_AT as u64, g as u64], &[], STACK).unwrap();
+            rig.oct.set_group(g, on);
+            check(rig, "group");
+            let p = r.below(rig.polys as u64) as u16;
+            rig.ee.call(0x1421b8, &[OUT_AT as u64, OBJ_AT as u64, p as u64], &[], STACK).unwrap();
+            let g4: V4 = std::array::from_fn(|l| rig.ee.f32_at(OUT_AT + 4 * l as u32));
+            assert!(same4(g4, rig.oct.normal(p), 4), "world {n} round {round}: normal {g4:?}");
+        }
+    });
+    assert!(five > 0, "no world had an attribute with nibble 5");
 }

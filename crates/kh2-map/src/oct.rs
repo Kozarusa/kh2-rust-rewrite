@@ -280,6 +280,21 @@ impl Oct {
         }
     }
 
+    /// Whether the walker visits mesh `m` (its enabled byte).
+    pub fn mesh_enabled(&self, m: usize) -> bool {
+        self.on.get(m).copied().unwrap_or(false)
+    }
+
+    /// The number of meshes.
+    pub fn mesh_count(&self) -> usize {
+        self.n_meshes
+    }
+
+    /// `oct +0xd2`: some attribute word has the nibble 5.
+    pub fn has_nibble_five(&self) -> bool {
+        self.has_five
+    }
+
     /// The group word the meshes' enabled bytes stand for.
     pub fn groups(&self) -> u64 {
         self.word

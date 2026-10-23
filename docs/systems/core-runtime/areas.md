@@ -86,7 +86,7 @@ nothing). Names are the project's (`kh2_ard::opcode_name`). Arguments are the u3
 | 0x13 | `camera_type` | `DAT_0035cd38`, the area camera type of docs/systems/player-camera/contract.md (default 0) | V |
 | 0x14, 0x17 | `flag_35d268_4`, `_10` | set bit 2 / bit 4 of the global flag word `DAT_0035d268` | V |
 | 0x15 | `battle_manager` | `FUN_001b9338(argument 0, rest)`: creates the battle/minigame manager at `DAT_01d5dd20` (docs/systems/script-host/contract.md, Struggle) | V |
-| 0x16 | `load_file` | formats the arguments as a string with the language code (`DAT_00349d40`) into `0x1c893d8` and loads it (`FUN_0016fac8(.., 0x38e, 0)`) | V; which files GAP |
+| 0x16 | `load_file` | formats the arguments as a string with the language code (`DAT_00349d40`) into `0x1c893d8` and loads it (`FUN_0016fac8(.., 0x38e, 0)`) | V; files: `file/%s/*.2ld`, `menu/%s/jiminy.bar`, `minigame/*.bar` (section 1a) |
 | 0x18 | `effect_heap` | `DAT_0035cd3c`, `DAT_0035cd40` (defaults 0x80000, 0x20000), passed to `FUN_001dbe90` | V |
 | 0x19 | `set_story_flags` | every argument not yet set is set through `FUN_0017ff60` (section 5) | V |
 | 0x1a, 0x1b | `map_show_bits`, `map_hide_bits` | OR `1 << argument` into `DAT_01c893c0` / `DAT_01c893c8` (used with opcode 1) | V |
@@ -156,6 +156,41 @@ chain (`FUN_001964d0`, after an event whose kind row has bit 0), 0x50 / 0x51 (`F
 
 Not used in Twilight Town: 2, 3, 7, 0x12, 0x13 (so every tt area has camera type 0), 0x17, 0x18, 0x1a, 0x1b, 0x1c,
 0x1e, 0x1f. Every trigger decodes with the sub-command sizes above.
+
+## 1a. Area-script port (WP-L1-P5)
+
+`crates/kh2-ard/src/script.rs` ports `FUN_00180b48` (one command), `FUN_00180ad8` (a run of commands) and the area-start defaults of `FUN_00181148`
+(`ScriptVars::finish`) on the original's layout: the command is a slice of `u32` words (opcode low half, signed count high half, arguments), read
+unbounded like the game reads memory. Everything a command asks of the rest of the game is a `ScriptHost` call. Oracle: `crates/kh2-ard/tests/orig_180b48.rs`
+runs 4,000 random commands (every opcode at least 90 times, nested 0x1c blocks, counts from -3 to 8) in kh2-ee with the callees replaced by recording
+hooks and compares the answer, the variables (`0x35cd10..0x35cd44`, `0x35d268`, `0x1c893b8..`, `0x3716a0`) and the calls, byte for byte [V].
+
+Findings the oracle forced [V]:
+- The random word `DAT_003716a0` is zero-extended before `FUN_00325b38` (a 64-bit unsigned divide): opcode 2 picks `lcg / ceil(2^32 / count)`, opcode 3 rolls
+  `lcg / 0x28f5c29` (0 to 99), opcode 0x1f and the lottery use the same form. A sign-extended reading disagrees.
+- Opcodes 0x19, 0x1a and 0x1b take argument 0 when the count is positive and then argument `k + 1` only while `k + 1` is below the signed high half of
+  argument `k` (the loop bound is re-read from the moving pointer): with story flags and bit numbers below 0x10000 only the first argument is used. The disc has no
+  command of these opcodes with more than one argument (area survey), so the earlier "every argument" reading and this one agree on all data.
+- The 1 << n shifts of 0x1a/0x1b use the low six bits of n (64-bit shift), not "0 for n above 63".
+- Opcode 0x1c: the nested commands may read past the block's end (the game does not stop them); the nested run ends when the block's words are used up.
+- Opcode 0xa asks the file for the entry (`ScriptHost::entry_by_index`); 0x16 `load_file` formats the command's argument words as a C format string with the
+  language code (`kh2_ard::script::file_name`; the disc uses `file/%s/<name>.2ld`, `menu/%s/jiminy.bar`, `minigame/<name>.bar`) and requests the file
+  with buffer id 0x38e (`FUN_0016fac8`).
+- Opcode 0x1f's lottery (`FUN_001d7970` with `FUN_001d7928`, `FUN_001d7a98`, `FUN_001d7908` -> `FUN_001d7848`): `script::Lottery`, oracle `orig_1d7970_matches_the_game`;
+  the five `(world, area)` pairs at `0x37c5f8` are read from the executable at run time (the port carries no table).
+- Area survey (`area_survey_runs_every_script_of_every_area` in `crates/kh2-ard/tests/disc.rs`): 269 `ard/*.ard` files on the USA disc, 268 are area BARs
+  (`ard/hb10.ard` is not a BAR), 3,788 programs, 14,112 commands, 29 distinct opcodes, none above 0x1f; 8, 0xd and 0x20 and up do nothing in the game and
+  appear nowhere. Every program ran for five entrances.
+
+**Group kinds 7 and 9** (`crates/kh2-ard/src/kinds.rs`). Kind 7 (`FUN_00198b30` case 7, answer 0): `FUN_00199e68` calls `FUN_001ccb10(player, header word +0x1c,
+bit 0 of *(*(player + 0x6c) + 0x28))`, which fills the request object `DAT_003601d0` points at (+4 value; flag set: bit 0 of +8 and the player at +0x34, else bit 1 and
+the player at +0x38; nothing when the pointer is null) [V, oracle `orig_1ccb10_matches_the_game`]. Nobody in this repository reads that object yet [gap: its consumer].
+Kind 9 (case 9, every frame, `FUN_0019a000`): per entity (0x40-byte record from header +0x2c; serial halfword +0x1e, position +4; radius = float at header +0x1c)
+a missing, uncached unit appears (`FUN_001982c8`) when the larger of |dx|, |dz| to the player is below the radius and the direction to it has a dot product above
+`DAT_0037b314` with the player's facing; a live unit stays when within the radius and either within `DAT_0037b310` or in front (dot at least `DAT_0037b314`) and is
+dismissed (method +0x20) otherwise [V by reading; no oracle: the callees are object-list and VU0 code; the dot product summing all three lanes is [inferred]].
+The two constants are read from the executable at run time (`kinds::StreamLimits`). Searched for the writers of the request object's +4 and the readers of
+`DAT_003601d0` beyond `FUN_001ccb10`: not done [gap].
 
 ## 2. Area loading and transitions
 

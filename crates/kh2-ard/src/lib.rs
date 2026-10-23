@@ -189,7 +189,9 @@ pub fn parse_commands(d: &[u8]) -> Option<Vec<Command>> {
 
 pub mod libretto;
 pub mod localset;
+pub mod kinds;
 pub mod run;
+pub mod script;
 pub mod worldmap;
 
 impl Entity {

@@ -88,7 +88,8 @@ one unit is one unit [inferred: unit bounds from the names of the research match
   belongs to the L8/L12 specs.
 - Story: where the story gives Sora his keyblade, spells, forms and Guard (the app baseline stands in for them, `progress.md` "App baseline");
   `FUN_001803b0` and `FUN_00180450` are not ported (`progress.md` "Gaps").
-- Area scripts: group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000`) not read; opcode 0x16 `load_file` is the only opcode read and not ported
+- Area scripts: every opcode of `FUN_00180b48` is ported (`kh2_ard::script`, oracle-verified) and group kinds 7 and 9 are ported (`kh2_ard::kinds`; kind 9 without an oracle,
+  `areas.md` section 1a). What is left is wiring: the app applies `ScriptRun::file_loads` (opcode 0x16), `entries` (0xa) and the extra variables, and calls kind 9.
   (`script-host/area-survey.md`).
 - Collision: the walking collider is ported over the app's own `World::slide`/`ground`, not `FUN_00143840` itself (`collision.md`).
 

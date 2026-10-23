@@ -85,7 +85,7 @@ pub struct Consts {
 }
 
 /// Bytes at a virtual address of the executable, through its program headers.
-pub(crate) fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
+pub fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
     let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
     let u32_at = |o: usize| elf.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     if elf.get(0..4)? != b"\x7fELF" {
@@ -104,7 +104,7 @@ pub(crate) fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
 }
 
 /// The friend-AI parameter table (FUN_0010b780 binds `0x34ea00 + offset[class]` to the AI object).
-pub(crate) const AI_PARAMS: u32 = 0x34ea00;
+pub const AI_PARAMS: u32 = 0x34ea00;
 
 impl Consts {
     pub fn from_exe(elf: &[u8]) -> Option<Consts> {

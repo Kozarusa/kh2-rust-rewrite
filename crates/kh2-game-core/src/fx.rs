@@ -789,7 +789,7 @@ fn ineffective(atk: &kh2_tables::tables::Atkp, victim: Option<crate::data::Stats
 
 /// The first element of `pax` whose category has all of `mask` (FUN_001db9e0: the lookup behind
 /// every category-selected effect).
-pub(crate) fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
+pub fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
     pax.pax.elements.iter().find(|e| e.category & mask == mask).map(|e| e.id)
 }
 

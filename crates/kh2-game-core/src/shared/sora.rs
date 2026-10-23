@@ -291,7 +291,6 @@ pub struct Sora {
 
 impl Sora {
     /// A controller with the defaults and no scene, for the tests of systems that read his HP and flags.
-    #[cfg(test)]
     pub fn for_test(hp: i32, max_hp: i32) -> Sora {
         Sora {
             state: State::Ground,
@@ -423,3 +422,10 @@ pub fn respawn(s: &mut Sora, at: Vec3) {
     s.motor = Motor { pos: at, ..Motor::default() };
     s.state = State::Ground;
 }
+
+/// The bones the weapons hang from, by hand: 0 the right hand (bone 178, checked on screen), 1 the
+/// left hand (bone 86, the mirror of 178, inferred: the game's attach path `FUN_001751b0` ->
+/// `FUN_00184190` ends in resource handles, not a bone number; `objentry.WeaponJoint` is the
+/// data candidate, see docs/systems/drive-limits-summons/drive-forms.md). The game attaches hand 1 only while a drive form is
+/// active (`FUN_00176f88`: form field 1..5 or 9).
+pub const HAND_BONES: [usize; 2] = [178, 86];

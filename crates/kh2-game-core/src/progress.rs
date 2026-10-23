@@ -1932,8 +1932,7 @@ impl Progress {
     }
 
     /// Test aid: a record's maximum HP and MP.
-    #[cfg(test)]
-    pub(crate) fn set_member_maxima(&mut self, member: u16, hp_max: u8, mp_max: u8) {
+    pub fn set_member_maxima(&mut self, member: u16, hp_max: u8, mp_max: u8) {
         if let Some(r) = Self::member_off(member) {
             self.set_u8(r + rec::HP_MAX, hp_max);
             self.set_u8(r + rec::MP_MAX, mp_max);
@@ -1941,8 +1940,7 @@ impl Progress {
     }
 
     /// Test aid: an ability into the first empty slot of a member's list (`put_ability` by member id).
-    #[cfg(test)]
-    pub(crate) fn give_ability(&mut self, member: u16, id: u16, equipped: bool) {
+    pub fn give_ability(&mut self, member: u16, id: u16, equipped: bool) {
         if let Some(r) = Self::member_off(member) {
             self.put_ability(r, id, equipped);
         }

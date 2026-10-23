@@ -143,7 +143,7 @@ pub fn arealog() -> bool {
 
 /// Brings the world's collision groups in line with the game: the area word once per world, then the
 /// switches of hosts 1.36 / 1.37 in call order. `KH2_AREALOG` logs the mask the world ends up with.
-pub(crate) fn sync_groups(w: &mut World, word: u64, area: &str, edits: &[(u8, bool)]) {
+pub fn sync_groups(w: &mut World, word: u64, area: &str, edits: &[(u8, bool)]) {
     if w.apply_area_word(word) && arealog() {
         info!("area {area}: world collision mask {:#x} applied (script word {word:#x}; FUN_00141768)", w.enabled_groups);
     }

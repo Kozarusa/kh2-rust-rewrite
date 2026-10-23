@@ -548,7 +548,7 @@ pub fn pair_index(image: usize, ok: impl Fn(usize) -> bool) -> Option<usize> {
 /// `field2d/us/<world>0field.2dd` first (`SeqFile::from_bar`), so slot 2's pair is one of its
 /// files; the match is checked by image size and sequence before a hidden root node at (0, 0) is
 /// added on it.
-fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<crate::hud::HudScene>>, mut key: ResMut<Keyhole>) {
+fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<crate::hud_gfx::HudScene>>, mut key: ResMut<Keyhole>) {
     let Some(mut scene) = scene else { return };
     if key.tried || scene.files.is_empty() {
         return;
@@ -583,22 +583,22 @@ fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<cr
 
 /// The wipe's node: hidden until a fade starts, drawn on the wipe layer so it covers the whole frame, the HUD included
 /// (`hud_gfx::WIPE_LAYER`).
-fn keyhole_node(file: usize) -> crate::hud::HudNode {
-    let mut node = crate::hud::HudNode::new(file, None);
+fn keyhole_node(file: usize) -> crate::hud_gfx::Node {
+    let mut node = crate::hud_gfx::Node::new(file, None);
     node.visible = false;
     node.top = true;
     node
 }
 
 /// Starts group `group` of the wipe on its node and shows it.
-fn play_wipe(scene: &mut Option<ResMut<crate::hud::HudScene>>, key: &Keyhole, group: usize) -> bool {
+fn play_wipe(scene: &mut Option<ResMut<crate::hud_gfx::HudScene>>, key: &Keyhole, group: usize) -> bool {
     let (Some(scene), Some(n)) = (scene.as_mut(), key.node) else { return false };
     scene.set_group(n, group);
     scene.nodes[n].visible = true;
     true
 }
 
-fn wipe_ended(scene: &Option<ResMut<crate::hud::HudScene>>, key: &Keyhole) -> bool {
+fn wipe_ended(scene: &Option<ResMut<crate::hud_gfx::HudScene>>, key: &Keyhole) -> bool {
     match (scene.as_ref(), key.node) {
         (Some(s), Some(n)) => s.nodes[n].player.finished(),
         _ => true,
@@ -780,7 +780,7 @@ fn tick(
     sora: Query<&Sora>,
     mut refused: Local<u32>,
     mut key: ResMut<Keyhole>,
-    mut scene: Option<ResMut<crate::hud::HudScene>>,
+    mut scene: Option<ResMut<crate::hud_gfx::HudScene>>,
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
     mut forced: Local<u32>,
     mut last: ResMut<LastExit>,
@@ -1058,7 +1058,7 @@ fn tick(
 }
 
 /// The start of a fade-out (`FUN_0015d058`: group 1 of the layout; the fader follows once it has ended).
-fn begin_fade_out(key: &mut Keyhole, scene: &mut Option<ResMut<crate::hud::HudScene>>, kind: u32) {
+fn begin_fade_out(key: &mut Keyhole, scene: &mut Option<ResMut<crate::hud_gfx::HudScene>>, kind: u32) {
     key.black_from = None;
     key.wiping = kind == 0 && play_wipe(scene, key, 1);
     if kind == 0 {
@@ -1084,7 +1084,7 @@ const WIPE_BARS: [([f32; 2], [f32; 2]); 4] = [
     ([256.0, -2446.0], [8000.0, 4000.0]),
 ];
 
-fn draw_wipe_bars(scene: Option<Res<crate::hud::HudScene>>, key: Res<Keyhole>, mut bars: Query<&mut Visibility, With<WipeBar>>) {
+fn draw_wipe_bars(scene: Option<Res<crate::hud_gfx::HudScene>>, key: Res<Keyhole>, mut bars: Query<&mut Visibility, With<WipeBar>>) {
     let shown = scene.zip(key.node).is_some_and(|(s, n)| s.nodes.get(n).is_some_and(|n| n.visible));
     for mut v in &mut bars {
         *v = if shown { Visibility::Inherited } else { Visibility::Hidden };
@@ -1099,7 +1099,7 @@ fn spawn_fader(mut commands: Commands) {
             Sprite::from_color(Color::BLACK, Vec2::from(size)),
             Transform::from_xyz(at[0], at[1], 50.0),
             Visibility::Hidden,
-            bevy::camera::visibility::RenderLayers::layer(crate::hud::WIPE_LAYER),
+            bevy::camera::visibility::RenderLayers::layer(crate::hud_gfx::WIPE_LAYER),
         ));
     }
     commands.spawn((
@@ -1175,13 +1175,13 @@ mod tests {
         w.run_system_once(draw_wipe_bars).unwrap();
         assert!(bars(&mut w).iter().all(|v| *v == Visibility::Hidden));
         // A scene with the node hidden: hidden; shown: the bars show.
-        let mut scene = crate::hud::HudScene::default();
+        let mut scene = crate::hud_gfx::HudScene::default();
         let i = scene.add(keyhole_node(0));
         w.insert_resource(scene);
         w.resource_mut::<Keyhole>().node = Some(i);
         w.run_system_once(draw_wipe_bars).unwrap();
         assert!(bars(&mut w).iter().all(|v| *v == Visibility::Hidden));
-        w.resource_mut::<crate::hud::HudScene>().nodes[i].visible = true;
+        w.resource_mut::<crate::hud_gfx::HudScene>().nodes[i].visible = true;
         w.run_system_once(draw_wipe_bars).unwrap();
         assert!(bars(&mut w).iter().all(|v| *v == Visibility::Inherited));
         // Each bar overlaps the screen edge it borders by 2 units.

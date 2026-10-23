@@ -81,7 +81,6 @@ impl Options {
         }
     }
 
-    #[cfg(test)]
     /// The raw 2-bit Summon Effects field `FUN_001c65f0` tests.
     pub fn summon_raw(&self) -> u32 {
         match self.summon {

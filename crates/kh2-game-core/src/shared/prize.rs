@@ -36,7 +36,6 @@ impl GrowthChains {
 /// is the chain's id one level below `level` (an empty slot when that is 0) takes the chain's id at
 /// `level`, keeping its bit 15; at most one slot changes. Returns the chain's id at `level` whether or not
 /// a slot matched (the disassembly loads it into v0 before the search; the decompiler shows no return).
-#[cfg(test)]
 pub fn growth_upgrade(list: &mut [u16], chains: &GrowthChains, form: u8, level: u8) -> u16 {
     let new = chains.at(form, level);
     let old = if level == 0 { chains.at(form.wrapping_sub(1), 4) } else { chains.at(form, level - 1) };

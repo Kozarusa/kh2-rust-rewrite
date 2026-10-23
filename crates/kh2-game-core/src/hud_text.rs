@@ -8,7 +8,7 @@ use kh2_image::font::{Atlas, Font, FontSet};
 use kh2_image::seqd::{Quad, Seqd};
 use kh2_image::text::{self, ColorTable, GlyphQuad, Kind, Messages, Places, Style, Token};
 
-use super::hud_gfx::SeqFile;
+use crate::hud_gfx::SeqFile;
 use crate::assets::Disc;
 pub use crate::shared::hud::Label;
 
@@ -149,8 +149,8 @@ fn to_quad(q: &GlyphQuad, fade: f32) -> Quad {
 
 /// `KH2_HUDTEXT=<hex message id>[:font[:size[:x:y]]]` (several separated by `,`): draws system
 /// messages at fixed places to check the text engine. Display only.
-pub fn demo(mut scene: ResMut<super::hud_gfx::HudScene>, mut done: Local<bool>) {
-    use super::hud_gfx::Node;
+pub fn demo(mut scene: ResMut<crate::hud_gfx::HudScene>, mut done: Local<bool>) {
+    use crate::hud_gfx::Node;
     if *done || scene.text.is_none() {
         return;
     }

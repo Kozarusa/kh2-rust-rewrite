@@ -15,16 +15,14 @@ pub use crate::shared::hud::{DamagePopup, DebugHud};
 // The HUD's own files sit beside this one; they are submodules so `main.rs` stays untouched.
 #[path = "hud_gauge.rs"]
 pub(crate) mod hud_gauge;
-#[path = "hud_gfx.rs"]
-mod hud_gfx;
+pub(crate) use kh2_game_core::hud_gfx;
 #[path = "hud_target.rs"]
 pub(crate) mod hud_target;
 #[path = "hud_banner.rs"]
 mod hud_banner;
 #[path = "hud_menu.rs"]
 pub(crate) mod hud_menu;
-#[path = "hud_text.rs"]
-mod hud_text;
+pub(crate) use kh2_game_core::hud_text;
 #[path = "hud_card.rs"]
 mod hud_card;
 #[path = "hud_party.rs"]
@@ -38,9 +36,7 @@ use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::HudGfxPlugin;
 #[allow(unused_imports)] // re-exported for the keyhole wipe in area_jump.rs
 pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode, SeqFile};
-/// The render layer of the keyhole wipe, above the HUD, the ring panels and the menus.
-pub(crate) use hud_gfx::WIPE_LAYER;
-/// The asset path of the HUD quad shader (`menu_gfx`, `revive_fade`).
+/// The asset path of the HUD quad shader (`menu_gfx`).
 pub(crate) use hud_gfx::HUD_QUAD_SHADER;
 /// A node's text, for the event player's subtitle lines (`event_player::subtitles`).
 pub(crate) use hud_text::Label;

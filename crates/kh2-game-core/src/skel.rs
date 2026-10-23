@@ -617,7 +617,7 @@ mod tests {
             let mut f = mo.frame_start;
             while f <= mo.frame_end {
                 let pose = mo.pose_with(&body.bones, f, &mut st);
-                for bone in super::super::sora::HAND_BONES {
+                for bone in crate::shared::sora::HAND_BONES {
                     let d = pose[bone].determinant();
                     worst = worst.min(d);
                     assert!(d > 0.0, "{tag} slot {slot} frame {f}: hand bone {bone} determinant {d}");

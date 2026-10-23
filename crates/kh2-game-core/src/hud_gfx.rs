@@ -19,7 +19,7 @@ use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin, MeshMaterial2d};
 use kh2_image::seqd::{Ext, Player, Quad, Seqd};
 
-use super::hud_text::{Label, TextSys};
+use crate::hud_text::{Label, TextSys};
 use crate::assets::Disc;
 
 /// Render layer of the HUD camera and everything it draws.
@@ -268,7 +268,7 @@ impl HudScene {
     }
 
     /// Advances all players by real time at the game's 60 Hz logic rate.
-    pub(crate) fn advance(&mut self, dt: f32) {
+    pub fn advance(&mut self, dt: f32) {
         self.acc = (self.acc + dt).min(0.25);
         while self.acc >= STEP {
             self.acc -= STEP;
@@ -594,11 +594,12 @@ mod tests {
 
     /// The shader paths are `embedded://<crate>/<file>`; `embedded_asset!` registers them under the crate that
     /// contains the macro call, which `module_path!` names. LB1 renamed the crate from `kh2_game` to `kh2_app`
-    /// and the hard-coded paths missed it (no HUD sprites, no lens or distortion shader).
+    /// and the hard-coded paths missed it (no HUD sprites, no lens or distortion shader). R8b moved the HUD drawing into
+    /// `kh2_game_core`; the other crates name the quad shader through `HUD_QUAD_SHADER`.
     #[test]
     fn embedded_shader_paths_use_the_crate_that_registers_them() {
         assert_eq!(module_path!().split("::").next(), Some(env!("CARGO_CRATE_NAME")));
-        assert_eq!(env!("CARGO_CRATE_NAME"), "kh2_app");
+        assert_eq!(env!("CARGO_CRATE_NAME"), "kh2_game_core");
     }
 
     fn square() -> Vec<Vert> {

@@ -69,7 +69,7 @@ pub struct ReviveFadeMaterial {
 impl Material2d for ReviveFadeMaterial {
     fn fragment_shader() -> ShaderRef {
         // The HUD's textured, vertex-coloured shader (embedded by `hud_gfx`).
-        ShaderRef::Path(crate::hud::HUD_QUAD_SHADER.into())
+        ShaderRef::Path(crate::hud_gfx::HUD_QUAD_SHADER.into())
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -129,7 +129,7 @@ pub fn spawn(commands: &mut Commands, images: &mut Assets<Image>, meshes: &mut A
         Transform::from_xyz(256.0, -224.0, 60.0),
         Visibility::Hidden,
         NoFrustumCulling,
-        RenderLayers::layer(crate::hud::WIPE_LAYER),
+        RenderLayers::layer(crate::hud_gfx::WIPE_LAYER),
     ));
 }
 

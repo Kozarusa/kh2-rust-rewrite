@@ -193,7 +193,6 @@ impl Revive {
     }
 
     /// `DAT_0036f598` is set (step 1 on, until the waits are over).
-    #[cfg(test)]
     pub fn sounds_held(&self) -> bool {
         self.step.is_some_and(|s| s >= 2)
     }

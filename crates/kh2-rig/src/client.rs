@@ -356,7 +356,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { unlimited: false, attach: Attach::LoadFirst, ram_hash: false, out: None, lock_wait: Duration::from_secs(1800) }
+        Options { unlimited: false, attach: Attach::BreakFirst, ram_hash: false, out: None, lock_wait: Duration::from_secs(1800) }
     }
 }
 
@@ -499,11 +499,11 @@ pub fn run_original(cfg: &Config, sc: &Scenario, values: &Values, pad: Option<&P
         return Err(format!("checkpoint {} was never reached (the run ended at k = {last_k})", d.at));
     }
     let first_k = first_k.ok_or("the game never reached the pad read")?;
+    // Input scripted before the first stop never reached the game (the state's first pad read is a vsync or two in).
     if let Some(p) = pad
-        && let Some((k, _)) = p.entries.first()
-        && first_k > *k
+        && let Some(k) = (0..first_k).find(|k| p.at(*k).is_some_and(|f| f != crate::pad::Frame::default()))
     {
-        return Err(format!("attached late: the first stop is at k = {first_k} but the pad script starts at k = {k}; use --attach bp"));
+        return Err(format!("attached late: the first stop is at k = {first_k} but the pad script presses something at k = {k}; use --attach bp"));
     }
     Ok(Outcome { trace, first_k, last_k, stops, seconds, ram_hash, state: state_path })
 }

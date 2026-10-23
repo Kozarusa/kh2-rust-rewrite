@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-const USAGE: &str = "usage: kh2-rig check|run|determinism <scenario.toml> [--unlimited] [--out DIR] [--id NAME] [--attach load|bp] [--ram] [--lock-wait SECONDS]\n       kh2-rig diff <a.csv> <b.csv>";
+const USAGE: &str = "usage: kh2-rig check|run|determinism <scenario.toml> [--unlimited] [--out DIR] [--id NAME] [--attach bp|load] [--ram] [--lock-wait SECONDS]\n       kh2-rig diff <a.csv> <b.csv>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -63,8 +63,8 @@ fn run(args: &[String]) -> Result<bool, String> {
     }
     let cfg = Config::from_env(value(args, "--id"))?;
     let attach = match value(args, "--attach") {
-        None | Some("load") => Attach::LoadFirst,
-        Some("bp") => Attach::BreakFirst,
+        None | Some("bp") => Attach::BreakFirst,
+        Some("load") => Attach::LoadFirst,
         Some(o) => return Err(format!("--attach {o}: expected load or bp")),
     };
     let opt = Options {

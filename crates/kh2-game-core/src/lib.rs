@@ -21,6 +21,7 @@ pub mod reaction_parts;
 pub mod reaction_rules;
 pub mod rig;
 pub mod rig_values;
+pub mod rng;
 pub mod schedule;
 pub mod shared;
 pub mod skel;

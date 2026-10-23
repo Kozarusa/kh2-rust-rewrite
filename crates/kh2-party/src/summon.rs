@@ -779,26 +779,20 @@ pub mod stitch {
         pub limit_link: bool,
     }
 
-    /// [inferred] A stand-in for the game's generator FUN_00106308: an xorshift, as party.rs's `Manager`
-    /// (the game's generator is not ported).
+    /// The game's generator behind FUN_0010f420 / FUN_0010f438 (FUN_00106308 on the one stream, `kh2_game_core::rng`). The handle holds
+    /// no state.
     #[derive(Clone, Copy, Debug, Default)]
-    pub struct Rng(pub u32);
+    pub struct Rng;
 
     impl Rng {
         /// FUN_0010f420(n): 0..n.
         pub fn rand(&mut self, n: u32) -> u32 {
-            if self.0 == 0 {
-                self.0 = 0x2545_f491;
-            }
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 17;
-            self.0 ^= self.0 << 5;
-            self.0 % n.max(1)
+            crate::rng::friend_rand(n)
         }
 
-        /// FUN_0010f438: 0..1, as party.rs's stand-in.
+        /// FUN_0010f438: 0..1.
         pub fn roll(&mut self) -> f32 {
-            self.rand(20001) as f32 / 20000.0
+            crate::rng::friend_roll()
         }
     }
 
@@ -5833,9 +5827,10 @@ mod tests {
     /// the lower fraction in battle the forced pick is the refill.
     #[test]
     fn stitch_follow_decision_and_blast() {
+        let _stream = crate::rng::stream(7);
         let c = stitch_test_consts();
         let recs = stitch_test_records();
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(7), ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
         let calm = stitch::Now { battle: false, limit: false, hp: (100, 100), mp: (100, 100), in_view: 0, motion_done: false };
         let (mut moves, mut stands, mut moved) = (0, 0, 0.0f32);
         for _ in 0..2000 {
@@ -5865,7 +5860,7 @@ mod tests {
         assert!(!stitch::can(&c, &recs, &ai, &hurt, 0, false) && !stitch::can(&c, &recs, &ai, &hurt, 1, false), "stand and move give way to a feasible blast");
         assert!(stitch::can(&c, &recs, &ai, &hurt, 2, false));
         assert!(!stitch::can(&c, &recs, &ai, &stitch::Now { in_view: 0, ..hurt }, 2, false), "no enemy in view: no blast");
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(3), ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
         let (mut fired, mut phase3, mut done) = (0, false, false);
         for t in 0..400 {
             let now = stitch::Now { motion_done: phase3 && t % 50 == 0, ..hurt };
@@ -5884,7 +5879,7 @@ mod tests {
         assert!(fired > 0 && done, "fired {fired} done {done}");
         // The forced pick: in battle after more than `count` choices, the refill when MP is the lower fraction.
         let low_mp = stitch::Now { battle: true, hp: (90, 100), mp: (10, 100), ..calm };
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(11), count: 6, ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, count: 6, ..Default::default() };
         let mut refilled = false;
         for _ in 0..200 {
             let out = stitch::tick(&c, &recs, &mut ai, &low_mp);
@@ -5986,16 +5981,17 @@ mod tests {
     /// command only clears the action.
     #[test]
     fn stitch_limit_sub_commands_start_records_4_5_and_6() {
+        let _stream = crate::rng::stream(5);
         let c = stitch_test_consts();
         let recs = stitch_limit_records();
         let now = stitch::Now { battle: true, hp: (100, 100), mp: (100, 100), in_view: 1, ..Default::default() };
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(5), ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
         let out = stitch::limit_tick(&c, &recs, &mut ai, &now, 525);
         assert_eq!(out.started, Some((4, true)));
         assert_eq!((ai.motion, out.player_motion, out.blast, ai.choosing.current), (Some(stitch::M_LINK), Some(0x101), false, Some(4)));
         assert_eq!((ai.pos[0], ai.pos[1], ai.pos[2]), (c.limit_a[0], c.limit_a[1], c.place_depth), "placed at the first spot (FUN_001175a0)");
         for (cmd, rec, motion, spot, slots, player) in [(526, 5, stitch::M_LIMIT_B, c.limit_a, 3, 0xff), (527, 6, stitch::M_LIMIT_C, c.limit_b, 2, 0x100)] {
-            let mut ai = stitch::StitchAi { rng: stitch::Rng(5), ..Default::default() };
+            let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
             let out = stitch::limit_tick(&c, &recs, &mut ai, &now, cmd);
             assert_eq!(out.started, Some((rec, true)), "command {cmd}");
             assert!(out.blast && out.slots.len() == slots && out.player_motion == Some(player), "{out:?}");
@@ -6014,14 +6010,14 @@ mod tests {
             assert!(ai.attack.is_none() && !out.blast, "released with the motion: {out:?}");
             assert_ne!(ai.choosing.current, Some(rec), "the record ended");
         }
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(5), ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
         ai.choosing.current = Some(2);
         let out = stitch::limit_tick(&c, &recs, &mut ai, &now, 528);
         assert!(out.started.is_none() && ai.choosing.current.is_none() && ai.motion.is_none());
         // Records 4 and 5 queued motion 0 behind theirs: when it ended the motion is 0 and the record is over; record 6 queued
         // nothing, so its motion stays and the record goes on (and fires again) until the script clears the action.
         for (cmd, rec, motion, over) in [(525, 4, stitch::M_LINK, true), (526, 5, stitch::M_LIMIT_B, true), (527, 6, stitch::M_LIMIT_C, false)] {
-            let mut ai = stitch::StitchAi { rng: stitch::Rng(5), ..Default::default() };
+            let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
             stitch::limit_tick(&c, &recs, &mut ai, &now, cmd);
             ai.motion_new = false;
             let done = stitch::Now { motion_done: true, ..now };
@@ -6056,14 +6052,15 @@ mod tests {
     /// starts at the entry's +4 and only runs while he is hurt); at full HP the timer holds.
     #[test]
     fn stitch_heals_the_player_one_hp_each_period_while_hurt() {
+        let _stream = crate::rng::stream(9);
         let c = stitch_test_consts();
         let recs = stitch_test_records();
         let hurt = stitch::Now { battle: false, hp: (50, 100), mp: (100, 100), ..Default::default() };
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(9), ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
         let heals: Vec<usize> = (0..200).filter(|_| stitch::tick(&c, &recs, &mut ai, &hurt).heal).collect();
         assert_eq!(heals, vec![59, 119, 179], "the period is {} frames", c.period);
         let full = stitch::Now { hp: (100, 100), ..hurt };
-        let mut ai = stitch::StitchAi { rng: stitch::Rng(9), ..Default::default() };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng, ..Default::default() };
         assert!((0..500).all(|_| !stitch::tick(&c, &recs, &mut ai, &full).heal));
         assert_eq!(ai.heal_timer, None, "the timer does not run at full HP");
     }
@@ -6306,6 +6303,7 @@ mod tests {
     /// emergency pass takes the potion record, and the class 0xf speed rule.
     #[test]
     fn genie_class_from_the_executable_and_its_decision() {
+        let _stream = crate::rng::stream(5);
         let Some(mut a) = archive() else { return };
         let exe = elf(&mut a);
         let k = genie::Consts::from_exe(&exe).expect("constants");
@@ -6327,7 +6325,7 @@ mod tests {
         }
         assert_eq!(genie::limit(&k, 0), 0);
         assert_eq!(genie::form(&k, 0).byte7, 6);
-        let mut ai = genie::GenieAi { rng: stitch::Rng(5), ..Default::default() };
+        let mut ai = genie::GenieAi { rng: stitch::Rng, ..Default::default() };
         let calm = genie::Now { battle: false, hp: (100, 100) };
         assert_eq!(genie::decide(&k, &recs, &mut ai, &calm), genie::Out { follow: true, ..Default::default() });
         let fight = genie::Now { battle: true, hp: (100, 100) };
@@ -6347,12 +6345,13 @@ mod tests {
     /// still picks a record instead of falling into the move branch; with the bit clear the same state moves.
     #[test]
     fn genie_chooses_even_after_two_repeats_because_of_bit_0x800() {
+        let _stream = crate::rng::stream(5);
         let Some(mut a) = archive() else { return };
         let exe = elf(&mut a);
         let k = genie::Consts::from_exe(&exe).expect("constants");
         let recs = genie::records(&exe).expect("records");
         let fight = genie::Now { battle: true, hp: (100, 100) };
-        let mut ai = genie::GenieAi { rng: stitch::Rng(5), ..Default::default() };
+        let mut ai = genie::GenieAi { rng: stitch::Rng, ..Default::default() };
         ai.choosing.repeats = 2;
         let out = genie::decide(&k, &recs, &mut ai, &fight);
         assert!(genie::SUMMON_ANY);
@@ -6437,6 +6436,7 @@ mod tests {
     /// starts `battle` otherwise.
     #[test]
     fn scripted_classes_from_the_executable_and_their_decision() {
+        let _stream = crate::rng::stream(7);
         let Some(mut a) = archive() else { return };
         let exe = elf(&mut a);
         let k = scripted::Consts::from_exe(&exe).expect("constants");
@@ -6456,7 +6456,7 @@ mod tests {
         // Peter Pan's own table at 0x3716c0, read from the disc and printed above: motions 165, 161..164.
         assert_eq!(pan.loco, [165, 161, 162, 163, 164]);
         assert_eq!((k.speed_add, k.aim_ahead, k.join_window), (2.0, 200.0, 8.0));
-        let mut ai = scripted::ScriptedAi { rng: stitch::Rng(7), ..Default::default() };
+        let mut ai = scripted::ScriptedAi { rng: stitch::Rng, ..Default::default() };
         let calm = scripted::Now { battle: false, mode_running: false };
         assert_eq!(scripted::decide(&chicken.records, 0x12, &mut ai, &calm), scripted::Out { follow: true, ..Default::default() });
         let busy = scripted::Now { battle: true, mode_running: true };
@@ -6515,10 +6515,11 @@ mod tests {
     /// cost is not chosen, instead of passing an always-true test.
     #[test]
     fn scripted_decide_offers_only_records_its_stand_ins_fit() {
+        let _stream = crate::rng::stream(7);
         use crate::party_battle::{Handler, Record};
         let rec = |handler| Record { flags: 3, handler, id: 0, entry: None, ability: 0, item: 0, setting: -1, mode: "battle".to_string() };
         let idle = scripted::Now { battle: true, mode_running: false };
-        let decide = |r: Record| scripted::decide(&[r], 0x12, &mut scripted::ScriptedAi { rng: stitch::Rng(7), ..Default::default() }, &idle);
+        let decide = |r: Record| scripted::decide(&[r], 0x12, &mut scripted::ScriptedAi { rng: stitch::Rng, ..Default::default() }, &idle);
         assert_eq!(decide(rec(Handler::Other(scripted::START_MODE[0]))).start, Some((0, "battle".to_string())));
         assert_eq!(decide(rec(Handler::Other(scripted::START_MODE[1]))).start, Some((0, "battle".to_string())));
         assert_eq!(decide(rec(Handler::Other(0x11_1111))).start, None, "another handler: phase 1 not ported");

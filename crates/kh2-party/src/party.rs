@@ -62,7 +62,7 @@ impl Plugin for PartyPlugin {
             .init_resource::<PartyHidden>()
             .init_resource::<SwapFade>()
             .add_message::<LimitMembers>()
-            .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
+            .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), ..Default::default() })
             .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_hide, party_swap, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, (party_record_sync, party_auto_healing).chain().after(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
@@ -524,7 +524,6 @@ struct Manager {
     /// `DAT_0034e980`: 2 warps any time, 1 only out of battle, 0 never (FUN_00112270).
     warp_mode: u8,
     tick: u64,
-    rng: u32,
     log: bool,
     forced_done: bool,
     in_battle: bool,
@@ -537,23 +536,19 @@ struct Manager {
 }
 
 impl Manager {
-    /// A random number below `n` ([inferred] stand-in for FUN_0010f420; the generator's state is not
-    /// the game's).
+    /// A random number below `n` (FUN_0010f420 -> FUN_00106308 on the game's one generator, `kh2_game_core::rng`).
     fn random(&mut self, n: u32) -> u32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        self.rng % n.max(1)
+        crate::rng::friend_rand(n)
     }
 
-    /// FUN_0010f438: 0..1 ([inferred] stand-in as above).
+    /// FUN_0010f438: 0..1 from the game's generator.
     fn roll(&mut self) -> f32 {
-        self.random(20001) as f32 / 20000.0
+        crate::rng::friend_roll()
     }
 
     /// FUN_00106408: a random value in `[a, b]`.
     fn between(&mut self, (a, b): (f32, f32)) -> f32 {
-        a + self.roll() * (b - a)
+        crate::rng::range(a, b)
     }
 }
 

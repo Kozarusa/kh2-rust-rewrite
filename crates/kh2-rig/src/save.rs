@@ -21,6 +21,9 @@ pub const PLAYER_FACING: u32 = 0x10;
 pub const VSYNC: u32 = 0x0033_fe64;
 /// The field time step (2.0 in the field at 30 frames per second, 1.0 in menus).
 pub const FRAME_STEP: u32 = 0x0035_6f40;
+/// The word that points at the C library's reentrancy block; the game's random number generator word is its `+0xa8` (8 bytes).
+pub const REENT_POINTER: u32 = 0x0037_3cf0;
+pub const RNG_OFFSET: u32 = 0xa8;
 /// The party block (`progress::off`): member records, forms, item counts, experience.
 pub const PARTY_BLOCK: u32 = 0x0033_fec0;
 pub const PARTY_BLOCK_LEN: usize = 0x1998;
@@ -168,11 +171,13 @@ pub fn rig_json(ee: &[u8], source: &str, sha1: Option<&str>) -> Result<String, S
     };
     let name = source.rsplit(['/', '\\']).next().unwrap_or(source).replace(['"', '\\'], "");
     let sha = sha1.map_or(String::new(), |s| format!(", \"sha1\": \"{s}\""));
+    // The generator word as 16 hex digits (a JSON number would lose bits above 2^53); absent when the pointer or the word is out of range.
+    let rng = mem.u32(REENT_POINTER).and_then(|p| mem.bytes(p.wrapping_add(RNG_OFFSET), 8)).map_or(String::new(), |b| format!(", \"rng\": \"{}\"", hex(&b.iter().rev().copied().collect::<Vec<u8>>())));
     let fields = [
         ("save_block", format!("\"{}\"", hex(block))),
         ("place", format!("{{\"world\": {}, \"area\": {}, \"entrance\": {}}}", x.world, x.area, x.entrance)),
         ("sora", sora),
-        ("rig", format!("{{\"vsync\": {}, \"frame_step\": {}, \"source\": \"{name}\"{sha}}}", x.vsync, num(x.frame_step))),
+        ("rig", format!("{{\"vsync\": {}, \"frame_step\": {}, \"source\": \"{name}\"{sha}{rng}}}", x.vsync, num(x.frame_step))),
     ];
     Ok(join(&fields))
 }

@@ -1,0 +1,4 @@
+# kh2 pad v1   no input for the whole run (state 06): the generator word moves only by the game's own draws.
+# k   buttons   lx  ly  rx  ry
+0     -         127 127 127 127
+end 600

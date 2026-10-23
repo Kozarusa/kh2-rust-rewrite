@@ -8,7 +8,8 @@ screenshots: give EXACT commands (env vars included) and paths for every claim; 
 - The main checkout `$env:KH2_REPO` is READ-ONLY for you. Your worktree: `.claude\worktrees\wp-<id>`, branch `wp/<id>`. Work only there,
   with absolute paths. Every tool is in `tools\` of your own worktree and works on the checkout it lives in.
 - Machine paths come from the untracked `local\machine.ps1` of the main checkout (names in `tools\machine.example.ps1`). In every
-  PowerShell call that runs cargo or the game: `. .\tools\env.ps1; Use-Machine KH2_ISO; ...`. Python tools use `tools\machine.py`.
+  PowerShell call that runs cargo or the game: `. .\tools\env.ps1; Use-Machine KH2_ISO; ...` (more names as needed:
+  `Use-Machine KH2_ISO,KH2_REPO,KH2_DECOMP`). Python tools use `tools\machine.py`.
 - Start: (1) `git status --short` (empty), `git log --oneline -5`, `git switch wp/<id>` if needed. (2) Copy `$env:KH2_REPO\local\kh2idx.txt`
   into your `local\`. (3) First build in the background: `cargo build -p kh2-app --bin kh2-game` (cold 10 to 18 min, longer while others build); read meanwhile.
   (4) Edit loop: `CARGO_INCREMENTAL` may stay unset (RULES B6); the gate runs with it at 0. Never point `CARGO_TARGET_DIR` at another

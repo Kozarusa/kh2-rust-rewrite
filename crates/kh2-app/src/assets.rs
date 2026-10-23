@@ -13,7 +13,7 @@ use kh2_archive::Archive;
 use crate::data::GameData;
 use crate::schedule::Frame;
 use crate::world::World;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 use crate::SCALE;
 
 /// The disc, the game's tables read from it, and the area that is loaded and switched at run time.
@@ -143,7 +143,7 @@ pub fn load_area(
     let cam_world = World::from_meshes(&map.map.meshes);
     if let Ok((mut t, mut p)) = player.single_mut() {
         let (_, at) = spawn_point(&world, &cam_world);
-        crate::sora::respawn(&mut p, at);
+        crate::shared::sora::respawn(&mut p, at);
         t.translation = at * SCALE;
     }
     info!("{file}: {} meshes, collision {} triangles ({})", map.map.meshes.len(), world.tris.len(), if world.coct { "COCT" } else { "render mesh" });

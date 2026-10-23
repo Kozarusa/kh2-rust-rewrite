@@ -14,7 +14,7 @@ use kh2_audio::{RATE, Wd};
 
 use crate::assets::{CurrentArea, Disc};
 use crate::skel::Animator;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 
 /// Everything the audio thread plays: the SSL driver (sequence players + SPU voices).
 #[derive(Default)]
@@ -852,7 +852,7 @@ const SORA_MODEL: &str = "P_EX100";
 pub fn footsteps(
     anims: Query<&Animator>,
     sora: Query<&Sora>,
-    pad: Option<Res<crate::sora::Pad>>,
+    pad: Option<Res<crate::shared::sora::Pad>>,
     area: Res<CurrentArea>,
     disc: Res<Disc>,
     cache: Res<SeCache>,
@@ -868,7 +868,7 @@ pub fn footsteps(
     let neo_status = neo.get_or_insert_with(|| neo_status(&disc, SORA_MODEL)).unwrap_or(1);
     // The ground mover (FUN_0017af10) runs for a grounded Sora in his ground state; he is a party actor.
     let commanded = pad.as_ref().map_or(0.0, |p| p.stick);
-    let mover = s.state == crate::sora::State::Ground && s.motor.grounded;
+    let mover = s.state == crate::shared::sora::State::Ground && s.motor.grounded;
     let stop = mover && last.is_some_and(|(id, r42)| kh2_audio::footstep::stop_step(true, commanded, r42, id));
     // The same call starts the dust of the first step out of idle (its commanded branch).
     let start = mover && last.is_some_and(|(id, _)| kh2_audio::footstep::start_dust(true, commanded, id, neo_status));

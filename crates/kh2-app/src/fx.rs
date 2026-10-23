@@ -30,7 +30,7 @@ use crate::assets::Disc;
 use crate::combat::{Fighter, Team};
 use crate::enemy::Enemy;
 use crate::skel::Animator;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 
 /// The lens pass: distortion batches that read the display buffer (WP-I3).
 #[path = "fx_lens.rs"]
@@ -336,7 +336,7 @@ impl Plugin for FxPlugin {
     }
 }
 
-pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::sora::Rigs>, mut distort: ResMut<Assets<DistortMaterial>>) {
+pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::shared::sora::Rigs>, mut distort: ResMut<Assets<DistortMaterial>>) {
     commands.insert_resource(DistortHandle {
         tested: distort.add(DistortMaterial { unused: Vec4::ZERO, depth_test: true }),
         always: distort.add(DistortMaterial { unused: Vec4::ZERO, depth_test: false }),
@@ -735,7 +735,7 @@ pub fn weapons_appeared(prev: &[bool], now: &[bool]) -> Vec<usize> {
 /// bound to the weapon, as the weapon's update `FUN_001843b0` does through `FUN_00184498` the moment the
 /// owner's motion variant is a weapon one (0 or 3) while the weapon was still hidden (flag 0x100 of
 /// +0x10c, set by the constructor `FUN_00184190`). Log with `KH2_FXLOG`.
-pub fn weapon_appear(mut commands: Commands, lib: Res<EffectLib>, sora: Query<&crate::sora::Sora>, vis: Query<&Visibility>, mut prev: Local<Vec<bool>>) {
+pub fn weapon_appear(mut commands: Commands, lib: Res<EffectLib>, sora: Query<&crate::shared::sora::Sora>, vis: Query<&Visibility>, mut prev: Local<Vec<bool>>) {
     let Ok(s) = sora.single() else { return };
     appear_step(&mut commands, &lib, &s.weapons, &vis, &mut prev);
 }
@@ -756,7 +756,7 @@ fn appear_step(commands: &mut Commands, lib: &EffectLib, weapons: &[Entity], vis
 pub fn weapon_trails(
     mut commands: Commands,
     lib: Res<EffectLib>,
-    sora: Query<&crate::sora::Sora>,
+    sora: Query<&crate::shared::sora::Sora>,
     anims: Query<&Animator>,
     mut running: Query<&mut RunningEffect>,
 ) {
@@ -1461,6 +1461,21 @@ pub fn fx_test(
         .map_or(t.rotation * Vec3::Z * dist + Vec3::Y, |v| Vec3::new(v[0], v[1], v[2]));
     let at = t.translation + off;
     start(&mut commands, &pax, id, Bind::Fixed(Mat4::from_translation(at)));
+}
+
+/// Shape kind of the lock-on point (target shapes, as `sora::target_points`).
+pub const TARGET_SHAPE: u8 = 3;
+
+/// The first shape of `kind` of a body, on its bone (`FUN_0016b558` + `FUN_001894d0`), in app cm.
+pub fn body_shape_point(anim: &Animator, body: &GlobalTransform, kind: u8) -> Option<Vec3> {
+    let s = anim.rig.model.shapes.iter().find(|s| s.kind == kind && (kind != TARGET_SHAPE || s.argument & 1 == 0))?;
+    let m = match s.bone {
+        Some(b) => anim.bone_world(body, b),
+        None => body.to_matrix(),
+    };
+    let mut p = m.transform_point3(Vec3::from(s.offset)) / SCALE;
+    p.y += s.lift;
+    Some(p)
 }
 
 #[cfg(test)]

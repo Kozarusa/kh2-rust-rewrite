@@ -29,7 +29,7 @@ use kh2_audio::ssl::{BGM_FULL, Driver};
 use crate::assets::{CurrentArea, Disc};
 use crate::audio::{Audio, load_sequence};
 use crate::enemy::Enemy;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 use crate::SCALE;
 
 /// The battle flag's constants, read from the executable's data (`FUN_00190370`, `FUN_001903e8`,

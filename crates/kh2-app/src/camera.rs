@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use crate::assets::{CurrentArea, Disc};
 use crate::data::GameData;
 use crate::schedule::Sim;
-use crate::sora::{Pad, Sora, State};
+use crate::shared::sora::{Pad, Sora, State};
 use crate::world::{CameraWorld, World};
 use crate::SCALE;
 

@@ -24,7 +24,7 @@ use bevy::prelude::*;
 use kh2_ard::run::{self, ScriptRun};
 
 use crate::assets::{CurrentArea, Disc};
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
 
@@ -258,7 +258,7 @@ pub fn run_area_script(
         Some((tag, e)) => {
             let at = game_to_app(e.position);
             let at = w.ground(at, at.y + 100.0, 400.0).map_or(at, |g| at.with_y(g.y));
-            crate::sora::respawn(&mut s, at);
+            crate::shared::sora::respawn(&mut s, at);
             s.motor.yaw = app_yaw(e.rotation[1]);
             tf.translation = at * SCALE;
             tf.rotation = Quat::from_rotation_y(s.motor.yaw);

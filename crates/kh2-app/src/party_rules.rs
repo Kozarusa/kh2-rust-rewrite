@@ -1408,7 +1408,7 @@ mod jump_tests {
         let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05").expect("exe");
         assert_eq!(revive_full_scale(&elf), Some(1.0));
         let mut a = kh2_archive::Archive::open(&iso).expect("disc");
-        let r = crate::abilities::AbilityRules::load(&mut a).expect("rules");
+        let r = crate::shared::abilities::AbilityRules::load(&mut a).expect("rules");
         assert_eq!(r.abilities[&ABILITY_HYPER_HEALING].bit, 131);
     }
 }

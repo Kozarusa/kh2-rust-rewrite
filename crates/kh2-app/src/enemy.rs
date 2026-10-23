@@ -26,7 +26,7 @@ use crate::combat::{hit_is_ineffective, Fighter, Hit, IneffectiveHit, ReactionDa
 use crate::data::{GameData, Stats, GRAVITY, LOGIC_HZ};
 use crate::reaction_rules::{self as rules, Blow, Push, VictimAction, VictimCtx};
 use crate::skel::{spawn_skinned, Animator, Rig};
-use crate::sora::{Rigs, Sora};
+use crate::shared::sora::{Rigs, Sora};
 use crate::SCALE;
 
 const IDLE: usize = 0;
@@ -1461,7 +1461,7 @@ pub fn spawn_waves(
                 });
                 if let (Some(_), Some(at)) = (&forced, centre.or(g.player)) {
                     let y = col.ground_m(at.x, at.z, at.y + 1.0).unwrap_or(at.y);
-                    crate::sora::respawn(&mut sora, at.with_y(y) / SCALE);
+                    crate::shared::sora::respawn(&mut sora, at.with_y(y) / SCALE);
                     if centre.is_none() && g.player.is_some() {
                         sora.motor.yaw = g.player_yaw;
                     }
@@ -1892,9 +1892,9 @@ pub fn receive_hits(
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
-    (abilities, magic): (Option<Res<crate::abilities::Abilities>>, Option<Res<crate::magic::MagicState>>),
+    (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::magic::MagicState>>),
     (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
-    (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
+    (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
     mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
 ) {
     let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
@@ -1918,7 +1918,7 @@ pub fn receive_hits(
             && members.get(h.attacker).is_err()
             && let Some(row) = data.hit_row(h)
         {
-            let extra = crate::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust);
+            let extra = crate::shared::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust);
             if extra > 0 && std::env::var_os("KH2_ABILITYLOG").is_some() {
                 info!("abilities: Berserk Charge: strength {} + {extra} for atkp {}", from.strength, h.atkp);
             }
@@ -1933,7 +1933,7 @@ pub fn receive_hits(
             dmg = crate::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
         }
         if let Some(ab) = &abilities {
-            dmg = crate::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
+            dmg = crate::shared::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
         }
         // FUN_001a0100: the new HP is held between word 2 (`min_hp`) and the maximum.
         let was_alive = e.hp > 0;
@@ -1945,11 +1945,11 @@ pub fn receive_hits(
             && let Some(state) = &drive.1
         {
             let form = state.object_form();
-            let hit_exp = crate::prize::valor_hit_exp(form);
-            let defeat = if was_alive && e.hp <= 0 { crate::prize::defeat_exp(form, e.object_id) } else { 0 };
+            let hit_exp = crate::shared::prize::valor_hit_exp(form);
+            let defeat = if was_alive && e.hp <= 0 { crate::shared::prize::defeat_exp(form, e.object_id) } else { 0 };
             for amount in [hit_exp, defeat].into_iter().filter(|&a| a > 0) {
                 info!("{} hit by Sora in form {form}: form experience +{amount} (FUN_001d4078 / FUN_001d40e0, object {:#x})", e.name, e.object_id);
-                form_exp.write(crate::prize::FormExpGain { form, amount });
+                form_exp.write(crate::shared::prize::FormExpGain { form, amount });
             }
         }
         // The victim's `dead` method FUN_001b25d0 pays the experience (progress::pay_defeats).

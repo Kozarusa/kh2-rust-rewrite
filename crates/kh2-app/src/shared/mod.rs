@@ -3,3 +3,4 @@
 
 pub mod sora;
 pub mod abilities;
+pub mod prize;

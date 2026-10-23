@@ -39,7 +39,7 @@ use crate::motor::wrap_angle;
 use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
 use crate::schedule::Sim;
 use crate::skel::Animator;
-use crate::sora::Sora;
+use crate::shared::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
 
@@ -418,7 +418,7 @@ fn ai_attach(
 /// The scripts, Sora's abilities, the mission manager (WP-7E: host 4.29, no-prize flag) and the global events.
 type ScriptWorld<'w, 's> = (
     Res<'w, AiPrograms>,
-    Option<Res<'w, crate::abilities::Abilities>>,
+    Option<Res<'w, crate::shared::abilities::Abilities>>,
     Option<Res<'w, crate::struggle::Mission>>,
     MessageReader<'w, 's, crate::struggle::GlobalEvent>,
 );
@@ -441,10 +441,10 @@ fn ai_update(
     (mut trace, mut mailbox, mut table, appear): (ResMut<AiTrace>, ResMut<Mailbox>, ResMut<ObjTable>, Option<Res<AppearRamp>>),
     (programs, abilities, mission, mut global_events): ScriptWorld,
     (prize_pool, mut prize_drops, mut item_drops, mut collect_all): (
-        Option<Res<crate::prize::PrizePool>>,
-        MessageWriter<crate::prize::PrizeDrop>,
-        MessageWriter<crate::prize::ItemDrop>,
-        MessageWriter<crate::prize::CollectAll>,
+        Option<Res<crate::shared::prize::PrizePool>>,
+        MessageWriter<crate::shared::prize::PrizeDrop>,
+        MessageWriter<crate::shared::prize::ItemDrop>,
+        MessageWriter<crate::shared::prize::CollectAll>,
     ),
     (summon, mut summon_stop_logged, mut forced_done, mut defeated): (
         Option<Res<crate::summon::SummonState>>,
@@ -654,10 +654,10 @@ fn ai_update(
                         d.item_launches.len()
                     );
                     if !d.launches.is_empty() {
-                        prize_drops.write(crate::prize::PrizeDrop { from: ent, row: d.row, launches: d.launches });
+                        prize_drops.write(crate::shared::prize::PrizeDrop { from: ent, row: d.row, launches: d.launches });
                     }
                     if !d.item_launches.is_empty() {
-                        item_drops.write(crate::prize::ItemDrop { from: ent, launches: d.item_launches });
+                        item_drops.write(crate::shared::prize::ItemDrop { from: ent, launches: d.item_launches });
                     }
                 }
                 None => trace.note(tag, format!("drop row {id}: przt has neither it nor row 0x48")),
@@ -666,7 +666,7 @@ fn ai_update(
         // Host 6.31 (FUN_002eece8): every prize and item goes to the player.
         if std::mem::take(&mut obj.collect_all) {
             info!("bdx {tag}: host 6.31 collects every prize and item for the player");
-            collect_all.write(crate::prize::CollectAll);
+            collect_all.write(crate::shared::prize::CollectAll);
         }
         // The status block the script rebuilt (host 2.9) and the HP changes it made (1.231, 1.155).
         if let Some(row) = obj.param_row.take() {

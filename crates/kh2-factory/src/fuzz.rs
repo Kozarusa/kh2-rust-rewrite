@@ -272,6 +272,7 @@ fn fault(f: &Fault) -> String {
         Fault::Unimplemented { pc, word, what } => format!("unimplemented {what} {word:08x} at {pc:08x}"),
         Fault::Memory { pc, addr } => format!("bad address {addr:08x} at {pc:08x}"),
         Fault::Runaway { pc } => format!("runaway at {pc:08x}"),
+        other => format!("{other:?}"),
     }
 }
 

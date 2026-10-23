@@ -4,7 +4,7 @@
 //! same inputs, and compares the return value, every block and every global byte by byte (float fields with a
 //! tolerance). The port sees blocks as byte slices in the original's layout (RULES C7).
 
-use kh2_ee::{Ee, Fault, reg};
+use kh2_ee::{Ee, Exception, Fault, reg};
 
 /// Where blocks are laid out in the interpreter's memory (one 64 KB slot each).
 pub const ARENA: u32 = 0x0180_0000;
@@ -267,6 +267,12 @@ fn feq(a: f32, b: f32) -> bool {
     a.to_bits() == b.to_bits() || (a - b).abs() <= 1e-5 * (1.0 + a.abs().max(b.abs()))
 }
 
+/// A fault that means the generated input is outside the function's domain: signed overflow or
+/// a misaligned access, which the hardware traps on.
+fn out_of_domain(f: &Fault) -> bool {
+    matches!(f, Fault::Exception { exc: Exception::Overflow | Exception::AddressError { .. }, .. })
+}
+
 fn fault(f: &Fault) -> String {
     match f {
         Fault::Unimplemented { pc, word, what } => format!("unimplemented {what} {word:08x} at {pc:08x}"),
@@ -315,6 +321,7 @@ pub fn fuzz_with(ee: &mut Ee, spec: &Spec, cases: u32, seed: u64, mut port: impl
     let steps0 = ee.steps;
     let mut first: Option<Outcome> = None;
     let mut varied = false;
+    let mut skipped = 0u32;
     for n in 0..cases {
         // Inputs.
         let mut case = Case { ints: Vec::new(), floats: Vec::new(), blocks: Vec::new(), globals: Vec::new() };
@@ -350,7 +357,16 @@ pub fn fuzz_with(ee: &mut Ee, spec: &Spec, cases: u32, seed: u64, mut port: impl
         ee.fpr[0] = 0.0;
         // The first cases also check that the original writes nothing outside its blocks, the spec's globals and the stack.
         let before = (n < AUDIT).then(|| ee.ram.clone());
-        let v0 = ee.call(spec.addr, &regs, &case.floats, STACK).unwrap_or_else(|f| panic!("case {n}: the original faulted: {}", fault(&f)));
+        let v0 = match ee.call(spec.addr, &regs, &case.floats, STACK) {
+            Ok(v) => v,
+            Err(f) if out_of_domain(&f) => {
+                // The input is outside what the original defines (it traps on overflow or a bad address).
+                skipped += 1;
+                ee.cop0[12] &= !2;
+                continue;
+            }
+            Err(f) => panic!("case {n}: the original faulted: {}", fault(&f)),
+        };
         if let Some(before) = before {
             let inside = |a: u32| {
                 (ARENA..ARENA + flat.len() as u32 * SLOT).contains(&a)
@@ -398,9 +414,59 @@ pub fn fuzz_with(ee: &mut Ee, spec: &Spec, cases: u32, seed: u64, mut port: impl
             }
         }
     }
+    assert!(skipped * 2 <= cases, "{skipped} of {cases} cases hit an overflow or address error in the original: the input domain is wrong");
     assert!(
         varied,
         "every case gave the same result: the test checks nothing (widen the inputs or the compared outputs)"
     );
     Stats { cases, steps: ee.steps - steps0, secs: t0.elapsed().as_secs_f64() }
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::*;
+
+    const AT: u32 = 0x0010_0000;
+
+    /// `v0 = 0x7fffffff + a0` with `add`, which traps when it overflows.
+    fn machine() -> Ee {
+        let mut e = Ee::new();
+        // lui t0, 0x7fff; ori t0, t0, 0xffff; add v0, t0, a0; jr ra; nop
+        for (i, w) in [0x3C08_7FFFu32, 0x3508_FFFF, 0x0104_1020, 0x03E0_0008, 0].iter().enumerate() {
+            e.w32(AT + 4 * i as u32, *w);
+        }
+        e
+    }
+
+    fn spec(arg: &'static [Arg]) -> Spec {
+        Spec { addr: AT, args: arg, floats: 0, ret: Ret::Int, globals: &[], stubs: &[], nulls: false }
+    }
+
+    #[test]
+    fn overflow_and_address_errors_are_out_of_domain_and_other_faults_are_not() {
+        assert!(out_of_domain(&Fault::Exception { pc: 0, exc: Exception::Overflow }));
+        assert!(out_of_domain(&Fault::Exception { pc: 0, exc: Exception::AddressError { addr: 2, store: false } }));
+        assert!(!out_of_domain(&Fault::Exception { pc: 0, exc: Exception::Break(7) }));
+        assert!(!out_of_domain(&Fault::Runaway { pc: 0 }));
+    }
+
+    #[test]
+    fn a_few_overflowing_cases_are_skipped_and_the_rest_still_compared() {
+        static ARGS: [Arg; 1] = [Arg::Range(-10, 1)];
+        let mut ee = machine();
+        let mut compared = 0;
+        fuzz_with(&mut ee, &spec(&ARGS), 300, 1, |c| {
+            compared += 1;
+            Out::int(0x7fff_ffffi32.wrapping_add(c.ints[0] as i32) as i64)
+        });
+        // a0 = 1 overflows (about 1 in 12 cases) and never reaches the port.
+        assert!(compared > 200 && compared < 300, "{compared} cases compared");
+    }
+
+    #[test]
+    #[should_panic(expected = "hit an overflow or address error")]
+    fn more_than_half_skipped_fails() {
+        static ARGS: [Arg; 1] = [Arg::Range(1, 9)];
+        fuzz_with(&mut machine(), &spec(&ARGS), 100, 1, |_| Out::int(0));
+    }
 }

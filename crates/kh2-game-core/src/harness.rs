@@ -7,6 +7,58 @@ use crate::camera;
 
 pub struct HarnessPlugin;
 
+/// `KH2_TURBO=1`: the app runs as fast as the CPU allows with one fixed tick per frame (offscreen-style
+/// runs of the acceptance sweep). The screenshot and key scripts then count whole ticks.
+pub fn turbo() -> bool {
+    std::env::var_os("KH2_TURBO").is_some_and(|v| v != "0")
+}
+
+/// Fixed ticks run so far (counted in `FixedUpdate`, only when turbo is on).
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurboTicks(pub u64);
+
+/// The turbo settings: every frame advances `Time` by exactly one fixed step (so `FixedUpdate` runs
+/// once per frame and the scripted seconds of `KH2_KEYS` / `KH2_SHOT_AT` become exact tick counts),
+/// winit keeps updating without focus, and the tick counter runs.
+pub fn configure_turbo(app: &mut App) {
+    app.insert_resource(bevy::time::TimeUpdateStrategy::FixedTimesteps(1))
+        .insert_resource(bevy::winit::WinitSettings::continuous())
+        .init_resource::<TurboTicks>()
+        .add_systems(FixedUpdate, count_turbo_ticks);
+}
+
+fn count_turbo_ticks(mut ticks: ResMut<TurboTicks>) {
+    ticks.0 += 1;
+}
+
+/// The whole tick of the scripted clock (`Time` in `PreUpdate` is the virtual clock).
+fn clock_tick(time: &Time) -> u64 {
+    (time.elapsed().as_secs_f64() * f64::from(crate::data::LOGIC_HZ)).round() as u64
+}
+
+/// `KH2_SHOT_TICKS=k1,k2,...`: writes `shot-<k>.png` (next to `KH2_SCREENSHOT`, else in the working
+/// directory) when the clock reaches tick k, and exits 60 ticks after the last one.
+fn tick_shots(mut commands: Commands, time: Res<Time>, mut taken: Local<usize>) {
+    let Ok(spec) = std::env::var("KH2_SHOT_TICKS") else { return };
+    let mut ticks: Vec<u64> = spec.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    ticks.sort_unstable();
+    let Some(&last) = ticks.last() else { return };
+    let now = clock_tick(&time);
+    if let Some(&k) = ticks.get(*taken) {
+        if now >= k {
+            use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+            let dir = std::env::var_os("KH2_SCREENSHOT")
+                .and_then(|p| std::path::Path::new(&p).parent().map(|d| d.to_path_buf()))
+                .unwrap_or_default();
+            info!(target: "kh2_game", "taking screenshot at tick {now}");
+            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(dir.join(format!("shot-{k}.png"))));
+            *taken += 1;
+        }
+    } else if now >= last + 60 {
+        std::process::exit(0);
+    }
+}
+
 /// The scripted key presses of `KH2_KEYS` (the menu's input runs after this set).
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Keys;
@@ -16,6 +68,7 @@ impl Plugin for HarnessPlugin {
         // The scripted keys are pressed in `PreUpdate`, after the keyboard is read, so the pause menu
         // (which takes its keys there) sees them like real ones.
         app.add_systems(PreUpdate, auto_screenshot.in_set(Keys).after(bevy::input::InputSystems));
+        app.add_systems(PreUpdate, tick_shots.after(bevy::input::InputSystems));
         // `KH2_FPS=1`: log frame rate every 2 s.
         if std::env::var("KH2_FPS").is_ok() {
             app.add_plugins((
@@ -96,7 +149,18 @@ fn auto_screenshot(
                 "Shift" => KeyCode::ShiftLeft,
                 _ => continue,
             };
-            if t >= at && t - dt < at {
+            if turbo() {
+                // Whole ticks: the press frame is the tick nearest `at`, the release `hold` later (at least one tick).
+                let hz = f64::from(crate::data::LOGIC_HZ);
+                let press = (f64::from(at) * hz).round() as u64;
+                let release = press + ((f64::from(hold) * hz).round() as u64).max(1);
+                let now = clock_tick(&time);
+                if now == press {
+                    keys.press(key);
+                } else if now == release {
+                    keys.release(key);
+                }
+            } else if t >= at && t - dt < at {
                 keys.press(key);
             } else if t >= at + hold && t - dt < at + hold {
                 keys.release(key);
@@ -120,5 +184,36 @@ fn auto_screenshot(
         *state = 2;
     } else if *state == 2 && t > shot_at + 3.0 {
         std::process::exit(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turbo_runs_exactly_one_fixed_update_per_frame() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins).insert_resource(Time::<Fixed>::from_hz(f64::from(crate::data::LOGIC_HZ)));
+        configure_turbo(&mut app);
+        app.finish();
+        app.cleanup();
+        for _ in 0..3 {
+            app.update();
+        }
+        let base = app.world().resource::<TurboTicks>().0;
+        for _ in 0..500 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<TurboTicks>().0 - base, 500);
+    }
+
+    #[test]
+    fn clock_tick_counts_whole_fixed_steps() {
+        let mut time = Time::<()>::default();
+        for n in 1..=7u64 {
+            time.advance_by(std::time::Duration::from_secs_f64(1.0 / 60.0));
+            assert_eq!(clock_tick(&time), n);
+        }
     }
 }

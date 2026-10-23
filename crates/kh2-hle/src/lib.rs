@@ -5,8 +5,9 @@
 //! * [`kernel`]: the EE kernel in Rust (boot contract `HYB-boot` sections 2.1 to 2.3): the syscall
 //!   trap, threads with a priority scheduler, semaphores, INTC and DMAC handler tables with interrupt
 //!   delivery at instruction boundaries, and a virtual clock (VBlank at 59.94 Hz, timer 2
-//!   overflow, `DelayThread` wake-ups). The IOP services (`iop/`, HYB-4) and the hardware
-//!   registers (`hw/`, HYB-5) are separate work packages.
+//!   overflow, `DelayThread` wake-ups). The IOP services (`iop/`, HYB-4) are a separate work package.
+//! * [`hw`]: the memory-mapped register pages (HYB-5): DMA completion and interrupts, scratchpad
+//!   copies, GS CSR, timer 0, the unimplemented-register check, and the movie hook.
 //!
 //! # What is HLE'd
 //!
@@ -30,6 +31,7 @@
 //! overflow period (8.79 Hz from a 16-bit counter at bus clock / 256) and CPI 1 for the virtual
 //! clock. Each is labelled where it is written.
 
+pub mod hw;
 pub mod kernel;
 
 pub use kernel::{Kernel, Machine, RunStop};

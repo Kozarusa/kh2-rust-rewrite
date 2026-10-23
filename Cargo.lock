@@ -3381,6 +3381,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kh2-hle"
+version = "0.1.0"
+dependencies = [
+ "kh2-archive",
+ "kh2-ee",
+ "kh2-factory",
+]
+
+[[package]]
 name = "kh2-image"
 version = "0.1.0"
 dependencies = [

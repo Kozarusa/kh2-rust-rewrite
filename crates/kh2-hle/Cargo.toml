@@ -1,0 +1,13 @@
+[package]
+name = "kh2-hle"
+description = "High-level emulation of the PS2 kernel, IOP services and hardware around kh2-ee, so the user's own game executable runs headless as a reference runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-ee.workspace = true
+
+[dev-dependencies]
+kh2-factory.workspace = true
+kh2-archive.workspace = true

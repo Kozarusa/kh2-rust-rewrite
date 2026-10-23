@@ -1,5 +1,5 @@
 //! The camera's dynamic blockers, filled from the objects' collision shapes of kind 0x12 (the
-//! walk of `FUN_0016bce0` through `FUN_0015a3e8`; model and sources in `docs/camera.md`).
+//! walk of `FUN_0016bce0` through `FUN_0015a3e8`; model and sources in `docs/systems/player-camera/contract.md`).
 //!
 //! The game rebuilds the list every time the camera asks: for each live object in its object
 //! list, for each of its collision records of kind 0x12 (`FUN_0016b4e0(obj, 0x12)`), one entry
@@ -10,7 +10,7 @@
 //! - any other bone number: only when the object's flag word +0x7f8 has bit 0x400 does the same
 //!   happen with the bone's matrix. Otherwise the entry is written as radius 0 and centre
 //!   (0, 0, 0). Nothing in the app sets that flag (its writer was not found, see the gaps in
-//!   `docs/camera.md`), so such records give the empty entry. They still take a list slot, as in
+//!   `docs/systems/player-camera/contract.md`), so such records give the empty entry. They still take a list slot, as in
 //!   the game.
 
 use bevy::prelude::*;

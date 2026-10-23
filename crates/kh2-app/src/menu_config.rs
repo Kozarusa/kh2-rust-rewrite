@@ -1,4 +1,4 @@
-//! The pause menu's Config page (stage M6, docs/menus.md 2.8): page 0x24, ten rows over the option word.
+//! The pause menu's Config page (stage M6, docs/systems/ui/menus-pause.md 2.8): page 0x24, ten rows over the option word.
 //!
 //! This file is a child module of `menu` (`#[path] mod config;` there), so it sees the menu's own state
 //! without that file exporting it. The pure part is the row table of the original:
@@ -26,7 +26,7 @@ use crate::progress::Progress;
 
 /// The page id of the Config page (`FUN_00251848`'s jump table, entry 7).
 pub const PAGE: u16 = 0x24;
-/// The confirm sound (kind 2: `docs/menus.md` 1.7, id 2 of the system bank).
+/// The confirm sound (kind 2: `docs/systems/ui/menus-pause.md` 1.7, id 2 of the system bank).
 const CONFIRM: u32 = 2002;
 /// The entry of the top list that opens it.
 pub const ENTRY: usize = 7;

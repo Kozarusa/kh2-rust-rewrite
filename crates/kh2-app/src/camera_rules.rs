@@ -1,4 +1,4 @@
-//! The original game's field camera as pure functions (model and sources in `docs/camera.md`).
+//! The original game's field camera as pure functions (model and sources in `docs/systems/player-camera/contract.md`).
 //!
 //! Everything here works in the game's units (centimetres) in map-model space, Y up, at the
 //! game's 60 Hz tick: each rule is one tick of the original's camera object (`FUN_00140a80`). The

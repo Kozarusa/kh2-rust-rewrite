@@ -1,4 +1,4 @@
-//! The game over (docs/menus.md "Game over", docs/struggle.md "The knock-out").
+//! The game over (docs/systems/ui/menus-gameover.md "Game over", docs/systems/world-minigames/struggle.md "The knock-out").
 //!
 //! What the original does (`SLUS_210.05`): when the player's HP part reaches 0 (`FUN_00186238` -> `FUN_00186530`) the
 //! player class's knock-out method `FUN_001cec00` decides, in this order:
@@ -27,7 +27,7 @@
 //! as a slot file (`capture_body`; "Continue" puts it back, `restore_snapshot`); the list is
 //! `menu_struggle`'s pointer list over the rows of the disc's table; "Continue" jumps to the snapshot's area with the fade
 //! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" opens the
-//! Load screen of `menu_save` (menu kind 2, docs/menus.md 18.6): a read slot replaces the state and enters its area, a cancel
+//! Load screen of `menu_save` (menu kind 2, docs/systems/ui/menus-save.md 18.6): a read slot replaces the state and enters its area, a cancel
 //! brings the list back. The list shows the player's model lying in the scene's motion (`model`, `obj/GAMEOVER.mset`, docs 26.6) and
 //! "Continue" ends with the party refresher `FUN_001abfe8(8)` (full HP and MP, `refresh_party`, docs 26.7). The wait before the list is the knock-out event's fade (`open_after`, docs 26.6); the
 //! header group is not ported (see docs).
@@ -69,7 +69,7 @@ pub const SOUND_OVER_TYPE_1: u32 = 0x33;
 /// The area map program below which `FUN_001cb358` allows the snapshot (`DAT_0033e830` byte 3).
 pub const SNAPSHOT_PROGRAM_LIMIT: u8 = 0x33;
 /// Game ticks from the knock-out to the list for the types that start the knock-out event (0 and 3; type 2 has no list).
-/// `FUN_001ad378` starts the event of kind 0xf (`00battle.bin` entry `re_gameover-0a`, docs/summons.md "WP-RV2") through
+/// `FUN_001ad378` starts the event of kind 0xf (`00battle.bin` entry `re_gameover-0a`, docs/systems/drive-limits-summons/summons-objects-1.md "WP-RV2") through
 /// `FUN_00195ae0`. Step 2 of `FUN_001ad9a0` waits while that event object lives (`FUN_00196418`: `DAT_0035e3a4` is set) and until the
 /// screen fade object `0x356b30` reaches state 4 (`+0xfc == 4`, the finished fade-out). The event's command 0x12 starts that fade
 /// at event frame 0xb (game tick 22, the event frame being half the tick counter) with length 0x32, which `FUN_0014a710` doubles
@@ -78,11 +78,11 @@ pub const SNAPSHOT_PROGRAM_LIMIT: u8 = 0x33;
 /// words `0x35feb8` / `0x35fec0`, which are clear unless an older Mickey object or revive object still lives; the app reads
 /// the file at once, so none of those adds time. 22 + 100 = 122 ticks.
 pub const OPEN_AFTER_TICKS: f32 = 122.0;
-/// Game ticks per second [inferred: 60, the rate docs/struggle.md already uses for event frames].
+/// Game ticks per second [inferred: 60, the rate docs/systems/world-minigames/struggle.md already uses for event frames].
 pub const TICKS_PER_SECOND: f32 = 60.0;
 /// Seconds Sora lies down before the list opens for type 1 (`FUN_001ad868`, a manager that ended by itself). That type starts
 /// no event (`FUN_001ad378` is called with the object 0), so step 2 waits for whatever fade the mission's ending left in state 4;
-/// that fade is the event player's (see docs/menus.md 26.8 E): nothing the app runs for a mission ending sets it, so the wait is
+/// that fade is the event player's (see docs/systems/ui/menus-gameover.md 26.8 E): nothing the app runs for a mission ending sets it, so the wait is
 /// kept as before [inferred].
 pub const OPEN_AFTER_TYPE_1: f32 = 1.5;
 
@@ -93,7 +93,7 @@ pub fn open_after(kind: u8) -> f32 {
 /// Alpha, 0 to 1, of the knock-out event's screen fade `secs` after the knock-out, for a game over type. The event (types 0, 2 and 3)
 /// runs `FUN_0014a7c8(0x356b30, 0x32, 1)` at its event frame 0xb (tick 22): the flag 1 makes `FUN_0014a710` colour it white
 /// (`FUN_0014af90(0xff, 0xff, 0xff, 0)`; flag 0 would be black), and `FUN_0014a818` raises the alpha byte linearly to 0x80 (full) over
-/// 100 ticks [the ramp's linearity is inferred], after which the state holds (docs/menus.md 26.8, gap A). Type 1 starts no event.
+/// 100 ticks [the ramp's linearity is inferred], after which the state holds (docs/systems/ui/menus-gameover.md 26.8, gap A). Type 1 starts no event.
 pub fn knockout_fade(kind: u8, secs: f32) -> f32 {
     if kind == 1 {
         return 0.0;
@@ -563,7 +563,7 @@ fn restore_snapshot(go: &GameOver, progress: Option<&mut Progress>, tags: Option
 /// `FUN_001abfe8(8)` (called by `FUN_001cb208` after the body is back): every member's MP charge ends, HP and MP go to their
 /// maximum (`refreshed`). Sora's maximum MP is his live stats' (`Stats::max_mp`); a member's are his own. The members' KO flag
 /// (the actor's dead bit) is not touched: the jump that follows builds them again. `FUN_001b81f8`, the other refresher, clears
-/// the 0x1c bytes at `0x1d5d7c0` (`FUN_001b8218`), the Struggle's score block: the app has no such block to clear (docs/menus.md 26.7).
+/// the 0x1c bytes at `0x1d5d7c0` (`FUN_001b8218`), the Struggle's score block: the app has no such block to clear (docs/systems/ui/menus-gameover.md 26.7).
 fn refresh_party(
     sora: &mut Query<&mut Sora>,
     charge: Option<&mut crate::magic_rules::Charge>,
@@ -701,7 +701,7 @@ fn input(
     if !go.is_open() {
         return;
     }
-    // A menu is a scene of its own: the field stops while it is up (docs/menus.md 1.1).
+    // A menu is a scene of its own: the field stops while it is up (docs/systems/ui/menus-pause.md 1.1).
     pause.menu = true;
     let pressed = |k: KeyCode| keys.just_pressed(k);
     let press = if pressed(KeyCode::ArrowUp) || pressed(KeyCode::KeyW) {
@@ -1048,7 +1048,7 @@ fn exit_dest(j: [u16; 6], cur: (u8, u8, u8), localset: impl Fn(u8, u16) -> Optio
     resolve_jump(&jump, cur, None, localset).map(|d| (d, u32::from(j[5] & 0x3fff)))
 }
 
-/// The game over scene (docs/menus.md 26.6): the model panel that the list shows.
+/// The game over scene (docs/systems/ui/menus-gameover.md 26.6): the model panel that the list shows.
 ///
 /// The original (`SLUS_210.05`): `FUN_001ade58` loads `obj/GAMEOVER.mset` as resource 5000 (`FUN_0016fac8`) and `FUN_001adcf8`
 /// (task step 5) stores the motion `FUN_001add40` picks in the object's word `+0x34`, the second list header word. The first
@@ -1217,7 +1217,7 @@ mod model {
         let over = go.over.as_ref().map(|o| (o.kind, o.phase, o.frames, o.alternate));
         // Only while the list shows: the original frees the model slots the frame the list starts to close (`FUN_00270098` ->
         // `FUN_00270318` -> `FUN_0026faa8` -> `FUN_0023a340`), and the window that is its alpha source stays at the constant full
-        // colour of animation group 0x10 until then (docs/menus.md 26.8 D), so there is no fade.
+        // colour of animation group 0x10 until then (docs/systems/ui/menus-gameover.md 26.8 D), so there is no fade.
         let kind = over.filter(|o| model_stands(o.1) && !o.3).map(|o| o.0);
         let motion = kind.and_then(set_index).and_then(|s| go.stage.motions[s - 0xfc].clone());
         let want = motion.is_some() && go.stage.node.is_some() && std::env::var_os("KH2_NO_GAMEOVER_SCENE").is_none();

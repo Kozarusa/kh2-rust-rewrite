@@ -21,7 +21,7 @@ pub enum Wrap {
 ///   texels from FIX, repeated. Other masks (none in the files checked) are kept as plain REPEAT.
 ///
 /// Texture atlases use these modes to pack several images (each with its own CLUT) into one GS
-/// page; sampling the whole page instead shows the neighbours in the wrong palette (docs/render.md).
+/// page; sampling the whole page instead shows the neighbours in the wrong palette (docs/systems/foundations/render.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Axis {
     pub start: u32,

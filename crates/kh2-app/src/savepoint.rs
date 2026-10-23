@@ -1,4 +1,4 @@
-//! Save points and world points (WP-E4, docs/events.md section 4).
+//! Save points and world points (WP-E4, docs/systems/events-movies/npc-savepoints.md section 4).
 //!
 //! What the game does (`SLUS_210.05`):
 //! - `FUN_0016e8c0` makes an object of `00objentry` type 7 (`WORLD_POINT` 569, `SAVE_POINT` 570) with
@@ -29,7 +29,7 @@
 //!   the members' method +0x88 (`FUN_00176758`), byte 0x33e86e = the point's spawn word +0x20
 //!   (`FUN_0016b940(point, 1)`), bit 0 of 0x33febc = the player is of objentry kind 0xe, then
 //!   `FUN_0024f0b8(1, 0)` for the world point and `FUN_0024f0b8(1, 2)` for the save point: menu kind 1
-//!   (scene 3, `FUN_00255598`, task 0x2556f0, docs/menus.md 18.5): the points' own copy of the
+//!   (scene 3, `FUN_00255598`, task 0x2556f0, docs/systems/ui/menus-save.md 18.5): the points' own copy of the
 //!   file screens (same memory card driver, same `save.2ld` groups), not kind 7. `menu_save.rs`
 //!   serves it (`SaveMenu::request_point`): one "Save" row in mode 2, a second row in mode 0.
 //!

@@ -1,4 +1,4 @@
-//! Names and signatures of the host functions that have been analysed (docs/bdx.md lists them with their
+//! Names and signatures of the host functions that have been analysed (docs/systems/script-host/contract.md lists them with their
 //! addresses), and names of the events the game raises. Other functions keep their numbers.
 //!
 //! A host function is `group.index`. `kinds` has one letter per argument word:
@@ -285,7 +285,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(1, 345, "offer_command_ret", "iiOi", 'h', 0x1735c8, "as offer_command, returning the slot entry (0 when refused); no script on the disc calls it"),
     f(1, 350, "gflags_set_100000", "", '-', 0x173b88, "set bit 20 of the global flag word at 0x35d268"),
     f(1, 351, "gflags_clear_100000", "", '-', 0x173ba0, "clear bit 20 of the global flag word at 0x35d268"),
-    f(2, 2, "react_flinch_push", "Opf", '-', 0x18df00, "reaction class 3: flinch plus push on the object (FUN_001850c8; see hit-reaction.md)"),
+    f(2, 2, "react_flinch_push", "Opf", '-', 0x18df00, "reaction class 3: flinch plus push on the object (FUN_001850c8; see docs/systems/combat-effects/hit-reaction.md)"),
     f(2, 3, "react_push", "Opf", '-', 0x18df28, "reaction class 1: push only (FUN_00185098, sets flag 1 at +0x18)"),
     f(2, 4, "next_enemy", "p", 'o', 0x18df50, "FUN_00184ac8: the next object of the global object list (linked through +0x8b4, FUN_001b7c88) that has +0x588 bit 0x10 (the enemies), after the one given; 0 starts the walk and ends it"),
     f(2, 5, "hit_stun", "O", 'b', 0x18df80, "bit 9 of the object's status word (+0x160)"),
@@ -364,7 +364,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(7, 19, "ai_retarget", "Oi", 'b', 0x2ef760, "FUN_0010df08(object, flag != 0): the class's target refresh (the chooser of the class table at 0x352d28 / 0x352ce8, Peter Pan's FUN_00119d60) writes the object's target record +0x9f4; true when the target changed (+0xb7c bit 3)"),
     f(7, 24, "ai_b7c_400_clear", "O", '-', 0x2ef848, "FUN_0010f6b8: object +0xb7c bit 0x400 cleared (Peter Pan's attack modes bracket the attack with 7.24 / 7.25)"),
     f(7, 25, "ai_b7c_400_set", "O", '-', 0x2ef868, "FUN_0010f6d0: object +0xb7c bit 0x400 set"),
-    f(10, 1, "ai_walk_to", "Ov", '-', 0x2f6a98, "the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b)"),
+    f(10, 1, "ai_walk_to", "Ov", '-', 0x2f6a98, "the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/systems/drive-limits-summons/contract.md, Status (WP-SUM4b)"),
     f(10, 3, "ai_vcall_28", "O", '-', 0x2f6b28, "the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit)"),
     f(10, 4, "ai_vcall_2c", "O", '-', 0x2f6b58, "the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8)"),
     f(10, 5, "ai_aim_vec", "O", 'v', 0x2f6b88, "Chicken Little's AI +0x40 (FUN_0011a6a0): the aim point the class update keeps (the target record's position, else 200 units in front of the object, FUN_0011a2e8)"),

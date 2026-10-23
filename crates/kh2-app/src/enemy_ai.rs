@@ -14,7 +14,7 @@
 //! reads it) or missing (a logged `unimplemented host call group.index`, once per function).
 //! `KH2_BDXLOG=1` prints mode transitions, state-changing host calls, motion requests, events and
 //! the first use of every function; `KH2_BDXLOG=all` also prints the per-frame queries. See
-//! docs/enemy-ai.md for the mapping and the gaps.
+//! docs/systems/script-host/contract.md for the mapping and the gaps.
 //!
 //! Coordinates. Scripts work in the game's space: centimetres, Y down, Z mirrored against the app's
 //! (the app is the game rotated 180 degrees about X). `enemy_obj::to_game` / `from_game` convert; yaw is
@@ -861,7 +861,7 @@ fn ai_remote(mut table: ResMut<ObjTable>, mut q: Query<(&mut Transform, &mut AiB
 
 /// The frame triggers of type 7 the last tick crossed, as (code, argument) = the record's halfwords `+4` and `+6` (dispatcher
 /// `0x188498` case 7: event 0x11 with them). The motions of an enemy carry one at their first frame (code 2, or 3 on a
-/// motion that should leave the object in the other state), docs/enemies.md "Event 17".
+/// motion that should leave the object in the other state), docs/systems/script-host/enemies-m-ex8-9.md "Event 17".
 fn motion_events(anim: &Animator) -> Vec<(u16, u16)> {
     let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return Vec::new() };
     if anim.frame == anim.prev_frame {

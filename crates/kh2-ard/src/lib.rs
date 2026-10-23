@@ -36,7 +36,7 @@ pub const EVENT_KIND: u16 = 0x16;
 /// opcodes fall to the default case and do nothing).
 pub const OPCODES: u16 = 0x20;
 
-/// The project's name for an area-script opcode (what FUN_00180b48 does with it; docs/events.md
+/// The project's name for an area-script opcode (what FUN_00180b48 does with it; docs/systems/core-runtime/areas.md
 /// section 1). Names are descriptive, not the game's.
 pub fn opcode_name(op: u16) -> &'static str {
     match op {
@@ -200,7 +200,7 @@ impl Entity {
     }
 
     /// The halfword +0x2c of the spawn record: the command a reaction part with id 0x83 offers
-    /// (`FUN_0019cb70`; docs/limits-reactions.md).
+    /// (`FUN_0019cb70`; docs/systems/drive-limits-summons/contract.md).
     pub fn part_command(&self) -> u16 {
         u16::from_le_bytes([self.raw[0x2c], self.raw[0x2d]])
     }
@@ -226,7 +226,7 @@ pub struct Entity {
 }
 
 /// An event activator (0x40 bytes): a trigger volume of a spawn group (FUN_001d8b48 builds it,
-/// FUN_001d8600 reads the fields; docs/events.md section 2).
+/// FUN_001d8600 reads the fields; docs/systems/core-runtime/areas.md section 2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Activator {
     /// +0: 0 box, 1 cylinder (elliptic in x/z), 2 the third shape (FUN_001d8b48).
@@ -264,7 +264,7 @@ pub struct Signal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     /// +0 (the game reads the low byte, FUN_00198750 / FUN_00198b30): what the group is (1 exit,
-    /// 2 battle, ... docs/events.md section 2).
+    /// 2 battle, ... docs/systems/core-runtime/areas.md section 2).
     pub kind: u16,
     pub id: u16,
     pub entities: Vec<Entity>,
@@ -472,7 +472,7 @@ pub fn parse_event(d: &[u8]) -> Option<Vec<EventCommand>> {
 /// The story-flag side effects of `00progress.bin` (a BAR; its type-2 entries in order are the 19
 /// worlds, FUN_0017fd10 stores them at 0x35ccc0). Setting flag `id` (FUN_0017ff60) sets its bit
 /// and runs the list of the world `id >> 10` at the offset in the halfword `2 * (id & 0x3ff)` of
-/// the world's entry: commands `u8 op, u8 n, n halfwords`, ended by op 0 (docs/events.md
+/// the world's entry: commands `u8 op, u8 n, n halfwords`, ended by op 0 (docs/systems/core-runtime/story-flags.md
 /// section 5).
 pub mod progress {
     /// One side-effect command of a story flag.

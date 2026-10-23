@@ -264,7 +264,7 @@ fn m_ex850_runs_its_modes() {
 }
 
 /// The Struggle opponent N_EX570_BTL (WP-6H) with the spawn parameter 1 of its tt04 groups (b_41: 1,
-/// b_42: 2, b_45: 4, b_51: 5; `docs/enemies.md`).
+/// b_42: 2, b_45: 4, b_51: 5; `docs/systems/script-host/contract.md`).
 #[test]
 fn n_ex570_btl_runs_its_mode_cycle() {
     let Some((mut a, _)) = open() else { return };
@@ -600,7 +600,7 @@ fn goofy_blade_throws_and_takes_back_the_hand_object() {
     eprintln!("blade: callback at frame {called:?}, modes {modes:?}");
 }
 
-/// Stitch's summon script (`obj/N_HB040_BTL`, WP-SUM4, docs/summons.md stage 4) in its `appear_skip` mode on
+/// Stitch's summon script (`obj/N_HB040_BTL`, WP-SUM4, docs/systems/drive-limits-summons/summons-stages.md stage 4) in its `appear_skip` mode on
 /// the mock world, with the group 10 entries it reaches answered as the app's summon host answers them:
 /// every group 10 call is decoded by its `names.rs` signature (none reaches the host as `Unknown`), the
 /// battle start asks the friend AI for slots (10.12), and the main thread offers Ohana (1.165, slot 2,

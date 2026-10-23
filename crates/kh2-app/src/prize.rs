@@ -1,5 +1,5 @@
 //! Prize objects: the HP, MP and drive orbs and the munny that an enemy's drop (host 1.92,
-//! `FUN_001a3cb0`) throws out, their flight, rest, fade and pickup. `docs/prizes.md` has the
+//! `FUN_001a3cb0`) throws out, their flight, rest, fade and pickup. `docs/systems/combat-effects/prizes.md` has the
 //! addresses; every number here is read from the user's `SLUS_210.05` at start (`Consts::from_exe`)
 //! except the code's own immediates (pool size, recheck interval, bounce sound count).
 //!
@@ -640,7 +640,7 @@ pub const OBTAINED_LOG: usize = 32;
 
 /// The obtained log (`FUN_001d0828` -> `FUN_001d0760(0x341518, ..)`): the index word, then 32 records;
 /// each new record overwrites the one at the index, which then moves on modulo 32. It lives in the save
-/// (0x341518 = save + 0x16b8); here it is kept beside `Progress` (docs/prizes.md).
+/// (0x341518 = save + 0x16b8); here it is kept beside `Progress` (docs/systems/combat-effects/prizes.md).
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct ObtainedLog {
     pub next: usize,

@@ -1,4 +1,4 @@
-//! The Save menu (menu kinds 7 and 8, `save.2ld`; docs/menus.md section 18).
+//! The Save menu (menu kinds 7 and 8, `save.2ld`; docs/systems/ui/menus-save.md section 18).
 //!
 //! What the original does (`SLUS_210.05`): the field task `FUN_00138758` (or a save point's prompt, `FUN_001ad9a0`) calls
 //! `FUN_0024f330(request block, party)`, which opens menu kind 7 (`FUN_002540c8` / `FUN_00254210`). Kind 7 is only the
@@ -18,7 +18,7 @@
 //! The menu keeps its own nodes in the shared `MenuScene` and does not touch the camp's page state: while it is open
 //! `Menu.phase` stays `Closed`, `SaveMenu::is_open` holds the field frozen and the pad.
 //!
-//! Save points (WP-E7, docs/menus.md 18.5): the accept of command 55 (`FUN_001784b8`) opens menu kind 1 (scene 3, init
+//! Save points (WP-E7, docs/systems/ui/menus-save.md 18.5): the accept of command 55 (`FUN_001784b8`) opens menu kind 1 (scene 3, init
 //! `FUN_00255598`, task 0x2556f0, page machine `FUN_00255a10`), the points' own copy of the file screens with the same
 //! memory card driver and `save.2ld` groups. Its top page (`FUN_00255c10`) lists the row messages at 0x380d02 + 0x24 *
 //! row ("Save", and a second row only while the kind's mode word 0x36cd28 is not 2: the world point's); after a write
@@ -57,7 +57,7 @@ mod msg {
     pub const OVERWRITING: u32 = 0xa92;
     pub const LV: u32 = 0x39fc;
     pub const MUNNY: u32 = 0x37db;
-    /// Kind 2's own texts (docs/menus.md 18.6): the header "Load" (`FUN_00258e80`: `FUN_0029d1d0(0, 0x8a7f, 0)`), the file
+    /// Kind 2's own texts (docs/systems/ui/menus-save.md 18.6): the header "Load" (`FUN_00258e80`: `FUN_0029d1d0(0, 0x8a7f, 0)`), the file
     /// list's help "Select file to load." (`FUN_0025a858`, page 0xb: `FUN_0025ed20(0x8aa2, 1)`), the loading box (page 0xb's
     /// row choice: `FUN_002bc510(0x8a91, ..)`, page 0xf), the failure box (`FUN_00259e88`: `0x8a8d`, page 6) and an empty
     /// row's "There is no data." (`0x8a9f` [inferred: the row's draw was not read]).
@@ -240,7 +240,7 @@ pub struct Flow {
     pub row: usize,
     /// Menu kind 1: after a write the file list shows again (`FUN_00257880` state 0x2b sets page 0xb).
     pub relist: bool,
-    /// Menu kind 2, the Load screen (docs/menus.md 18.6): no pointer list, no question, a row reads its file.
+    /// Menu kind 2, the Load screen (docs/systems/ui/menus-save.md 18.6): no pointer list, no question, a row reads its file.
     pub load: bool,
     /// The question up is the World Map one (page 0x10), not the overwrite question: its No and cancel return to the top list.
     pub map: bool,
@@ -415,7 +415,7 @@ pub struct SaveMenu {
 pub struct Loaded {
     pub dest: Dest,
     /// HP = the smaller of record `+4` and `+5`, MP = the smaller of `+6` and `+7` (the rule `FUN_0019f920` follows when it
-    /// rebuilds a status from the record, docs/menus.md 26.3); `None` when the record holds no maximum (an empty block).
+    /// rebuilds a status from the record, docs/systems/ui/menus-gameover.md 26.3); `None` when the record holds no maximum (an empty block).
     pub hp_mp: Option<(i32, i32)>,
 }
 
@@ -453,7 +453,7 @@ pub fn load_slot(dir: &std::path::Path, n: usize, live: &Progress) -> Result<(Pr
 }
 
 impl SaveMenu {
-    /// The Load screen (menu kind 2, docs/menus.md 18.6) from the game-over list's "Load Game" row (`FUN_00254a08(2)`).
+    /// The Load screen (menu kind 2, docs/systems/ui/menus-save.md 18.6) from the game-over list's "Load Game" row (`FUN_00254a08(2)`).
     /// False when the menu cannot open (no `save.2ld`, or a menu is up).
     pub fn request_load(&mut self) -> bool {
         if !self.loaded || self.is_open() || self.request.is_some() || self.load_request {
@@ -1286,7 +1286,7 @@ fn tick(
             }
             if save.frames >= FADE_TICKS as u32 {
                 // `FUN_002580e8`: the fader is black; `FUN_00103b18(1)` sets the scene mode word, the menu ends and the field
-                // scene's entry (`FUN_00103b38`, mode 1) calls `FUN_00149df0(-1, 0x80000000)` (docs/worldmap.md section 1).
+                // scene's entry (`FUN_00103b38`, mode 1) calls `FUN_00149df0(-1, 0x80000000)` (docs/systems/worldmap-gummi/worldmap.md section 1).
                 let from = rec.as_deref().map_or(crate::area::TWILIGHT_TOWN, |r| r.world);
                 let table = consts.as_deref().map(|c| c.map_entrances);
                 let dest = Dest::new(WORLD_MAP, 0, table.map_or(0, |t| map_entrance(&t, from)));
@@ -1634,7 +1634,7 @@ mod tests {
         assert!(load_layd(b"not a bar").is_none());
     }
 
-    /// The game-over list's window (`FUN_0029b600(.., 0x10, 0x11)`, docs/menus.md 26.8 D) plays animation group 0x10 of `save.2ld`
+    /// The game-over list's window (`FUN_0029b600(.., 0x10, 0x11)`, docs/systems/ui/menus-gameover.md 26.8 D) plays animation group 0x10 of `save.2ld`
     /// sequence 0 and would switch to group 0x11 only when group 0x10 ends (`FUN_00138aa8`: `FUN_002369e0` is true for a group whose
     /// play count, group record `+4`, is 0). Group 0x10 is one 1500-frame animation at the constant colour 128 and has the count 0,
     /// so it never ends and group 0x11 (8 frames, alpha 128 to 0) never plays (skipped without `KH2_ISO`).

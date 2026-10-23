@@ -7,7 +7,7 @@
 //! 0x1000, the objects step, the life is checked). The draw runs one after drawing; the update adds the step to the
 //! instance's accumulator (+0x98) and runs one more for every `DAT_0037ce98` (2.0) beyond the first, a catch-up
 //! for slow frames. The step is 1.0 per vblank (`FUN_0014cdd0`); the field takes two vblanks a frame (step 2.0,
-//! docs/menus.md 1.6.1). This test counts the frames. Callees that would touch the rest of the engine are hooks:
+//! docs/systems/ui/menus-pause.md 1.6.1). This test counts the frames. Callees that would touch the rest of the engine are hooks:
 //! `FUN_001e61d0` (the programs) and `FUN_001e6240` count their calls, `FUN_001e17f8`, `FUN_001e52d8`, `FUN_001e1230`
 //! and `FUN_001e01a8` do nothing; the instance's draw-list flags (+0x91) are clear, so no packet is built; the
 //! reads of the hardware timer `REG_RCNT0_COUNT` (0x10000000, profiling counters only) are pointed at RAM.

@@ -1,5 +1,5 @@
 //! Read-only tests against the user's executable on the disc (skipped without `KH2_ISO` or
-//! `local/iso.txt`): the menu tables docs/menus.md quotes. Values are read at run time and printed; the
+//! `local/iso.txt`): the menu tables docs/systems/ui/contract.md quotes. Values are read at run time and printed; the
 //! asserts check the structure the doc states (menu kinds, the top-level entries and their pages, the
 //! Config rows and the option-word bits their readers use, the menu sound table). Nothing is copied
 //! into the repository.

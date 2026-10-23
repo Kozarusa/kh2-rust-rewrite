@@ -1,4 +1,4 @@
-//! The text lists of Jiminy's Journal that hang from page 0xc (docs/menus.md 20.11, WP-MN15): the worlds of the Character Files
+//! The text lists of Jiminy's Journal that hang from page 0xc (docs/systems/ui/menus-journal-pages.md 20.11, WP-MN15): the worlds of the Character Files
 //! (page 0xd, `FUN_002a8a38`), the characters of one world (0xe), the Heartless (0x11) and the Nobodies (0x14) (all three
 //! `FUN_002a91a0`) and the Ansem reports (0x17, `FUN_002ac900`).
 //!

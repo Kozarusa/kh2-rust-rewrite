@@ -1,5 +1,5 @@
 //! Read-only tests against the user's executable and menu files (skipped without `KH2_ISO` or `local/iso.txt`): the
-//! tables and groups of the M7 follow-ups (docs/menus.md section 16): the NEW tags, the switch hint, the Help overlay's
+//! tables and groups of the M7 follow-ups (docs/systems/ui/menus-new-help.md section 16): the NEW tags, the switch hint, the Help overlay's
 //! pages and the item pictures. Values are read at run time and printed; nothing is copied into the repository.
 
 use kh2_image::layd;

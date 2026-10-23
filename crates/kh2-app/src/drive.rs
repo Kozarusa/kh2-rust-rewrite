@@ -4,7 +4,7 @@
 //! `rules` holds the game's rules as pure functions over rows read from the disc (tested against the
 //! real rows); the plugin below runs them on Sora through his public fields, because the
 //! controller (`sora.rs`) is owned by another work package. What the controller still has to give
-//! this module is listed in `docs/drive-forms.md` ("Hook points in sora.rs"). Where the game's own
+//! this module is listed in `docs/systems/drive-limits-summons/drive-forms.md` ("Hook points in sora.rs"). Where the game's own
 //! code was not found the module says so (`GAP` comments) instead of guessing.
 
 use std::collections::HashMap;
@@ -551,7 +551,7 @@ pub mod rules {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Summons (docs/summons.md sections 1 and 2). The summon uses the same gauge fields as the form
+    // Summons (docs/systems/drive-limits-summons/summons-spec.md sections 1 and 2). The summon uses the same gauge fields as the form
     // timer (status +0x1b3 segment count, +0x1b4 timer, +0x1b8 its maximum) under mode byte 3.
     // ---------------------------------------------------------------------------------------------
 
@@ -668,7 +668,7 @@ pub mod rules {
     /// change method, vtable 0x35fe18 slot +0x78 = `FUN_001c60f8`): a negative change `d` changes the
     /// timer by `sstm[0x68] x d / max_hp` (the summon's status +4); a positive one does nothing.
     /// Returns the timer change (`None` for no change).
-    // Its caller (the summon object, the summon limit task) comes in a later stage of docs/summons.md.
+    // Its caller (the summon object, the summon limit task) comes in a later stage of docs/systems/drive-limits-summons/contract.md.
     #[allow(dead_code)]
     pub fn summon_damage_to_timer(t: &Tuning, d: i32, summon_max_hp: i32) -> Option<f32> {
         (d < 0).then(|| t.point_units * d as f32 / summon_max_hp as f32)
@@ -681,7 +681,7 @@ pub mod rules {
     }
 
     /// A summon limit's cost (`FUN_001b28a0`: `FUN_001788d8(-Cost)`): the timer loses `Cost x sstm[0x70]`.
-    // Its caller (the summon object, the summon limit task) comes in a later stage of docs/summons.md.
+    // Its caller (the summon object, the summon limit task) comes in a later stage of docs/systems/drive-limits-summons/contract.md.
     #[allow(dead_code)]
     pub fn summon_limit_cost(st: &SummonTuning, cost: u8) -> f32 {
         summon_gauge_change(st, -(cost as f32))
@@ -1865,7 +1865,7 @@ mod tests {
 
     /// The object `FUN_001cdf48` spawns with the charge class (`FUN_001cdb98`) is word 17 of the
     /// merged `memt` record (`FUN_001ce080` reads +0x22): its model is the one whose motion set
-    /// offers 457 (`P_EX200`, docs/limits-reactions.md), not Sora's.
+    /// offers 457 (`P_EX200`, docs/systems/drive-limits-summons/contract.md), not Sora's.
     #[test]
     fn charge_class_object_is_memt_word_17() {
         let Some(r) = rules_from_disc() else { return };
@@ -2151,7 +2151,7 @@ mod tests {
         assert_eq!(take_form_keyblade(items, &mut other, form::VALOR), 0);
     }
 
-    // ---- Summons (docs/summons.md stage 1) ---------------------------------------------------
+    // ---- Summons (docs/systems/drive-limits-summons/summons-stages.md stage 1) ---------------------------------------------------
 
     fn tuning_from_disc() -> Option<(Tuning, SummonTuning, FormLevels, Vec<t::Sumn>)> {
         let mut a = archive()?;

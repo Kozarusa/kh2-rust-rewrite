@@ -1,5 +1,5 @@
 //! The party members' script host: the enemy host (`BevyHost`) plus what only a friend object answers
-//! (docs/party.md section 5, host group 10 at table 0x371810) and the player-type motion remap of the
+//! (docs/systems/party/party-friend-ai.md section 5, host group 10 at table 0x371810) and the player-type motion remap of the
 //! motion requests (FUN_0017e000 -> FUN_0017da30).
 //!
 //! Group 10 entries the members' scripts reach (`kh2 bdx P_EX020` / `P_EX030`: Donald 10.31; Goofy 10.14,
@@ -611,7 +611,7 @@ impl FriendHost<'_, '_> {
             }
             // 6.3 (0x2ee718 -> FUN_002f01a0), 6.4 (0x2ee738 -> FUN_002f0748) and 6.5 (0x2ee750 ->
             // FUN_002f04a8) work on a block in the script's own memory: the runtime does them
-            // (`kh2_bdx::search`, docs/party.md section 17) and asks `target_parts` below. They reach the host
+            // (`kh2_bdx::search`, docs/systems/party/party-specials.md section 17) and asks `target_parts` below. They reach the host
             // only when the executable's numbers (0x383fb4..0x383fbc) could not be read.
             Call::Unknown { group: 6, index: 3..=5, .. } | Call::Func { group: 6, index: 3..=5, .. } => {
                 self.record(c, &Value::None, St::Missing, "the executable's numbers of the target search are not readable: the member's target record stays");

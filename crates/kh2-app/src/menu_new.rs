@@ -1,4 +1,4 @@
-//! The "NEW!" tags of the pause menu (docs/menus.md 16.1).
+//! The "NEW!" tags of the pause menu (docs/systems/ui/menus-new-help.md 16.1).
 //!
 //! What the original does (`SLUS_210.05`): the camp keeps two bit arrays over the item ids (0x220 bits). One is
 //! the **seen** array in the save block (`FUN_002937e8` = save base + 0x31b4); the other is built when the camp

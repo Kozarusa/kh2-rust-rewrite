@@ -1,4 +1,4 @@
-//! The camp's notice page 0x15, "Party Members have been switched." (WP-PT1; docs/party.md section 21, docs/menus.md 19.4).
+//! The camp's notice page 0x15, "Party Members have been switched." (WP-PT1; docs/systems/party/party-built.md section 21, docs/systems/ui/menus-party.md 19.4).
 //!
 //! What the original does (`SLUS_210.05`): a jump record whose word 4 is 0 or more arranges the destination world's party
 //! (`FUN_001a7330`) after keeping the record as it stood in `DAT_01c8bda0`; a word 6 of 1 or 2 then calls

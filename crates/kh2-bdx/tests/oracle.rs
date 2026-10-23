@@ -499,7 +499,7 @@ fn interpreter_matches_the_games() {
     assert!(failures.is_empty(), "{} scripts differ from the game's interpreter", failures.len());
 }
 
-/// The Dusk's reaction commands (event 0xb, `docs/enemy-ai.md`): with command 24 or 69 the handler
+/// The Dusk's reaction commands (event 0xb, `docs/systems/script-host/contract.md`): with command 24 or 69 the handler
 /// sends the message `dusk_surprise` (host 1.90, delay 0) after its helper; with any other id it makes
 /// no call. Compared step for step with the game's interpreter, host calls and arguments included; the
 /// message name argument is the script's own string.
@@ -531,7 +531,7 @@ fn dusk_reaction_command_sends_dusk_surprise_like_the_game() {
     }
 }
 
-/// The path of a reaction command into the Soldier's script (event 0xb, `docs/limits-reactions.md`):
+/// The path of a reaction command into the Soldier's script (event 0xb, `docs/systems/drive-limits-summons/contract.md`):
 /// the handler with the command id 34 (its only branch), with another id (it does nothing), and
 /// the routine the handler starts through host 2.20 (word 0x5a), each compared step for step with the
 /// game's interpreter, host calls and their arguments included. The routine at 0x5a is not reachable

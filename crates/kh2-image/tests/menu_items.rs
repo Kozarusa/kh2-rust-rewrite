@@ -1,5 +1,5 @@
 //! Read-only tests against the user's executable and menu files (skipped without `KH2_ISO` or
-//! `local/iso.txt`): the Items pages' tables (docs/menus.md section 13). Values are read at run time and
+//! `local/iso.txt`): the Items pages' tables (docs/systems/ui/menus-items.md section 13). Values are read at run time and
 //! printed; the asserts check the structure the doc states. Nothing is copied into the repository.
 
 use kh2_image::layd;
@@ -102,7 +102,7 @@ fn item_page_tables_have_the_documented_shape() {
     println!("filter tab messages: {class:?}");
 }
 
-/// The Customize page's tables (docs/menus.md section 14): the row kinds, their groups and messages.
+/// The Customize page's tables (docs/systems/ui/menus-customize.md section 14): the row kinds, their groups and messages.
 #[test]
 fn customize_tables_have_the_documented_shape() {
     let Some((mut a, exe)) = open() else { return };

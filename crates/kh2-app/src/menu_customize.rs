@@ -1,4 +1,4 @@
-//! The pause menu's Customize pages, stage M3 (docs/menus.md 2.4 and section 14): page 0x19 the character list
+//! The pause menu's Customize pages, stage M3 (docs/systems/ui/menus-pause.md 2.4 and docs/systems/ui/menus-customize.md section 14): page 0x19 the character list
 //! (`FUN_002707f8`), page 0x1a Sora's settings (`FUN_00271078`, built by `FUN_00270ae0`), the sub pages 0x1d (the
 //! command a shortcut takes), 0x1e (a spell's MP Charge switch), 0x1f (an item's Auto-Reload) and 0x1c (the
 //! question before Auto-Reload goes off) (`FUN_00272018`).
@@ -217,7 +217,7 @@ pub fn candidates(order: &[ItemRow], exe: &ExeTables, count: &dyn Fn(u16) -> u8)
 
 // --- the page machine ---------------------------------------------------------------------------------
 
-/// The list results of docs/menus.md 1.7 that the Customize pages use.
+/// The list results of docs/systems/ui/menus-pause.md 1.7 that the Customize pages use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Up { fresh: bool },
@@ -666,7 +666,7 @@ mod at {
     pub const INFO_PITCH: f32 = 24.0;
 }
 
-/// The executable's tables the pages read (docs/menus.md section 14).
+/// The executable's tables the pages read (docs/systems/ui/menus-customize.md section 14).
 #[derive(Clone, Debug, Default)]
 pub struct CustomizeTables {
     /// 0x381d40 and 0x381d48: the row kinds of the leader and of the companions.

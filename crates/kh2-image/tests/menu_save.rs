@@ -1,5 +1,5 @@
 //! Read-only tests against the user's disc (skipped without `KH2_ISO`): `menu/us/save.2ld`, the picture file of the
-//! save menu (docs/menus.md section 18). The tests print every layer, layout and animation group of the three
+//! save menu (docs/systems/ui/menus-save.md section 18). The tests print every layer, layout and animation group of the three
 //! embedded sequences and check the numbers the doc quotes. `KH2_SAVE_DUMP=<dir>` also rasterises every group at
 //! its last frame to `<dir>/s<seq>_g<group>.png` (game art: the directory must lie outside the repository).
 

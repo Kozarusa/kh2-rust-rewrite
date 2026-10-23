@@ -1,7 +1,7 @@
-//! The pause (camp) menu, stage M1: open, close, the top page and the transition (docs/menus.md).
+//! The pause (camp) menu, stage M1: open, close, the top page and the transition (docs/systems/ui/contract.md).
 //!
 //! What the original does (`SLUS_210.05`): Start opens menu kind 0 as a game scene (`FUN_00138758`
-//! gate, `FUN_0024f0b8`, docs/menus.md 1.1), the field is stopped, the camp task (`FUN_00250590`)
+//! gate, `FUN_0024f0b8`, docs/systems/ui/menus-pause.md 1.1), the field is stopped, the camp task (`FUN_00250590`)
 //! plays the open sound (`FUN_0023e738(0xb, 1)`) and runs the page handler of the current page
 //! every frame. Page 0 is the list of 2.1; its rows come from the executable's entry table and
 //! its flags (`menu_pages`). A cancel on page 0 or Start closes the menu.
@@ -11,7 +11,7 @@
 //! before the game's own readers and clears them), and the menu draws on a camera of its own
 //! (`menu_gfx`). The music keeps playing, as the original's does.
 //!
-//! From the footage (docs/menus.md 1.6, clip 10): the open dims the whole picture, field and HUD, to
+//! From the footage (docs/systems/ui/menus-pause.md 1.6, clip 10): the open dims the whole picture, field and HUD, to
 //! about 30 % brightness in one frame; the close brings it back linearly over 14 frames.
 
 use bevy::prelude::*;
@@ -44,7 +44,7 @@ pub mod new_tags;
 // The Help overlay (page 0x25, stage M7).
 #[path = "menu_help.rs"]
 pub mod help;
-// The PAUSE band of the combat pause (docs/menus.md 1.8).
+// The PAUSE band of the combat pause (docs/systems/ui/menus-pause.md 1.8).
 #[path = "menu_pause.rs"]
 pub mod pause_band;
 // The item pictures (stage M7).
@@ -53,10 +53,10 @@ pub mod pictures;
 // The 3D party preview of the top page (WP-MN1).
 #[path = "menu_preview.rs"]
 pub mod preview;
-// The Save menu (kinds 7 and 8, docs/menus.md 18).
+// The Save menu (kinds 7 and 8, docs/systems/ui/menus-save.md 18).
 #[path = "menu_save.rs"]
 pub mod save;
-// The Party page (pages 0x14 and 0x16, docs/menus.md 19, WP-MN7).
+// The Party page (pages 0x14 and 0x16, docs/systems/ui/menus-party.md 19, WP-MN7).
 #[path = "menu_party.rs"]
 pub mod party_page;
 
@@ -75,7 +75,7 @@ impl Plugin for MenuPlugin {
 }
 
 /// `KH2_PAUSELOG=1`: one line every 30 frames with the frozen state and the positions that must stand still while
-/// the simulation is paused: Sora, the first enemy (by name) and the camera (the proof of docs/menus.md 1.8).
+/// the simulation is paused: Sora, the first enemy (by name) and the camera (the proof of docs/systems/ui/menus-pause.md 1.8).
 fn pause_log(
     pause: Res<Pause>,
     menu: Res<Menu>,
@@ -118,7 +118,7 @@ pub enum Phase {
 pub const CLOSE_FRAMES: u32 = 14;
 /// Brightness of the dimmed picture (clip 10 frame 22: the mean drops to about 30 %).
 pub const DIM_BRIGHTNESS: f32 = 0.3;
-/// The menu's sequences step one frame per 60 Hz tick (docs/menus.md 1.6.1): the frame step 0x2378a0 adds
+/// The menu's sequences step one frame per 60 Hz tick (docs/systems/ui/menus-pause.md 1.6.1): the frame step 0x2378a0 adds
 /// `DAT_00356f44 * object +0x44`; +0x44 is 1.0 for every 2D object (`FUN_002341e8` / `FUN_00236650` write
 /// 0x37f3c8 / 0x37f404 = 1.0, no menu code writes it), and `DAT_00356f44` is the vblank count of the frame
 /// (`FUN_0014cdd0`), one per frame while a menu scene runs (`FUN_0024ef30` -> `FUN_00239e78` sets the
@@ -240,7 +240,7 @@ struct Nodes {
     cards: Vec<usize>,
 }
 
-/// A screen change that one page module asks another for: the list result -5 (docs/menus.md 1.7, 16.2) on the
+/// A screen change that one page module asks another for: the list result -5 (docs/systems/ui/menus-pause.md 1.7, docs/systems/ui/menus-new-help.md 16.2) on the
 /// Items pages and the Abilities pages. `second` is the second level (page 2 and page 0x10, the character's own
 /// lists) as opposed to the first (page 1 and page 0xf, the character rows).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -526,7 +526,7 @@ pub(crate) fn input(
                 // `KH2_NO_PAUSE_BAND=1` (harness aid): the menu opens even in combat.
                 let in_combat = battle.as_ref().is_some_and(|b| b.active()) && std::env::var_os("KH2_NO_PAUSE_BAND").is_none();
                 if free && in_combat && band.is_ready() {
-                    // In combat the button shows the PAUSE band, not the menu (docs/menus.md 1.8 [inferred rule]).
+                    // In combat the button shows the PAUSE band, not the menu (docs/systems/ui/menus-pause.md 1.8 [inferred rule]).
                     pause_band::open(&band, &mut scene, &mut pause);
                     info!("menu: pause band (battle flag set)");
                 } else if free {
@@ -608,10 +608,10 @@ pub(crate) fn input(
 }
 
 /// System sounds of the menu: entries of the boot bank `se/se000.seb` (game bank 0), indices from
-/// the executable's tables (docs/menus.md 1.7: kind -> id through 0x36cb48 and 0x37f654: cursor 1,
+/// the executable's tables (docs/systems/ui/menus-pause.md 1.7: kind -> id through 0x36cb48 and 0x37f654: cursor 1,
 /// confirm 2, cancel 4, refused 5, close 2, open 3). `FUN_002be49c(2, id, ...)`: the 2 is the driver
 /// SLOT that holds `se000.seb` (`FUN_002c0eb0` loads it, `FUN_002c0da8` names slot 2 bank 0), the
-/// sound is entry `id` of it (docs/audio.md "System sounds"; WP-SE2 corrects the earlier "bank 2").
+/// sound is entry `id` of it (docs/systems/audio/audio.md "System sounds"; WP-SE2 corrects the earlier "bank 2").
 pub mod menu_sound {
     use bevy::prelude::*;
 
@@ -1114,7 +1114,7 @@ mod tests {
         assert!(!start_locked(Some(&crate::struggle::Mission::default())));
     }
 
-    /// The menu's sequence step (docs/menus.md 1.6.1): one frame per 60 Hz tick. Checked against the executable
+    /// The menu's sequence step (docs/systems/ui/menus-pause.md 1.6.1): one frame per 60 Hz tick. Checked against the executable
     /// (skipped without `KH2_ISO`): the 2D objects' speed +0x44 starts at 0x37f3c8 / 0x37f404 = 1.0 and one vblank adds
     /// 0x379170 = 1.0 to `DAT_00356f44`.
     #[test]

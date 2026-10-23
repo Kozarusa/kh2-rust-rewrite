@@ -1,4 +1,4 @@
-//! The limit BAR's own script (type 3 entry of `limit/us/<file>`), run as a BDX thread. See docs/limits-reactions.md "Limit script".
+//! The limit BAR's own script (type 3 entry of `limit/us/<file>`), run as a BDX thread. See docs/systems/drive-limits-summons/limits.md "Limit script".
 //!
 //! `FUN_001b2e08` looks the entry up (`FUN_001684c0(bar, 3, 0)`), starts a script thread on it (`FUN_0016c9b8`) and sends it event 22
 //! with the limit task as the argument (`limit::start_events`); `FUN_001b28a0`'s first branch sends event 23 with a command id
@@ -327,7 +327,7 @@ fn position_of(who: u32, task: &TaskState) -> [f32; 4] {
     }
 }
 
-/// The answers of the ported calls (addresses in docs/limits-reactions.md "Limit script"); every other call is answered 0.
+/// The answers of the ported calls (addresses in docs/systems/drive-limits-summons/limits.md "Limit script"); every other call is answered 0.
 fn host_answer(c: &Call, task: &mut TaskState) -> Value {
     let on_task = first_arg(c) == TASK;
     // 1.114 / 1.210 (bind_object, 0x171d10 / 0x171d70) reach the host as `FindObject` and write the answer into the script's context.

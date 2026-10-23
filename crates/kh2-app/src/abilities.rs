@@ -6,7 +6,7 @@
 //! and `FUN_001c0f40` applies one; `FUN_001c1340` derives the growth levels. `Block` is that block
 //! and `Block::apply` is `FUN_001c0f40`. Everything is read from the disc: the ability rows (`item`
 //! type 19), the equipment rows (`item_stat`), the step sizes (`sstm`) and the AP curve (`lvup`).
-//! `docs/abilities.md` has the verified facts, the API for `sora.rs` / `drive.rs` and the gaps.
+//! `docs/systems/combat-effects/abilities.md` has the verified facts, the API for `sora.rs` / `drive.rs` and the gaps.
 //!
 //! Environment: `KH2_ABILITIES=bit,bit,...` (ability bits, as the attack table gates them: each is
 //! equipped through the ability row that owns the bit, so `21` really adds a combo hit),
@@ -17,7 +17,7 @@
 //! `sync_controller` whenever the block changes; the drive code sets and clears the form list
 //! and reads `form_drain`; `attacker_bonuses` is the damage routine's use of the boosts.
 
-// The menu queries (`ap_used`, `ap_max`, `equipment_stats`) wait for a menu (docs/abilities.md).
+// The menu queries (`ap_used`, `ap_max`, `equipment_stats`) wait for a menu (docs/systems/combat-effects/abilities.md).
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -580,7 +580,7 @@ pub struct Abilities {
     raw_bits: Vec<u16>,
     pub level: usize,
     block: Block,
-    /// Dodge Roll level, the fifth growth kind (growth slot 4 of the Final Mix game, docs/final-mix.md).
+    /// Dodge Roll level, the fifth growth kind (growth slot 4 of the Final Mix game, docs/systems/foundations/final-mix.md).
     /// The USA ability table has no row for it, so it is not derived from the block: it comes from
     /// `Progress::dodge_roll`. Outside a form only (a form's growth is its own ability [inferred]).
     pub dodge_roll: u8,

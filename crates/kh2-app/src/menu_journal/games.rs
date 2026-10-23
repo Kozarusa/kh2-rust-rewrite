@@ -1,4 +1,4 @@
-//! The Quests page (9) and the Minigames page (10) of Jiminy's Journal (docs/menus.md 20.10, WP-MN14).
+//! The Quests page (9) and the Minigames page (10) of Jiminy's Journal (docs/systems/ui/menus-journal-pages.md 20.10, WP-MN14).
 //!
 //! Both pages are a list of up to ten rows with a scroll bar. The quest list (`FUN_002b6478`) is built from `jiminy.bar`
 //! entry 8 ("ques", 0x10-byte records), the minigame list (`FUN_002b5130`) from entry 7 ("mini", 8-byte records). Records are
@@ -234,7 +234,7 @@ pub fn positions(n: usize) -> usize {
 }
 
 /// A minigame row's value text as the pieces `FUN_002b5698` joins for a language other than the one `FUN_00105cd8` answers 1 for
-/// (taken to be Japanese, docs/hud.md; the USA disc's value is the other branch): state 0 and 1 the message 0x4b71; state 4 the
+/// (taken to be Japanese, docs/systems/ui/contract.md; the USA disc's value is the other branch): state 0 and 1 the message 0x4b71; state 4 the
 /// unit message and the time `%02d'%02d"%02d` of minutes, seconds and hundredths; state 2 the message 0x4b80 and then the score
 /// as `%d`; otherwise the score and then the unit message.
 #[derive(Clone, Debug, PartialEq, Eq)]

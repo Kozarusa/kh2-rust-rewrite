@@ -1,4 +1,4 @@
-//! The participants' motions in a limit (WP-LS2c): host 2.47 of the limit script. See docs/limits-reactions.md "Limit visuals (WP-LS2c)".
+//! The participants' motions in a limit (WP-LS2c): host 2.47 of the limit script. See docs/systems/drive-limits-summons/limits.md "Limit visuals (WP-LS2c)".
 //!
 //! The limit BAR (`limit/us/<file>`) holds an entry of kind 0x14 named `LIMI`. It is a BAR of 259 entries in the layout of a motion
 //! set's paired entries (`player_reaction::paired_entries`): the last seven (index 252 to 258) are kind 20 sets (`A910` to `A915`), each a

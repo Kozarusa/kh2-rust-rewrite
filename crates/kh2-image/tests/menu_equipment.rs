@@ -1,5 +1,5 @@
 //! Read-only tests against the user's executable and menu files (skipped without `KH2_ISO` or
-//! `local/iso.txt`): the Equipment pages' tables (docs/menus.md section 15). Values are read at run time and
+//! `local/iso.txt`): the Equipment pages' tables (docs/systems/ui/menus-equipment.md section 15). Values are read at run time and
 //! printed; the asserts check the structure the doc states. Nothing is copied into the repository.
 
 use kh2_image::layd;

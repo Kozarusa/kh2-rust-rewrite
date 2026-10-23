@@ -1,4 +1,4 @@
-//! The moogle page (0x1f) of Jiminy's Journal (docs/menus.md 20.11, WP-MN15): `FUN_002b3d80` builds it, `FUN_002b4170` fills the (up to)
+//! The moogle page (0x1f) of Jiminy's Journal (docs/systems/ui/menus-journal-pages.md 20.11, WP-MN15): `FUN_002b3d80` builds it, `FUN_002b4170` fills the (up to)
 //! four rows, `FUN_002b3f10` is its handler. It summarises the synthesis record of the save (`Moogle`, save `+0x3728`): the moogle's level and
 //! how many materials, collection rewards and creations the player has.
 //!

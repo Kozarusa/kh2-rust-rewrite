@@ -1,7 +1,7 @@
 //! Limits: the data rows, the conditions the game tests before a limit command is offered and run,
-//! and as much of the activation as is possible without companions. See docs/limits-reactions.md.
+//! and as much of the activation as is possible without companions. See docs/systems/drive-limits-summons/contract.md.
 //!
-//! Game rules ported (addresses in `SLUS_210.05`; the notes in docs/player-data.md describe the rest):
+//! Game rules ported (addresses in `SLUS_210.05`; the notes in docs/systems/combat-effects/player-data.md describe the rest):
 //! - Row usable (FUN_001d1ce0): the row's world is 0 or the current world; the player's command
 //!   lock bit is clear (`Flags` of the player's status, +0x8 & 0x20); each non-zero member byte among
 //!   `Character`, `Summon`, `Group` is a party member that is present and not downed (FUN_00175ba0 +
@@ -169,7 +169,7 @@ pub fn available(r: &LimitRow, p: &Party) -> Result<(), Refusal> {
 
 /// The MP a normal limit needs and spends. Every normal limit's `Cost` byte on this disc is 255.
 /// Read literally (FUN_001b3e38 compares the byte, FUN_001b9ff0 only replaces it in a special
-/// battle) no MP value reaches it, so the notes in docs/player-data.md call it "all MP". The app
+/// battle) no MP value reaches it, so the notes in docs/systems/combat-effects/player-data.md call it "all MP". The app
 /// follows that reading [inferred]: any MP is enough and the limit spends all of it. Whether the
 /// game's MP unit makes 255 reachable was not checked (the MP block at status +0x180 was not traced).
 pub fn mp_needed(r: &LimitRow) -> i32 {

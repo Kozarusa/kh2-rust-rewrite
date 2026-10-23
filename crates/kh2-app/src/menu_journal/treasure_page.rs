@@ -1,4 +1,4 @@
-//! The Treasures (7) and Maps (8) pages' objects and redraw (docs/menus.md 20.9, WP-MN12): `FUN_002afca0` builds them,
+//! The Treasures (7) and Maps (8) pages' objects and redraw (docs/systems/ui/menus-journal.md 20.9, WP-MN12): `FUN_002afca0` builds them,
 //! `FUN_002b0e78` makes the objects, `FUN_002b0678` / `FUN_002b09e8` / `FUN_002b0cc8` redraw rows, cells and the info text,
 //! `FUN_002b1890` moves the cursor. The layout and the cursor rules are in `lists.rs`.
 

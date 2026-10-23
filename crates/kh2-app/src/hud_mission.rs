@@ -469,7 +469,7 @@ pub fn update(disc: Res<Disc>, time: Res<Time>, pause: Res<crate::schedule::Paus
         }
         let _ = c.file;
     }
-    // Widescreen anchoring (the user's rule, docs/hud.md): an element left of the centre keeps its distance
+    // Widescreen anchoring (the user's rule, docs/systems/ui/contract.md): an element left of the centre keeps its distance
     // from the left edge, right of it from the right edge.
     let groups: Vec<(Vec<usize>, f32)> = hud
         .counters

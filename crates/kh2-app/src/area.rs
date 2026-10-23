@@ -1,4 +1,4 @@
-//! The area record and the area-script run (WP-E1, docs/events.md sections 0 to 2).
+//! The area record and the area-script run (WP-E1, docs/systems/core-runtime/areas.md sections 0 to 2).
 //!
 //! The game keeps the current place in six bytes at `0x33e830`: world, area, entrance and the
 //! three program ids of the `map`, `btl` and `evt` scripts (`FUN_00104bd0` writes them when an
@@ -104,11 +104,11 @@ pub fn area_number(name: &str) -> Option<u8> {
 /// Battle manager type of the map's `WORLDMAP` manager (opcode 0x15, argument 0).
 pub const WORLDMAP_MANAGER: u32 = 0xc;
 
-/// World byte of the world map (area `wm00`, docs/worldmap.md section 2).
+/// World byte of the world map (area `wm00`, docs/systems/worldmap-gummi/worldmap.md section 2).
 pub const WORLD_MAP: u8 = 0xf;
 
 /// The two-letter area-file prefix of each of the 19 worlds, in world-byte order (the game's
-/// prefix table; the same order as the `ftst` colour columns, docs/events.md).
+/// prefix table; the same order as the `ftst` colour columns, docs/systems/core-runtime/contract.md).
 pub const WORLDS: [&str; 19] = [
     "zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh",
 ];
@@ -225,8 +225,8 @@ pub fn run_area_script(
             if let Some((kind, _)) = &script.battle_manager {
                 if *kind == WORLDMAP_MANAGER {
                     // FUN_001d5048 type 0xc: party reset code 1 (FUN_001abfe8) and area camera type 4
-                    // (DAT_0035cd38). The camera has no type 4 behaviour decoded (docs/camera.md) and the
-                    // party reset has no hook yet; neither is applied (docs/worldmap.md W4).
+                    // (DAT_0035cd38). The camera has no type 4 behaviour decoded (docs/systems/player-camera/contract.md) and the
+                    // party reset has no hook yet; neither is applied (docs/systems/worldmap-gummi/contract.md W4).
                     info!("area {loaded}: battle manager type {kind:#x} (WORLDMAP) wants camera type 4 and party reset 1; not applied (gap)");
                 } else {
                     info!("area {loaded}: battle manager type {kind:#x} read but not created");

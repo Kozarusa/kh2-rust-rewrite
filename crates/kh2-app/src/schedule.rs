@@ -54,7 +54,7 @@ pub enum Frame {
 /// `PreUpdate`, before the 60 Hz sets and the `Update` systems of that frame) and clears it when the close has
 /// finished; the combat PAUSE band (`menu_pause`) sets `band`. Music, the HUD and the menu draw on.
 ///
-/// The original stops the field by changing scene to the menu scene (docs/menus.md 1.1: `FUN_00138758` ->
+/// The original stops the field by changing scene to the menu scene (docs/systems/ui/menus-pause.md 1.1: `FUN_00138758` ->
 /// `FUN_0024f0b8` -> `FUN_001033a8`), so the field tasks do not run while a menu is open [V for the camp menu];
 /// the sound driver (the BGM) is not a field task. The app has no scene change: every simulation system waits for
 /// `sim_running` instead.

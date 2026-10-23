@@ -1,4 +1,4 @@
-//! Third-person camera after the original's field camera (model and sources in `docs/camera.md`,
+//! Third-person camera after the original's field camera (model and sources in `docs/systems/player-camera/contract.md`,
 //! math in `camera_rules`). The camera runs on the game's 60 Hz tick right after the simulation, so
 //! it sees Sora exactly as the tick left him. Keys map to the pad's sticks: WASD is the left stick,
 //! the arrow keys are the right stick (left/right turn the camera, up/down zoom), C resets the
@@ -273,7 +273,7 @@ fn gather_input(
     // While the look-around runs the player applies no velocity (his method +0x84,
     // `FUN_00179108`, is false in camera mode 1, so `FUN_00174bd8` skips the move): the left
     // stick does not move Sora. The app drops the stick before his tick reads it; what the
-    // original does with the stick's facing and motion requests then is not known (docs/camera.md).
+    // original does with the stick's facing and motion requests then is not known (docs/systems/player-camera/contract.md).
     if cam.single().is_ok_and(|c| c.first_person) {
         pad.dir = Vec3::ZERO;
         pad.stick = 0.0;

@@ -1,4 +1,4 @@
-//! The item pictures of the Items and Equipment pages (docs/menus.md 16.4).
+//! The item pictures of the Items and Equipment pages (docs/systems/ui/menus-new-help.md 16.4).
 //!
 //! What the original does (`SLUS_210.05`): the item window of a list page (`FUN_0029ed50`, built from
 //! `FUN_0026b1c8` on pages 2 and 5 to 9 and `FUN_0025bad0` on page 0xb) also shows the picture of the highlighted

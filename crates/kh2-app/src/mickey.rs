@@ -1,7 +1,7 @@
-//! Mickey's rescue, the part of it the original decides in the game over (docs/menus.md 26.5).
+//! Mickey's rescue, the part of it the original decides in the game over (docs/systems/ui/menus-gameover.md 26.5).
 //!
 //! What the original does (`SLUS_210.05`). Mickey is not a summon and not a script: he is a **player-class object**
-//! (class table 0x360360, base constructor `FUN_00176e00(.., 10, ..)`, the member index 9 of docs/party.md) made by
+//! (class table 0x360360, base constructor `FUN_00176e00(.., 10, ..)`, the member index 9 of docs/systems/party/contract.md) made by
 //! `FUN_001cdf48`, whose only caller is step 7 of the game-over task (`FUN_001ad9a0`). Step 7 is reached from the callback
 //! `0x1adbb8` of the **alternate list** (menu record 10, "I won't give up!" code 9 / "It's all over..." code 8). The
 //! alternate list replaces the normal Continue / Load Game list when the game over is built (`FUN_001ad378`):
@@ -90,7 +90,7 @@ pub const HEAL_SSTM_OFFSET: usize = 0x54;
 /// The HP `FUN_001ce168` adds to Sora through his class slot `+0x78` (`FUN_001792f0` -> `FUN_00186238` -> `FUN_001a0100`, which
 /// holds the sum between the record's minimum and maximum): the maximum HP times the share, cut to a whole number.
 /// The rule is the original's; the port does not call it while [`RESCUE_PORTED`] is false (the trigger that makes Mickey use
-/// the item is not traced, docs/menus.md 26.5).
+/// the item is not traced, docs/systems/ui/menus-gameover.md 26.5).
 #[allow(dead_code)] // kept for the untraced rescue trigger (RESCUE_PORTED is false)
 pub fn heal_amount(max_hp: i32, share: f32) -> i32 {
     (max_hp as f32 * share) as i32

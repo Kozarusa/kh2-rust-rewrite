@@ -1,5 +1,5 @@
 //! Developer tool: which scripts handle which reaction commands. For every BDX on the disc that has an
-//! event 11 handler (the script event a reaction command is delivered as, `docs/limits-reactions.md`)
+//! event 11 handler (the script event a reaction command is delivered as, `docs/systems/drive-limits-summons/contract.md`)
 //! prints the command ids the handler compares its second argument with (a constant pushed in front of
 //! a subtraction, as the Soldier's handler does with 34) and the ids the script offers itself through
 //! host 1.165 / 1.237 / 1.325. Needs the ISO (KH2_ISO or local/iso.txt) and the file-name list

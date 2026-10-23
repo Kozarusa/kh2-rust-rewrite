@@ -15,8 +15,7 @@ Every difference is marked:
 
 Tests (all read-only, they skip unless both images are configured):
 ```
-$env:KH2_ISO    = 'C:\Users\KoZa\Documents\AGENTS\ClaudeShit\Kingdom Hearts II (USA).iso'
-$env:KH2_ISO_FM = 'C:\Users\KoZa\Documents\ChatGPT\Kingdom Hearts II - Final Mix (Japan).iso'
+. .\tools\env.ps1; Use-Machine KH2_ISO,KH2_ISO_FM    # both images from local/machine.ps1
 cargo test -p kh2 --test fm_exe  -- --nocapture --test-threads 1
 cargo test -p kh2 --test fm_disc -- --nocapture --test-threads 1
 ```
@@ -243,7 +242,7 @@ appending (gap).
   0x130ad8 (`kh2 rig-sweep`). Examples from the body match: 0x130ad8 = FM 0x130d28, 0x1ae440 = FM
   0x1afee8, 0x155bf0 = FM 0x1560a8, 0x20ab40 = FM 0x20d528; others changed body (0x1d7cb0 BDX
   interpreter -> FM 0x1da558, 0x1a6ff0, 0x1c77a8, 0x21a660) and would need their own check.
-* `local/tools/mips_scan.py` reads `..\kh2_ps2\input\SLUS_210.05` only.
+* `tools/mips_scan.py` reads `$KH2_DECOMP\input\SLUS_210.05` only.
 
 ## 6. Staged plan for a second disc (proposal; nothing of it is implemented)
 1. **Paths**: a second image path (`KH2_ISO_FM`, used by these tests), opened only through

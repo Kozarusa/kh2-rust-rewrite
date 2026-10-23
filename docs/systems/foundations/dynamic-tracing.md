@@ -1,6 +1,6 @@
 # Dynamic tracing in PCSX2 (WP-DYN1)
 
-What the static scan (`local/tools/mips_scan.py`) cannot see, the running original shows: a write watchpoint on the field names the writing
+What the static scan (`tools/mips_scan.py`) cannot see, the running original shows: a write watchpoint on the field names the writing
 function at once. This note is the method, then one section per target with the address, the run that showed it and what the app does with it.
 No game data is in this file: only structure, addresses and the small rule constants the code needs. Everything is [V] (read in a run, run
 described) unless marked [inferred]. "Run" means the user's USA disc in the patched PCSX2 of `local/tools/pcsx2-mcp` (docs/systems/foundations/pcsx2.md).
@@ -8,7 +8,7 @@ described) unless marked [inferred]. "Run" means the user's USA disc in the patc
 ## Method
 
 1. Start the patched emulator (`local/tools/pcsx2-mcp/PCSX2-MCP-v1.0.0-win64/pcsx2-qt.exe`, not the installed one: they share the data folder) with
-   the USA image and a savestate: `-batch -statefile "<...>.p2s" -- "<iso>"`. The debug server listens on 127.0.0.1:21512 (`local/tools/dbg.py`
+   the USA image and a savestate: `-batch -statefile "<...>.p2s" -- "<iso>"`. The debug server listens on 127.0.0.1:21512 (`tools/dbg.py`
    sends one JSON request per argument; quote carefully in PowerShell, or call `dbg.call` from Python). PINE (`pine.py`) loads and saves states
    (`pine.py load 3`) and reads memory. PINE slot n is the file `.0n.p2s`; slot 0 is `.00.p2s`, a file of its own (the numbered ones are the
    user's: never save over them).
@@ -143,4 +143,4 @@ so nothing here says "who writes"). Each result below is one read, not reproduce
 - **+0x570 link and M_EX950**: not reachable: all three states have battle flag 0x1c8a7d8 = 0 and no enemy actor (a map and a flight); the M_EX names in RAM are only the executable's name
   table. They need the Dancer's force dance and the M_EX950 fight, i.e. a savestate in those fights.
 - Needs a run (patched emulator with the three states, one at a time): the map camera/view writer, the cursor contact record and the program switch caller of 0x103e20.
-- Input: `local/tools/dbg.py` and the patched build have no pad or input command (searched the script and the executable's strings). The user's PCSX2 controls are gamepad-bound, so keyboard injection is out. For a map or flight run, input would have to be written into the game's pad buffer in EE memory or the game's pad read called by hand (not tried: no emulator was run); the user's bindings and settings stay untouched.
+- Input: `tools/dbg.py` and the patched build have no pad or input command (searched the script and the executable's strings). The user's PCSX2 controls are gamepad-bound, so keyboard injection is out. For a map or flight run, input would have to be written into the game's pad buffer in EE memory or the game's pad read called by hand (not tried: no emulator was run); the user's bindings and settings stay untouched.

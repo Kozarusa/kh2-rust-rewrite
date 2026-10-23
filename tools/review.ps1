@@ -1,7 +1,7 @@
 # review.ps1 -- the orchestrator's mechanical check of a worker branch BEFORE merging it.
 # It replaces judgement with a fixed list. It changes nothing in git.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\review.ps1 -Branch wp/7A -Own 'crates/kh2-app/src/fx.rs,crates/kh2-bdx/**,docs/magic.md' -Tests 'name_one,name_two'
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\review.ps1 -Branch wp/7A -Own 'crates/kh2-app/src/fx.rs,crates/kh2-bdx/**,docs/systems/magic/contract.md' -Tests 'name_one,name_two'
 #
 # Checks, in order (each prints OK or a problem line; the last line is REVIEW: PASS or REVIEW: FAIL):
 #  1. the branch's worktree (if any) has no uncommitted changes;

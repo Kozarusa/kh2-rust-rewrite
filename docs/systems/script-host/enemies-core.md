@@ -134,7 +134,7 @@ special clearing.
   so their enemies appear once Sora is inside the group's box.
 - Areas whose `btl` script loads no group with enemies the app has (tt00, tt02), and `KH2_AREA_WAVES=0`: the app's
   own waves of Shadows around Sora with a Soldier from the second wave on, one 4 s after the last enemy is gone or
-  on F3. These are not from the disc (kept, `local/DEVIATIONS.md`).
+  on F3. These are not from the disc (kept, `agents/DEVIATIONS.md`).
 
 Logs: `area tt04: btl program 0x50 group b_44 (KH2_WAVE_GROUP): 3 enemies at load (FUN_00198750), 4 on demand by
 kind-2 group [8a]`, `area group b_44 kind-2 group 0x8a: Dusk (serial 0x24, wave 1) created; ...`, `... gone; timer

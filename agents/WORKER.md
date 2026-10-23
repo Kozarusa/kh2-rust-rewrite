@@ -14,8 +14,8 @@ screenshots: give EXACT commands (env vars included) and paths for every claim; 
   into your `local\`. (3) First build in the background: `cargo build -p kh2-app --bin kh2-game` (cold 10 to 18 min, longer while others build); read meanwhile.
   (4) Edit loop: `CARGO_INCREMENTAL` may stay unset (RULES B6); the gate runs with it at 0. Never point `CARGO_TARGET_DIR` at another
   checkout's target. (5) Scripts: `powershell -NoProfile -ExecutionPolicy Bypass -File <script>`.
-- Read `docs/METHOD.md`, `docs/research.md`, and what the brief names: the system's contract first, then the detail, and the ledger rows
-  of your cluster.
+- Read `docs/METHOD.md`, `docs/systems/foundations/research.md`, `docs/README.md` (the index of `docs/systems/<system>/`), and what
+  the brief names: the system's `contract.md` first, then only the detail files you need, and the ledger rows of your cluster.
 
 ## 2. Hard rules (beyond RULES)
 1. `CREDITS.md` is CRLF; only append rows. Never commit `sheets/systems.json` (`kh2 validate` rewrites it: `git checkout` it after).

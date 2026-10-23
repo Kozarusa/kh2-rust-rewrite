@@ -53,7 +53,7 @@ the log line stays but names the exact next step. Risk: low.
 
 **W4. The map area loads.** `area.rs` (`area_name` for world 0xf -> `wm00`, prefix table of 19 worlds `WORLDS`), `assets.rs` / `kh2-map` for the 5.6 MB
 map (two large parts, collision, sky, BOB props), the `map` programs (visibility masks), the manager creation (opcode 0x15 with type 0xc: camera type 4
-and party reset 1, `FUN_001d5048`). Risks: the map reader on a file this size (run `kh2` tools only through `local/capped.ps1`), memory and draw cost,
+and party reset 1, `FUN_001d5048`). Risks: the map reader on a file this size (run `kh2` tools only through `tools/capped.ps1`), memory and draw cost,
 BOB prop formats (`BOB` pairs, type 30 empty entries), hiding the party (class of the three friends) while the manager exists [GAP].
 
 **W4 done (WP-WM2).** The map area loads through the ordinary field-area path; nothing else was needed in the map reader.
@@ -178,7 +178,7 @@ Executable: `FUN_00149df0`, `FUN_00149db8` (entrance table 0x3790a8), `FUN_00103
 
 Disc: `kh2 bar ard/wm00.ard`, `kh2 bar msn/us/WORLDMAP.bar`, `kh2 bar 70landing.bar`, `kh2 bar map/us/wm00.map`, `kh2 bar msg/us/wm.bar`,
 `kh2 extract 00progress` entries (BAR of 26 entries: 19 worlds, `dsa`, `wlds`, `epsd`, `dark`, `wldf`, `link`, `wmky`) and `kh2 extract 07localset.bin`, all
-run through `local/capped.ps1 -CapMB 2500`; the decoding was done with throwaway scripts (not committed). Executable searches used `mips_scan.py --jal`,
+run through `tools/capped.ps1 -CapMB 2500`; the decoding was done with throwaway scripts (not committed). Executable searches used `mips_scan.py --jal`,
 `--addr`, `--li`, `--load-off` as listed in section 8.
 
 **WP-DYN2 note (offline read of `KH2_World_Map`, docs/systems/foundations/dynamic-tracing.md section 5).** The state is taken during the load: no cursor object and no prop list exist yet, and the camera object's values are leftovers of the previous scene (identical in the map and the Gummi states). The camera-view source and the +0xb70 record stay open; the Gummi flight is docs/systems/worldmap-gummi/gummi.md.

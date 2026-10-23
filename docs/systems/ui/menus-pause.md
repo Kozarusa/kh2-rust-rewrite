@@ -11,7 +11,7 @@ Marks: **[V]** read in the code or the data (address given) or checked by a disc
 code, no line states it); **[F]** seen in the user's footage (a video frame, described as seen); **[GAP]** not found,
 with what was searched (section 7).
 
-**The footage is the HD remaster, not the PS2 disc.** The clips (`local/VIDEOS.md`: 5, 6, 7 and 10) show Kingdom
+**The footage is the HD remaster, not the PS2 disc.** The clips (`agents/RECIPES.md` R6: 5, 6, 7 and 10) show Kingdom
 Hearts II Final Mix on PC: "Checking PC for save data", a "Y" button prompt where the PS2 game says Triangle, "NEW!" tags,
 a Roxas prologue. The PS2 text on the user's disc differs (for example the save prompts say "memory card (PS2)",
 message 0x37cc). Layout, element names and behaviour are the same family; where the disc and the footage differ the
@@ -26,7 +26,7 @@ disc wins, and the difference is called out.
 - `cargo test -p kh2-image --test menu_tables -- --nocapture`: reads the executable and prints and checks the menu kind
   table (1.2), the top-level entry table with its story-flag conditions and the page each entry opens (2.1), the ten
   Config rows with the option-word bit each row's reader uses (2.8), and the menu sound table (1.7).
-- `local/tools/mips_scan.py` (PLAYBOOK R1b) was used for call sites; the decompiler for the functions that had no
+- `tools/mips_scan.py` (PLAYBOOK R1b) was used for call sites; the decompiler for the functions that had no
   `.c` file (R1a: `DecompileAt.java`; 12 of the menu's functions had to be created that way).
 
 ## 1. Entry, exit, files, input, sound

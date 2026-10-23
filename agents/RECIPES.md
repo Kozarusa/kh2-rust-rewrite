@@ -33,10 +33,10 @@
 
 ## R3. BDX host calls and enemies
 - Host calls: the `match` in `crates/kh2-app/src/enemy_host.rs`; each arm is `imp` (exact), `approx(.., "why")`, `stub(.., "why")` or
-  `missing(.., "why")`; `KH2_BDXLOG=1` prints the per-run table. Names and signatures: `docs/bdx.md` "Named host functions". Object
+  `missing(.., "why")`; `KH2_BDXLOG=1` prints the per-run table. Names and signatures: `docs/systems/script-host/bdx-host-functions.md` "Named host functions". Object
   fields go in `Obj` (`enemy_obj.rs`), one per game field, doc comment with offset and writer. Test with `kh2_bdx::MockHost`
   (`crates/kh2-bdx/tests/disc.rs`) and the oracle (`cargo test -p kh2-bdx --test oracle -- --nocapture` ends "0 failures"). Update
-  `docs/enemy-ai.md` "Host call mapping".
+  `docs/systems/script-host/enemy-ai-host-calls.md` "Host call mapping".
 - New enemy: pick from data (`cargo test -p kh2-ard --test disc -- --nocapture`); add `enemy::Kind` to `enemy::KINDS`; its `enmp` constant
   (host 2.9) from `cargo run -p kh2 -- bdx <model>`; run `KH2_BDXLOG=1 KH2_WAVE_GROUP=<group> target\debug\kh2-game.exe tt04` and
   implement each `missing` call; add it to the oracle list and a mode-cycle test like `dusk_runs_its_mode_cycle`; screenshot and LOOK.
@@ -56,7 +56,7 @@
 ## R5. Tables, HUD, effects, sounds
 - Layouts: `sheets/tables.json` rows generate structs; `cargo run -p kh2 -- table <name> <row>` prints real rows. Values never go in sheets or code.
 - HUD: field `.2dd` groups (kh2-image `Seqd`), text `msg/us/*.bar`, fonts `fontinfo.bar`; modules `hud_*.rs`, draw path `hud_gfx.rs`.
-  Debug: `KH2_HUDLOG`, `KH2_HUDTEST`, `KH2_HUDMENU`, `KH2_HUDTEXT=<hex>`, `KH2_MSG=<hex>[:class]` (docs/hud.md "Debug aids").
+  Debug: `KH2_HUDLOG`, `KH2_HUDTEST`, `KH2_HUDMENU`, `KH2_HUDTEXT=<hex>`, `KH2_MSG=<hex>[:class]` (docs/systems/ui/hud-notes.md "Debug aids").
 - Effects: `fx::StartEffect` (owner's `.pax`/`.apdx`), `fx::StartSystemEffect { id, at }` (`00effect.bar`). Sounds: `audio::PlaySe`
   (`.at(pos)`), voices via `kh2_audio::voice`; `KH2_SOUNDLOG=1`. A wav for the user goes in `local\<wp>-audio\`; say "nobody has listened".
   Loopback recording of what the machine plays: `cargo run -p kh2-looprec --release -- <out.wav> <seconds>`; loudness:

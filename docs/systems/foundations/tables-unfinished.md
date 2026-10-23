@@ -27,7 +27,7 @@ in a global [V]. Readers go through that global, so the readers of a table are t
 | ipic | `FUN_001b03a8` | 0x1d5d640 | `FUN_001b03c0` |
 | shop | `FUN_00265ac0` | 0x36cfe4 | `FUN_00265660`, `FUN_00265688`, `FUN_00265ad0` |
 
-Most keyed tables are searched with `FUN_0030ff40` (binary search: key, base, count, element size, comparator). `local/tools/mips_scan.py
+Most keyed tables are searched with `FUN_0030ff40` (binary search: key, base, count, element size, comparator). `tools/mips_scan.py
 --jal` does not see tail calls (`j`): `FUN_001845b0` is also reached by a `j` at 0x16ef50 (`FUN_0016ef28`) and `FUN_001d0120` (the
 `item_stat` search) by a `j` at 0x1a67e4.
 

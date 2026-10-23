@@ -68,7 +68,7 @@ DEVIATIONS, README, sheets. Keep context lean: read verdicts and report blocks, 
 ## 5. Wrap-up (90% of the 5-hour window, a stopping point, or the user says `WRAP UP`)
 1. Stop dispatching; SendMessage running workers: "Commit what compiles and stop now; report done / not done / last commit." Merge what passes.
 2. Full `tools\accept.ps1 -Out local\accept\<shift>-final`; LOOK at idle-hud, combat-ground, tt04-dusk, magic-fire and every new scenario.
-3. Hygiene (empty except the known `docs/camera.md` hits): `git status --short`;
+3. Hygiene (empty except the known `docs/systems/player-camera/camera.md` hits, if any): `git status --short`;
    `git ls-files | Select-String '\.(png|wav|bin|iso|img|idx|elf|vsb|seb|wd|tm2|mdlx|apdx|pax|mset)$'`;
    `git grep -nE '\b(iVar|uVar|lVar|puVar|piVar|pcVar|bVar|param_)[0-9]+\b' -- .`; `git grep -nE '[A-Z]:\\Users' -- tools agents scenarios`.
 4. `cargo run -p kh2 -- preflight`; `cargo run -p kh2 -- validate; git checkout sheets/systems.json`.

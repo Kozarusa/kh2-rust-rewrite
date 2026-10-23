@@ -234,6 +234,50 @@ impl Config {
     }
 }
 
+/// Copies `state` to PINE slot 0 (`cfg.slot0()`) and writes the sidecar marker `<slot0>.kh2rig` holding the hash of what the rig wrote.
+/// A slot 0 file that exists and does not match its marker (no marker, or another hash) is the user's own: it is moved to
+/// `local/rig/backup/<unix seconds>.00.p2s` first. Returns the backup path when one was made.
+pub fn install_slot0(cfg: &Config, state: &Path) -> Result<Option<PathBuf>, String> {
+    let slot0 = cfg.slot0();
+    let marker = marker_of(&slot0);
+    let mut backup = None;
+    if slot0.is_file() {
+        let old = std::fs::read(&slot0).map_err(|e| format!("{}: {e}", slot0.display()))?;
+        let ours = std::fs::read_to_string(&marker).is_ok_and(|m| m.trim() == format!("{:016x}", fnv1a(&old, FNV_BASIS)));
+        if !ours {
+            let dir = cfg.local.join("rig/backup");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let mut to = dir.join(format!("{stamp}.00.p2s"));
+            for n in 1.. {
+                if !to.exists() {
+                    break;
+                }
+                to = dir.join(format!("{stamp}-{n}.00.p2s"));
+            }
+            // A rename can fail across drives; copy then remove keeps the user's bytes safe in either case.
+            if std::fs::rename(&slot0, &to).is_err() {
+                std::fs::write(&to, &old).map_err(|e| format!("{}: {e}", to.display()))?;
+                std::fs::remove_file(&slot0).map_err(|e| format!("{}: {e}", slot0.display()))?;
+            }
+            backup = Some(to);
+        }
+    }
+    let data = std::fs::read(state).map_err(|e| format!("{}: {e}", state.display()))?;
+    std::fs::write(&slot0, &data).map_err(|e| format!("{}: {e}", slot0.display()))?;
+    std::fs::write(&marker, format!("{:016x}
+", fnv1a(&data, FNV_BASIS))).map_err(|e| format!("{}: {e}", marker.display()))?;
+    Ok(backup)
+}
+
+fn marker_of(slot0: &Path) -> PathBuf {
+    let mut m = slot0.as_os_str().to_owned();
+    m.push(".kh2rig");
+    PathBuf::from(m)
+}
+
+const FNV_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
 // --- the lock ----------------------------------------------------------------------------------------------------------------------
 
 /// `local/pcsx2.lock` held for the life of the guard.
@@ -414,8 +458,7 @@ pub fn run_original(cfg: &Config, sc: &Scenario, values: &Values, pad: Option<&P
     let mut due = dues(sc);
 
     let _lock = Lock::acquire(&cfg.local, &cfg.id, opt.lock_wait)?;
-    // The slot 0 file is the rig's own (the user's states are numbered 01..10).
-    std::fs::copy(&state_path, cfg.slot0()).map_err(|e| format!("{}: {e}", cfg.slot0().display()))?;
+    install_slot0(cfg, &state_path)?;
     let mut emu = Emulator::start(cfg, &cfg.slot0(), opt.unlimited)?;
     let wait = Duration::from_secs(90);
     let mut dbg = retry("debug server", wait, &mut emu, || Debug::connect(DEBUG_PORT))?;
@@ -601,6 +644,38 @@ mod tests {
         assert!(cfg.resolve_state("07").unwrap_err().contains("does not exist"));
         assert!(cfg.resolve_state("nope.p2s").unwrap_err().contains("not found"));
         assert_eq!(cfg.slot0(), ss.join(format!("{GAME_ID}.00.p2s")));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn slot_zero_keeps_the_users_state_and_replaces_the_rigs_own() {
+        let tmp = std::env::temp_dir().join(format!("kh2rig-slot0-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        let (local, ss) = (tmp.join("local"), tmp.join("sstates"));
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&ss).unwrap();
+        let cfg = Config { local: local.clone(), pcsx2: PathBuf::new(), iso: PathBuf::new(), sstates: ss, id: "t".into() };
+        let (a, b) = (tmp.join("a.p2s"), tmp.join("b.p2s"));
+        std::fs::write(&a, b"state a").unwrap();
+        std::fs::write(&b, b"state b").unwrap();
+        // The user's own slot 0 (no marker) is backed up, not overwritten.
+        std::fs::write(cfg.slot0(), b"users own state").unwrap();
+        let bk = install_slot0(&cfg, &a).unwrap().expect("a backup is made");
+        assert!(bk.starts_with(local.join("rig/backup")) && bk.to_string_lossy().ends_with(".00.p2s"));
+        assert_eq!(std::fs::read(&bk).unwrap(), b"users own state");
+        assert_eq!(std::fs::read(cfg.slot0()).unwrap(), b"state a");
+        // The rig's own file (marker matches) is replaced without a backup.
+        assert_eq!(install_slot0(&cfg, &b).unwrap(), None);
+        assert_eq!(std::fs::read(cfg.slot0()).unwrap(), b"state b");
+        // A user save over the rig's file (marker no longer matches) is backed up too, even within the same second.
+        std::fs::write(cfg.slot0(), b"saved later").unwrap();
+        let bk2 = install_slot0(&cfg, &a).unwrap().expect("second backup");
+        assert_ne!(bk, bk2);
+        assert_eq!(std::fs::read(&bk2).unwrap(), b"saved later");
+        assert_eq!(std::fs::read_dir(local.join("rig/backup")).unwrap().count(), 2);
+        // No slot 0 at all: just written.
+        std::fs::remove_file(cfg.slot0()).unwrap();
+        assert_eq!(install_slot0(&cfg, &b).unwrap(), None);
         std::fs::remove_dir_all(&tmp).ok();
     }
 

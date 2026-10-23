@@ -18,6 +18,7 @@ kh2-ee.workspace = true
 kh2-fx.workspace = true
 kh2-audio.workspace = true
 kh2-bdx.workspace = true
+kh2-factory.workspace = true
 glam = "0.32"
 serde_json.workspace = true
 png = "0.17"

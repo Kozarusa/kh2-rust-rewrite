@@ -15,6 +15,7 @@
 !/sheets/
 !/docs/
 !/third_party/
+!/scenarios/
 
 # Inside tracked folders: still never commit binaries or game-derived files.
 *.iso

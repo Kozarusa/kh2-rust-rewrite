@@ -1,0 +1,11 @@
+[package]
+name = "kh2-rig"
+description = "Diff rig: reads PCSX2 save states, turns them into KH2_STATE files, and drives the original game in PCSX2 frame by frame (pad input, value traces) for original-versus-port comparison"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ruzstd = "0.8"
+serde_json.workspace = true
+toml_edit = "0.25"

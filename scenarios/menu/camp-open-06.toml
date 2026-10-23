@@ -1,0 +1,25 @@
+# The pause menu opens and closes (state .06). In the original the menu runs one game frame per vsync with frame step 1.0
+# (local/specs/RIG.md 1.2); the k at which the step becomes 1.0 is the open tick the port's menu must match.
+# Measured in the original (local/rig/camp-open-06, unlimited or normal speed alike): Start injected at k 200 and 202 (the field's last two
+# stops, step 2.0); the step is 1.0 from k 203 (the first menu stop) to 380 and 2.0 again from k 382 (after the closing Start at 360..363).
+# The menu scene, page and cursor addresses are found in RIG-4; until then only the step and the unverified word 0x354f70 are read.
+[scenario]
+name = "camp-open-06"
+state = "06"
+port_area = "tt21"
+pad = "camp-open-06.pad"
+frames = 400
+
+[seeds]
+drive = 1
+auto_limit = 1
+
+# Every stop (the field has one every second vsync, the menu one per vsync): where frame.step turns 1.0 is the open tick.
+[trace]
+every = 1
+values = ["frame.step", "menu.word_354f70"]
+
+[[check]]
+at = [202, 203, 260, 300, 340, 380, 382]
+values = ["frame.step", "menu.word_354f70", "sora.pos"]
+note = "202 last field stop, 203 first menu stop; 260 main menu, 300 Items page, 340 back at the main menu, 382 first stop after the menu closed"

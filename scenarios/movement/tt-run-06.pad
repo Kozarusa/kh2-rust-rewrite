@@ -1,0 +1,7 @@
+# kh2 pad v1   Roxas in the Mansion computer room (state 06): stick up from k 40, right from k 120, still from k 200.
+# k   buttons   lx  ly  rx  ry
+0     -         127 127 127 127
+40    -         127 0   127 127
+120   -         255 127 127 127
+200   -         127 127 127 127
+end 330

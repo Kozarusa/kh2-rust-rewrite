@@ -204,7 +204,7 @@ pub fn friend_rand(n: u32) -> u32 {
 ///
 /// orig 0x10f438
 pub fn friend_roll() -> f32 {
-    finite(below(20001) as f32 * 4.999_999_9e-5)
+    finite(below(20001) as f32 * 5e-5)
 }
 
 #[cfg(test)]

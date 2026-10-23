@@ -6,6 +6,9 @@
 //! game applies to motion roots and object matrices); [`Coct::parse`] returns map-model space.
 //! Checked with `kh2 coct-check`: COCT floors coincide with the render mesh only this way.
 
+pub mod geom;
+pub mod oct;
+
 pub mod flags {
     pub const PARTY_STAND: u32 = 1 << 0;
     pub const ENTITY_FALL_OVERRIDE: u32 = 1 << 1;

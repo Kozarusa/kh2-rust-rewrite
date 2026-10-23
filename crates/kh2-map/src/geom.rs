@@ -1,0 +1,180 @@
+//! Boxes and vector helpers of the collision unit (ledger clusters L1:coct and L1:geom, spec
+//! `docs/systems/core-runtime/collision.md` section 9.6).
+//!
+//! The game computes with the VU0 macro unit: a "vector" is four floats (x, y, z, w) and most
+//! operations run on all four lanes, so the w lane is kept wherever the original stores it. The
+//! dot product idiom of the original is `vmul` followed by two broadcast adds: `(x*x' + y*y') + z*z'`
+//! in that order; the helpers below keep that association (float addition is not associative).
+//! Boxes come in two forms: the float box (min xyz then max xyz) and the quantized box of six
+//! 16-bit integers that the map tree stores (`FUN_00144d68`).
+
+/// A vector register: x, y, z, w.
+pub type V4 = [f32; 4];
+/// A float box: min x, y, z, then max x, y, z.
+pub type FBox = [f32; 6];
+/// A quantized box in the same order.
+pub type QBox = [i16; 6];
+
+/// `vsub` on all four lanes.
+pub fn sub(a: V4, b: V4) -> V4 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]]
+}
+
+/// `vadd` on all four lanes.
+pub fn add(a: V4, b: V4) -> V4 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
+}
+
+/// `vmulbc`: every lane times one scalar.
+pub fn scale(a: V4, s: f32) -> V4 {
+    [a[0] * s, a[1] * s, a[2] * s, a[3] * s]
+}
+
+/// The dot of the first three lanes in the original's order: `(x*x' + y*y') + z*z'`.
+pub fn dot3(a: V4, b: V4) -> f32 {
+    (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
+}
+
+/// `vopmula` followed by `vopmsub`: the cross product `q x e` of the first three lanes (the w lane is not
+/// written by the pair and is returned as 0).
+pub fn cross_qe(q: V4, e: V4) -> V4 {
+    [q[1] * e[2] - e[1] * q[2], q[2] * e[0] - e[2] * q[0], q[0] * e[1] - e[0] * q[1], 0.0]
+}
+
+/// `vnorm` as the original builds it: `v * (1 / sqrt(dot3(v, v)))` on all four lanes, the reciprocal being
+/// the VU divide with the zero divisor clamped to the largest finite float.
+pub fn normalize4(v: V4) -> V4 {
+    let len = dot3(v, v).sqrt();
+    let q = vu_div(1.0, len);
+    scale(v, q)
+}
+
+/// The VU divide: an infinite quotient reads as the largest finite float of its sign (no NaN exists).
+pub fn vu_div(n: f32, d: f32) -> f32 {
+    let q = n / d;
+    if q.is_nan() {
+        return 0.0;
+    }
+    q.clamp(f32::from_bits(0xff7f_ffff), f32::from_bits(0x7f7f_ffff))
+}
+
+/// orig 0x1443a8: a box from six floats.
+pub fn fbox(x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32) -> FBox {
+    [x0, y0, z0, x1, y1, z1]
+}
+
+/// orig 0x1446f8: the box of two corners in either order (per axis the smaller first; the second corner
+/// on a tie).
+pub fn fbox_corners(a: [f32; 3], b: [f32; 3]) -> FBox {
+    let mut o = [0.0; 6];
+    for k in 0..3 {
+        if a[k] < b[k] {
+            o[k] = a[k];
+            o[k + 3] = b[k];
+        } else {
+            o[k] = b[k];
+            o[k + 3] = a[k];
+        }
+    }
+    o
+}
+
+/// orig 0x144778: the union of two float boxes (the second box wins ties).
+pub fn fbox_union(a: &FBox, b: &FBox) -> FBox {
+    let mut o = [0.0; 6];
+    for k in 0..3 {
+        o[k] = if a[k] < b[k] { a[k] } else { b[k] };
+        o[k + 3] = if b[k + 3] < a[k + 3] { a[k + 3] } else { b[k + 3] };
+    }
+    o
+}
+
+/// orig 0x144c28: do two float boxes overlap (closed intervals on all three axes)?
+pub fn fbox_overlap(a: &FBox, b: &FBox) -> bool {
+    b[0] <= a[3] && a[0] <= b[3] && b[1] <= a[4] && a[1] <= b[4] && b[2] <= a[5] && a[2] <= b[5]
+}
+
+/// orig 0x144548: the bounds of a polygon's first `n` (3 or 4) vertices. The three-vertex form and the
+/// four-vertex form of the original are the same min/max walk.
+pub fn fbox_of_polygon(v: &[V4; 4], n: usize) -> FBox {
+    let mut o = [0.0; 6];
+    for k in 0..3 {
+        let (mut lo, mut hi) = (v[0][k], v[0][k]);
+        for p in v.iter().take(n.min(4)).skip(1) {
+            let f = p[k];
+            if f < lo {
+                lo = f;
+            } else if hi < f {
+                hi = f;
+            }
+        }
+        o[k] = lo;
+        o[k + 3] = hi;
+    }
+    o
+}
+
+/// The per-level offsets and scales of the quantized form (the executable's two eight-float tables at
+/// 0x355e60 and 0x355e70; levels 0 to 3 are the ones a collision file's header word +0xc takes).
+const LEVEL_OFFSET: [f32; 4] = [1.0, 10.0, 20.0, 100.0];
+const LEVEL_SCALE: [f32; 4] = [1.0, f32::from_bits(0x3dcc_cccc), f32::from_bits(0x3d4c_cccc), f32::from_bits(0x3c23_d70a)];
+
+/// One coordinate of `fbox_to_qbox`. `upper` selects the max-side clamp; the original clamps each side
+/// only on its own end (a value past the other end wraps when truncated to 16 bits).
+fn quantize(v: f32, level: usize, upper: bool) -> i16 {
+    let v = if level != 0 { v * LEVEL_SCALE[level] } else { v };
+    let r = if upper {
+        if v >= 32768.0 { 32767.0 } else { v }
+    } else if v <= -32768.0 {
+        -32767.0
+    } else {
+        v
+    };
+    (r as i32) as i16
+}
+
+/// orig 0x144d68: the float box to the quantized box at `level` (0 to 3): the minimum corner loses the
+/// level offset, the maximum corner gains it, both are scaled (level 0 is unscaled) and clamped.
+pub fn fbox_to_qbox(b: &FBox, level: usize) -> QBox {
+    let off = LEVEL_OFFSET[level];
+    let mut o = [0i16; 6];
+    for k in 0..3 {
+        let lo = b[k] - off;
+        let hi = b[k + 3] + off;
+        o[k] = quantize(lo, level, false);
+        o[k + 3] = quantize(hi, level, true);
+    }
+    o
+}
+
+/// orig 0x145498: do two quantized boxes overlap (closed intervals)?
+pub fn qbox_overlap(a: &QBox, b: &QBox) -> bool {
+    b[0] <= a[3] && a[0] <= b[3] && b[1] <= a[4] && a[1] <= b[4] && b[2] <= a[5] && a[2] <= b[5]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_keeps_the_original_association() {
+        // (1e8 + 1) - 1e8 loses the 1 in f32, so the order is observable.
+        let a = [1e8, 1.0, -1e8, 0.0];
+        let b = [1.0, 1.0, 1.0, 0.0];
+        assert_eq!(dot3(a, b), 0.0);
+    }
+
+    #[test]
+    fn quantized_boxes_clamp_each_end() {
+        let q = fbox_to_qbox(&[-1.0e6, 0.0, 0.0, 1.0e6, 10.0, 10.0], 0);
+        assert_eq!((q[0], q[3]), (-32767, 32767));
+        assert_eq!((q[1], q[4]), (-1, 11));
+    }
+
+    #[test]
+    fn overlap_is_closed() {
+        assert!(qbox_overlap(&[0, 0, 0, 5, 5, 5], &[5, 5, 5, 9, 9, 9]));
+        assert!(!qbox_overlap(&[0, 0, 0, 5, 5, 5], &[6, 0, 0, 9, 9, 9]));
+        assert!(fbox_overlap(&[0.0; 6], &[0.0; 6]));
+    }
+}

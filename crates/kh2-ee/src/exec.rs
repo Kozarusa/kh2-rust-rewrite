@@ -94,10 +94,10 @@ impl Ee {
                     _ => self.unimpl(w, "regimm"),
                 }
             }
-            0x02 => self.npc_next = Some((pc4 & 0xF000_0000) | ((w & 0x03FF_FFFF) << 2)),
+            0x02 => self.jump_to((pc4 & 0xF000_0000) | ((w & 0x03FF_FFFF) << 2)),
             0x03 => {
                 self.set(31, sx32(self.pc.wrapping_add(8)));
-                self.npc_next = Some((pc4 & 0xF000_0000) | ((w & 0x03FF_FFFF) << 2));
+                self.jump_to((pc4 & 0xF000_0000) | ((w & 0x03FF_FFFF) << 2));
             }
             0x04 => self.branch(a == b, bt, false),
             0x05 => self.branch(a != b, bt, false),
@@ -293,10 +293,10 @@ impl Ee {
             0x04 => self.set(rd, sx32(b32 << (a32 & 31))),
             0x06 => self.set(rd, sx32(b32 >> (a32 & 31))),
             0x07 => self.set(rd, sx32(((b32 as i32) >> (a32 & 31)) as u32)),
-            0x08 => self.npc_next = Some(a32),
+            0x08 => self.jump_to(a32),
             0x09 => {
                 self.set(rd, sx32(self.pc.wrapping_add(8)));
-                self.npc_next = Some(a32);
+                self.jump_to(a32);
             }
             0x0A => {
                 if b == 0 {

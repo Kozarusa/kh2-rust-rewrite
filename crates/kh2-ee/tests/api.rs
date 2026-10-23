@@ -88,3 +88,27 @@ fn watchers_and_probes_on_the_same_page_do_not_disturb_other_addresses() {
     assert_eq!(e.call(BASE, &[], &[], 0x01F0_0000).unwrap(), 3);
     assert_eq!(seen.get(), 1, "only the probed address fires");
 }
+
+/// A hook that calls `ee.call()` whose callee runs a handler that moves the program counter used to
+/// leave the "redirected" flag set, so the outer hook never returned to its caller.
+#[test]
+fn a_nested_call_whose_handler_jumps_does_not_stop_the_outer_hook_from_returning() {
+    let mut e = Ee::new();
+    // main: or s2, ra, zero; jal OUTER; nop; addiu s1, zero, 2; jr s2; nop
+    load(&mut e, BASE, &[0x03E0_9025, 0x0C00_0000 | (BASE + 0x100) >> 2, 0, 0x2411_0002, 0x0240_0008, 0]);
+    // INNER (the nested call's callee): jal LEAF; nop; jr ra; nop
+    load(&mut e, BASE + 0x200, &[0x27BD_FFF0, 0xAFBF_0000, 0x0C00_0000 | (BASE + 0x300) >> 2, 0, 0x8FBF_0000, 0x27BD_0010, JR_RA, 0]);
+    load(&mut e, BASE + 0x300, &[JR_RA, 0]);
+    // LEAF's hook returns by jumping to ra itself (as a kernel stand-in does).
+    e.hooks.insert(BASE + 0x300, |ee: &mut Ee| {
+        let ra = ee.gpr[31] as u32;
+        ee.jump(ra);
+    });
+    e.hooks.insert(BASE + 0x100, |ee: &mut Ee| {
+        ee.call(BASE + 0x200, &[], &[], 0x01EF_0000).expect("nested call");
+        ee.gpr[2] = 99;
+    });
+    let v = e.call(BASE, &[], &[], 0x01F0_0000).expect("the outer hook returned to its caller");
+    assert_eq!(v, 99);
+    assert_eq!(e.gpr[17] as u32, 2, "the code after the hooked call ran");
+}

@@ -13,6 +13,11 @@
 //! - A DMA channel started by writing STR to its CHCR completes at once: STR reads back 0 and the
 //!   channel's D_STAT bit is set. The scratchpad channels (8 and 9) in normal mode really copy;
 //!   chain mode and all other channels move nothing (the data is the job of a real DMA model).
+//! - The IPU runs every command to completion at once: the busy bits (IPU_CMD bit 31, IPU_CTRL bit
+//!   31) read 0, the FIFO counts in IPU_CTRL bits 0-7 read 0 (empty), and writing IPU_CTRL with RST
+//!   (bit 30) resets the unit: RST reads back 0 and IPU_CTRL, IPU_CMD, IPU_BP and IPU_TOP clear
+//!   (EE user's manual, IPU chapter; PCSX2 resets the same registers). Bitstream decoding is not
+//!   modelled, so code that waits for the end of a stream (IPU_CTRL.ECD) spins.
 //! - The VU0/VU1 code and data memories (0x11000000..0x11010000) are plain RAM.
 //!
 //! Sources: the EE user's manual register chapters (timers, DMAC, INTC, IPU, GIF), the GS user's
@@ -35,6 +40,10 @@ const D_STAT: u32 = 0x1000_E010;
 const D_ENABLER: u32 = 0x1000_F520;
 const D_ENABLEW: u32 = 0x1000_F590;
 const GS_CSR: u32 = 0x1200_1000;
+const IPU_CMD: u32 = 0x1000_2000;
+const IPU_CTRL: u32 = 0x1000_2010;
+const IPU_BP: u32 = 0x1000_2020;
+const IPU_TOP: u32 = 0x1000_2030;
 
 /// One logged register write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,7 +166,9 @@ impl Hw {
         if addr == D_ENABLER && let Some(v) = self.regs.get(&D_ENABLEW) {
             return *v;
         }
-        self.peek(addr)
+        let v = self.peek(addr);
+        // Commands complete at once: never busy.
+        if addr == IPU_CMD { v & 0x7FFF_FFFF } else { v }
     }
 
     pub(crate) fn read(&self, addr: u32, out: &mut [u8], steps: u64) {
@@ -254,6 +265,16 @@ impl Hw {
             }
             D_ENABLEW => {
                 self.regs.insert(addr, value);
+            }
+            IPU_CTRL => {
+                if value & (1 << 30) != 0 {
+                    for r in [IPU_CMD, IPU_CTRL, IPU_BP, IPU_TOP] {
+                        self.regs.insert(r, 0);
+                    }
+                } else {
+                    // BUSY, RST and the FIFO counts are not stored.
+                    self.regs.insert(addr, value & !(0xC000_0000 | 0xFF));
+                }
             }
             GS_CSR => {
                 // Bits 0-4 are event flags (write 1 to clear); the identification stays.
@@ -371,6 +392,18 @@ mod tests {
         wr(&mut h, 0x1000_A000, 0x105, 0);
         assert_eq!(rd(&h, 0x1000_A000, 0) & 0x100, 0, "STR reads back clear");
         assert_eq!(rd(&h, D_STAT, 0) & 4, 4, "channel 2 (GIF) status bit");
+    }
+
+    #[test]
+    fn ipu_reset_clears_and_the_unit_is_never_busy() {
+        let mut h = Hw::new();
+        wr(&mut h, IPU_CMD, 0x8000_0001, 0);
+        assert_eq!(rd(&h, IPU_CMD, 0) >> 31, 0, "a command is done as soon as it is written");
+        wr(&mut h, IPU_CTRL, 0x00C0_00FF | 1 << 31, 0);
+        assert_eq!(rd(&h, IPU_CTRL, 0), 0x00C0_0000, "FIFO counts and BUSY are read-only");
+        h.poke(IPU_BP, 0x1234);
+        wr(&mut h, IPU_CTRL, 1 << 30, 0);
+        assert_eq!((rd(&h, IPU_CTRL, 0), rd(&h, IPU_BP, 0), h.peek(IPU_CMD)), (0, 0, 0), "RST resets the unit and clears itself");
     }
 
     #[test]

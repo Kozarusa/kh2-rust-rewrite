@@ -12,7 +12,10 @@
 //! [`Ee::flush_denormals`] is on (off by default: the hardware flushes, but the ports compared
 //! against this interpreter compute in plain `f32`, and the script oracle feeds raw integers
 //! through these instructions), is stored as a signed zero. `vmax`, `vmini`, `vabs`, `vmove`, the conversions and the integer ops leave the MAC and
-//! status flags alone. Denormal operands are not flushed [limitation]. VU0 data memory (4 KB at
+//! status flags alone. The VU has no infinity or NaN: an FMAC operand with exponent 255 reads as
+//! the largest finite value of its sign (PCSX2's documented rule), so `inf * 0` is `max * 0`, a
+//! zero, and no NaN is ever produced; the raw-integer paths of the script oracle can reach this
+//! (a small negative integer such as -1 has exponent 255). Denormal operands are not flushed [limitation]. VU0 data memory (4 KB at
 //! 0x11004000) is what the `vlqi`, `vsqi`, `vlqd`, `vsqd`, `vilwr` and `viswr` instructions
 //! address, one quadword per integer-register unit.
 
@@ -29,6 +32,16 @@ const VU0_DATA: usize = 0x4000;
 enum Target {
     Vf(usize),
     Acc,
+}
+
+/// An FMAC operand: the exponent-255 encodings read as the largest finite value, sign kept.
+fn fin(v: f32) -> f32 {
+    let bits = v.to_bits();
+    if bits & 0x7F80_0000 == 0x7F80_0000 { f32::from_bits((bits & 0x8000_0000) | 0x7F7F_FFFF) } else { v }
+}
+
+fn fin4(v: [f32; 4]) -> [f32; 4] {
+    v.map(fin)
 }
 
 /// Z S U O flags (bits 0..3) of one lane and the value stored for it.
@@ -209,35 +222,39 @@ impl Ee {
         let bc = t[(funct & 3) as usize];
         let (q, i) = (self.q, self.i_reg());
         let map = |f: &dyn Fn(usize) -> f32| -> [f32; 4] { std::array::from_fn(f) };
+        // The FMAC reads operands with the exponent-255 encodings (what an IEEE unit calls
+        // infinity and NaN) as the largest finite value of their sign, so no NaN is ever formed:
+        // `inf * 0` is `max * 0`, a zero. [PCSX2's interpreter documents the same rule.]
+        let (sv, tv, av, bcv, qv, iv) = (fin4(s), fin4(t), fin4(acc), fin(bc), fin(q), fin(i));
         if funct < 0x3C {
             let v = Target::Vf(fd);
             match funct {
-                0x00..=0x03 => self.fmac(dest, v, map(&|k| s[k] + bc)),
-                0x04..=0x07 => self.fmac(dest, v, map(&|k| s[k] - bc)),
-                0x08..=0x0B => self.fmac(dest, v, map(&|k| acc[k] + s[k] * bc)),
-                0x0C..=0x0F => self.fmac(dest, v, map(&|k| acc[k] - s[k] * bc)),
+                0x00..=0x03 => self.fmac(dest, v, map(&|k| sv[k] + bcv)),
+                0x04..=0x07 => self.fmac(dest, v, map(&|k| sv[k] - bcv)),
+                0x08..=0x0B => self.fmac(dest, v, map(&|k| av[k] + sv[k] * bcv)),
+                0x0C..=0x0F => self.fmac(dest, v, map(&|k| av[k] - sv[k] * bcv)),
                 0x10..=0x13 => self.vset(fd, dest, map(&|k| s[k].max(bc))),
                 0x14..=0x17 => self.vset(fd, dest, map(&|k| s[k].min(bc))),
-                0x18..=0x1B => self.fmac(dest, v, map(&|k| s[k] * bc)),
-                0x1C => self.fmac(dest, v, map(&|k| s[k] * q)),
+                0x18..=0x1B => self.fmac(dest, v, map(&|k| sv[k] * bcv)),
+                0x1C => self.fmac(dest, v, map(&|k| sv[k] * qv)),
                 0x1D => self.vset(fd, dest, map(&|k| s[k].max(i))),
-                0x1E => self.fmac(dest, v, map(&|k| s[k] * i)),
+                0x1E => self.fmac(dest, v, map(&|k| sv[k] * iv)),
                 0x1F => self.vset(fd, dest, map(&|k| s[k].min(i))),
-                0x20 => self.fmac(dest, v, map(&|k| s[k] + q)),
-                0x21 => self.fmac(dest, v, map(&|k| acc[k] + s[k] * q)),
-                0x22 => self.fmac(dest, v, map(&|k| s[k] + i)),
-                0x23 => self.fmac(dest, v, map(&|k| acc[k] + s[k] * i)),
-                0x24 => self.fmac(dest, v, map(&|k| s[k] - q)),
-                0x25 => self.fmac(dest, v, map(&|k| acc[k] - s[k] * q)),
-                0x26 => self.fmac(dest, v, map(&|k| s[k] - i)),
-                0x27 => self.fmac(dest, v, map(&|k| acc[k] - s[k] * i)),
-                0x28 => self.fmac(dest, v, map(&|k| s[k] + t[k])),
-                0x29 => self.fmac(dest, v, map(&|k| acc[k] + s[k] * t[k])),
-                0x2A => self.fmac(dest, v, map(&|k| s[k] * t[k])),
+                0x20 => self.fmac(dest, v, map(&|k| sv[k] + qv)),
+                0x21 => self.fmac(dest, v, map(&|k| av[k] + sv[k] * qv)),
+                0x22 => self.fmac(dest, v, map(&|k| sv[k] + iv)),
+                0x23 => self.fmac(dest, v, map(&|k| av[k] + sv[k] * iv)),
+                0x24 => self.fmac(dest, v, map(&|k| sv[k] - qv)),
+                0x25 => self.fmac(dest, v, map(&|k| av[k] - sv[k] * qv)),
+                0x26 => self.fmac(dest, v, map(&|k| sv[k] - iv)),
+                0x27 => self.fmac(dest, v, map(&|k| av[k] - sv[k] * iv)),
+                0x28 => self.fmac(dest, v, map(&|k| sv[k] + tv[k])),
+                0x29 => self.fmac(dest, v, map(&|k| av[k] + sv[k] * tv[k])),
+                0x2A => self.fmac(dest, v, map(&|k| sv[k] * tv[k])),
                 0x2B => self.vset(fd, dest, map(&|k| s[k].max(t[k]))),
-                0x2C => self.fmac(dest, v, map(&|k| s[k] - t[k])),
-                0x2D => self.fmac(dest, v, map(&|k| acc[k] - s[k] * t[k])),
-                0x2E => self.fmac(dest & 0xE, v, [acc[0] - s[1] * t[2], acc[1] - s[2] * t[0], acc[2] - s[0] * t[1], 0.0]),
+                0x2C => self.fmac(dest, v, map(&|k| sv[k] - tv[k])),
+                0x2D => self.fmac(dest, v, map(&|k| av[k] - sv[k] * tv[k])),
+                0x2E => self.fmac(dest & 0xE, v, [av[0] - sv[1] * tv[2], av[1] - sv[2] * tv[0], av[2] - sv[0] * tv[1], 0.0]),
                 0x2F => self.vset(fd, dest, map(&|k| s[k].min(t[k]))),
                 0x30 => self.vi_write(fd, self.vi_read(fs).wrapping_add(self.vi_read(ft))),
                 0x31 => self.vi_write(fd, self.vi_read(fs).wrapping_sub(self.vi_read(ft))),
@@ -258,10 +275,10 @@ impl Ee {
         let scale = |n: u32| (1u32 << n) as f32;
         let a = Target::Acc;
         match op {
-            0x00..=0x03 => self.fmac(dest, a, map(&|k| s[k] + bc)),
-            0x04..=0x07 => self.fmac(dest, a, map(&|k| s[k] - bc)),
-            0x08..=0x0B => self.fmac(dest, a, map(&|k| acc[k] + s[k] * bc)),
-            0x0C..=0x0F => self.fmac(dest, a, map(&|k| acc[k] - s[k] * bc)),
+            0x00..=0x03 => self.fmac(dest, a, map(&|k| sv[k] + bcv)),
+            0x04..=0x07 => self.fmac(dest, a, map(&|k| sv[k] - bcv)),
+            0x08..=0x0B => self.fmac(dest, a, map(&|k| av[k] + sv[k] * bcv)),
+            0x0C..=0x0F => self.fmac(dest, a, map(&|k| av[k] - sv[k] * bcv)),
             0x10..=0x13 => {
                 let n = [0, 4, 12, 15][(op & 3) as usize];
                 let v = map(&|k| s[k].to_bits() as i32 as f32 / scale(n));
@@ -277,10 +294,10 @@ impl Ee {
                     }
                 }
             }
-            0x18..=0x1B => self.fmac(dest, a, map(&|k| s[k] * bc)),
-            0x1C => self.fmac(dest, a, map(&|k| s[k] * q)),
+            0x18..=0x1B => self.fmac(dest, a, map(&|k| sv[k] * bcv)),
+            0x1C => self.fmac(dest, a, map(&|k| sv[k] * qv)),
             0x1D => self.vset(ft, dest, map(&|k| s[k].abs())),
-            0x1E => self.fmac(dest, a, map(&|k| s[k] * i)),
+            0x1E => self.fmac(dest, a, map(&|k| sv[k] * iv)),
             0x1F => {
                 let wv = t[3].abs();
                 let mut flags = 0u32;
@@ -294,20 +311,20 @@ impl Ee {
                 }
                 self.vi[CLIP] = ((self.vi[CLIP] << 6) | flags) & 0xFF_FFFF;
             }
-            0x20 => self.fmac(dest, a, map(&|k| s[k] + q)),
-            0x21 => self.fmac(dest, a, map(&|k| acc[k] + s[k] * q)),
-            0x22 => self.fmac(dest, a, map(&|k| s[k] + i)),
-            0x23 => self.fmac(dest, a, map(&|k| acc[k] + s[k] * i)),
-            0x24 => self.fmac(dest, a, map(&|k| s[k] - q)),
-            0x25 => self.fmac(dest, a, map(&|k| acc[k] - s[k] * q)),
-            0x26 => self.fmac(dest, a, map(&|k| s[k] - i)),
-            0x27 => self.fmac(dest, a, map(&|k| acc[k] - s[k] * i)),
-            0x28 => self.fmac(dest, a, map(&|k| s[k] + t[k])),
-            0x29 => self.fmac(dest, a, map(&|k| acc[k] + s[k] * t[k])),
-            0x2A => self.fmac(dest, a, map(&|k| s[k] * t[k])),
-            0x2C => self.fmac(dest, a, map(&|k| s[k] - t[k])),
-            0x2D => self.fmac(dest, a, map(&|k| acc[k] - s[k] * t[k])),
-            0x2E => self.fmac(dest & 0xE, a, [s[1] * t[2], s[2] * t[0], s[0] * t[1], 0.0]),
+            0x20 => self.fmac(dest, a, map(&|k| sv[k] + qv)),
+            0x21 => self.fmac(dest, a, map(&|k| av[k] + sv[k] * qv)),
+            0x22 => self.fmac(dest, a, map(&|k| sv[k] + iv)),
+            0x23 => self.fmac(dest, a, map(&|k| av[k] + sv[k] * iv)),
+            0x24 => self.fmac(dest, a, map(&|k| sv[k] - qv)),
+            0x25 => self.fmac(dest, a, map(&|k| av[k] - sv[k] * qv)),
+            0x26 => self.fmac(dest, a, map(&|k| sv[k] - iv)),
+            0x27 => self.fmac(dest, a, map(&|k| av[k] - sv[k] * iv)),
+            0x28 => self.fmac(dest, a, map(&|k| sv[k] + tv[k])),
+            0x29 => self.fmac(dest, a, map(&|k| av[k] + sv[k] * tv[k])),
+            0x2A => self.fmac(dest, a, map(&|k| sv[k] * tv[k])),
+            0x2C => self.fmac(dest, a, map(&|k| sv[k] - tv[k])),
+            0x2D => self.fmac(dest, a, map(&|k| av[k] - sv[k] * tv[k])),
+            0x2E => self.fmac(dest & 0xE, a, [sv[1] * tv[2], sv[2] * tv[0], sv[0] * tv[1], 0.0]),
             0x2F | 0x3B => {} // vnop, vwaitq
             0x30 => self.vset(ft, dest, s),
             0x31 => self.vset(ft, dest, [s[1], s[2], s[3], s[0]]),
@@ -433,6 +450,28 @@ mod tests {
         assert_eq!(e.vi[17] >> 12, 0b1100, "Ox and Oy");
         assert_eq!(e.vi[17] >> 4 & 0xF, 0b0100, "Sy");
         assert_eq!(e.vi[16] & 0xF, 0b1010, "status: S and O (bit 1 and bit 3), no Z or U");
+    }
+
+    #[test]
+    fn exponent_255_operands_read_as_the_largest_finite_value_and_no_nan_appears() {
+        let mut e = vu();
+        let (inf, nan, minf) = (f32::INFINITY, f32::from_bits(0x7FC0_0000), f32::NEG_INFINITY);
+        e.vf[1] = [inf, nan, minf, f32::from_bits(0xFFFF_FFFF)];
+        e.vf[2] = [0.0, 1.0, 1.0, 2.0];
+        e.execute(s1(0xF, 2, 1, 3, 0x2A)).unwrap();
+        assert_eq!(e.vf[3][0].to_bits(), 0, "inf * 0 is max * 0 = 0, not NaN");
+        assert_eq!(e.vf[3][1], f32::MAX, "NaN * 1 reads the NaN as +max");
+        assert_eq!(e.vf[3][2], -f32::MAX);
+        assert_eq!(e.vf[3][3], -f32::MAX, "raw -1 has exponent 255 and the sign bit: -max * 2 overflows");
+        assert!(e.vf[3].iter().all(|x| !x.is_nan()));
+        assert_eq!(e.vi[17] & 1 << 3, 1 << 3, "Zx set for the zero product");
+        assert_eq!(e.vi[17] >> 15 & 1, 0, "Ox clear: no overflow for inf * 0");
+        assert_eq!(e.vi[17] >> 12 & 1, 1, "Ow set: -max * 2 overflows");
+        // inf + -inf is max + -max = 0 on the VU (an IEEE unit gives NaN).
+        e.vf[1] = [inf, 0.0, 0.0, 0.0];
+        e.vf[2] = [minf, 0.0, 0.0, 0.0];
+        e.execute(s1(0xF, 2, 1, 3, 0x28)).unwrap();
+        assert_eq!(e.vf[3][0].to_bits(), 0);
     }
 
     #[test]

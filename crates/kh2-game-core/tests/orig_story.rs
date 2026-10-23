@@ -124,24 +124,50 @@ fn orig_180298_matches_the_game() {
     });
 }
 
-macro_rules! gate_test {
-    ($name:ident, $addr:expr, $port:path) => {
-        #[test]
-        fn $name() {
-            run(stringify!($addr), &flag_spec!($addr, &[], Ret::Int), |c| Out::int($port(c.global(0)) as i64));
-        }
-    };
+#[test]
+fn orig_180330_matches_the_game() {
+    run("0x180330", &flag_spec!(0x180330, &[], Ret::Int), |c| Out::int(flag_102b(c.global(0)) as i64));
 }
 
-gate_test!(orig_180330_matches_the_game, 0x180330, flag_102b);
-gate_test!(orig_180850_matches_the_game, 0x180850, flag_8d0);
-gate_test!(orig_180638_matches_the_game, 0x180638, gate_81c);
-gate_test!(orig_180680_matches_the_game, 0x180680, gate_821);
-gate_test!(orig_1806c8_matches_the_game, 0x1806c8, gate_849);
-gate_test!(orig_180710_matches_the_game, 0x180710, gate_834);
-gate_test!(orig_180758_matches_the_game, 0x180758, gate_8aa);
-gate_test!(orig_1807a0_matches_the_game, 0x1807a0, gate_142b_2001);
-gate_test!(orig_1807f8_matches_the_game, 0x1807f8, gate_142b_2018);
+#[test]
+fn orig_180850_matches_the_game() {
+    run("0x180850", &flag_spec!(0x180850, &[], Ret::Int), |c| Out::int(flag_8d0(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_180638_matches_the_game() {
+    run("0x180638", &flag_spec!(0x180638, &[], Ret::Int), |c| Out::int(gate_81c(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_180680_matches_the_game() {
+    run("0x180680", &flag_spec!(0x180680, &[], Ret::Int), |c| Out::int(gate_821(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_1806c8_matches_the_game() {
+    run("0x1806c8", &flag_spec!(0x1806c8, &[], Ret::Int), |c| Out::int(gate_849(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_180710_matches_the_game() {
+    run("0x180710", &flag_spec!(0x180710, &[], Ret::Int), |c| Out::int(gate_834(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_180758_matches_the_game() {
+    run("0x180758", &flag_spec!(0x180758, &[], Ret::Int), |c| Out::int(gate_8aa(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_1807a0_matches_the_game() {
+    run("0x1807a0", &flag_spec!(0x1807a0, &[], Ret::Int), |c| Out::int(gate_142b_2001(c.global(0)) as i64));
+}
+
+#[test]
+fn orig_1807f8_matches_the_game() {
+    run("0x1807f8", &flag_spec!(0x1807f8, &[], Ret::Int), |c| Out::int(gate_142b_2018(c.global(0)) as i64));
+}
 
 #[test]
 fn orig_180350_matches_the_game() {

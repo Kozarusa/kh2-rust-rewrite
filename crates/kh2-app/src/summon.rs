@@ -3903,7 +3903,7 @@ fn act(
 /// What Stitch's class reaches beside his object: the game camera (his plane's parent [inferred]), the
 /// enemies and their bodies, the hits his blast sends, the MP charge his refill ends, the battle flag.
 type StitchWorld<'w, 's> = (
-    Query<'w, 's, (&'static Camera, &'static GlobalTransform), crate::menu::preview::GameCamera>,
+    Query<'w, 's, (&'static Camera, &'static GlobalTransform), crate::shared::ui::GameCamera>,
     Query<'w, 's, (Entity, &'static Enemy, &'static Fighter)>,
     Query<'w, 's, &'static GlobalTransform>,
     MessageWriter<'w, Hit>,

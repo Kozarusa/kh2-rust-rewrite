@@ -308,7 +308,7 @@ fn tick(
     mut sora: Query<&mut Sora>,
     targets: Query<&GlobalTransform>,
     mut cam: Query<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
-    options: Option<Res<crate::menu::config::Options>>,
+    options: Option<Res<crate::shared::ui::Options>>,
     area_rec: Option<Res<crate::area::AreaRecord>>,
 ) {
     let options = options.map(|o| *o).unwrap_or_default();

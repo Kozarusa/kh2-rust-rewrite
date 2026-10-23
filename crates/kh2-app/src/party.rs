@@ -1727,7 +1727,7 @@ fn party_tick(
     flag: Option<Res<crate::audio_bgm::BattleFlag>>,
     progress: Option<Res<crate::progress::Progress>>,
     sora: Query<&Sora>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     fighters: Query<(Entity, &Fighter), Without<PartyMember>>,
     mut q: Query<(&mut Transform, &mut PartyMember)>,
     mut anims: Query<(&mut Animator, &GlobalTransform)>,

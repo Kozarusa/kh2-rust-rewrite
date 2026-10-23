@@ -132,7 +132,7 @@ pub fn update(
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
     fighters: Query<&Fighter>,
     bodies: Query<(&Animator, &GlobalTransform)>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
 ) {
     if scene.files.len() <= GAUG {
         return;

@@ -405,7 +405,7 @@ pub(crate) fn npc_update(
     mut commands: Commands,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     sora: Query<&Sora>,
     assets: Res<NpcAssets>,
     mut q: Query<(Entity, &mut Transform, &mut Npc, &mut NpcBrain)>,

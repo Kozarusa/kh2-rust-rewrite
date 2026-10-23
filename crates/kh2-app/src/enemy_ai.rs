@@ -401,7 +401,7 @@ fn ai_update(
     mut commands: Commands,
     data: Res<GameData>,
     world: Option<Res<World>>,
-    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
+    cam: Query<(&Camera, &GlobalTransform), crate::shared::ui::GameCamera>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, &mut AiBrain)>,
     mut anims: Query<&mut Animator>,

@@ -1,0 +1,11 @@
+[package]
+name = "kh2-factory"
+description = "Port factory: static scan of the original's functions (classes for the ledger), brief and oracle-test generation, and the fuzz harness generated oracle tests run on (kh2-ee)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-ee.workspace = true
+kh2-archive.workspace = true
+serde_json.workspace = true

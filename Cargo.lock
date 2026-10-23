@@ -3249,6 +3249,7 @@ dependencies = [
  "kh2-bar",
  "kh2-bdx",
  "kh2-ee",
+ "kh2-factory",
  "kh2-fx",
  "kh2-map",
  "kh2-model",
@@ -3328,6 +3329,15 @@ dependencies = [
 [[package]]
 name = "kh2-ee"
 version = "0.1.0"
+
+[[package]]
+name = "kh2-factory"
+version = "0.1.0"
+dependencies = [
+ "kh2-archive",
+ "kh2-ee",
+ "serde_json",
+]
 
 [[package]]
 name = "kh2-fx"

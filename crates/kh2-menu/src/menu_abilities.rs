@@ -535,6 +535,20 @@ struct Ui {
     all: Vec<usize>,
 }
 
+impl AbilitiesMenu {
+    /// The list cursor on screen and the scroll of the current page, for the diff rig (`shared::ui::RigMenu`): page 0xf's member row,
+    /// page 0x10's row minus the first shown row. None on the prompt pages.
+    pub fn rig_cursor(&self) -> Option<(i32, i32)> {
+        let m = self.machine.as_ref()?;
+        let int = |v: usize| i32::try_from(v).unwrap_or(i32::MAX);
+        match m.page {
+            0xf => Some((int(m.member), 0)),
+            0x10 => Some((int(m.cursor.saturating_sub(m.scroll)), int(m.scroll))),
+            _ => None,
+        }
+    }
+}
+
 /// What the plugin keeps between frames.
 #[derive(Resource, Default)]
 pub struct AbilitiesMenu {

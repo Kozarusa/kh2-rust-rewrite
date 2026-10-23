@@ -8,17 +8,20 @@
 //! * `place.battle`: the original's battle mode word; the port's `Battle` is a tick count, not the same word [no mapping known].
 //! * `cam.look`: the camera's look-at point is private to the camera system (`camera::CamState`), not exposed.
 //! * `menu.word_354f70`: 0 at every stop of the original's menu runs (RIG-4); not a menu value, kept for the old traces.
-//! * `sora.motion`, `sora.motion_frame` (actor +0x154, +0x170, traced in RIG-4): `Sora` keeps no general motion id or motion time
-//!   (only `damage_motion` inside hit reactions); the playing clip lives in the player crate's animation state, outside `Ctx`.
-//! * `menu.*` (traced in RIG-4: scene state 0x33e764, scene 0x3b10d0, page 0x36d1d4, next page 0x36d1dc, phase 0x36d1e0, closing
-//!   0x36d1f0, the list widget's cursor and scroll through 0x36ce9c): the port's page, phase and cursors are the menu crate's `Menu`
-//!   resource, which `Ctx` does not carry (the shared `MenuPhase` has only closed/opening/open/closing, no page or cursor).
+//!
+//! The menu and motion names are answered from three places `Ctx` carries: the shared `MenuPhase` and `RigMenu` (the menu crate writes
+//! the page and the list cursor into the mirror), and Sora's body animator (`motion`: the motion set slot divided by four, the slot being
+//! `id * 4 + variant`, and the animator's frame). The port has one phase for the whole camp, so the page's own phase (the original's
+//! `menu.phase`) is the camp's: entering while the open animation plays, selecting when it is done, leaving while it closes; a page
+//! change does not replay the entering phase in the port, and the page words of the original that stay stale while no menu runs
+//! (`menu.page`, `menu.next_page`, `menu.phase`, `menu.cursor`, `menu.scroll`) are empty here while the menu is closed.
 
 use bevy::prelude::*;
 
 use crate::area::AreaRecord;
 use crate::progress::Progress;
 use crate::shared::sora::Sora;
+use crate::shared::ui::{MenuPhase, Phase, RigMenu};
 use crate::SCALE;
 
 /// What a getter may look at: the tick's `k` and the objects of the app.
@@ -30,6 +33,10 @@ pub struct Ctx<'a> {
     pub progress: Option<&'a Progress>,
     /// The camera's transform (metres, the app's axes).
     pub cam: Option<&'a Transform>,
+    /// The camp's phase and the page and cursor mirror (`shared::ui`).
+    pub menu: Option<(&'a MenuPhase, &'a RigMenu)>,
+    /// Sora's playing motion: the id (slot / 4) and the animator's frame.
+    pub motion: Option<(i32, f32)>,
 }
 
 type Getter = fn(&Ctx) -> Option<String>;
@@ -46,6 +53,16 @@ pub const GETTERS: &[(&str, Getter)] = &[
     ("save.sora_hp", |c| c.progress.map(|p| p.sora().hp.to_string())),
     ("save.sora_hp_max", |c| c.progress.map(|p| p.sora().hp_max.to_string())),
     ("cam.pos", cam_pos),
+    ("sora.motion", |c| c.motion.map(|m| m.0.to_string())),
+    ("sora.motion_frame", |c| c.motion.map(|m| f(m.1))),
+    ("menu.scene_state", |c| c.menu.map(|(p, _)| if p.0 == Phase::Closed { "0" } else { "1" }.to_string())),
+    ("menu.scene", |c| c.menu.map(|(p, _)| if p.0 == Phase::Closed { "-1" } else { "7" }.to_string())),
+    ("menu.page", |c| open_menu(c).map(|(_, m)| m.page.to_string())),
+    ("menu.next_page", |c| open_menu(c).map(|_| "-1".to_string())),
+    ("menu.phase", |c| open_menu(c).map(|(p, _)| if p == Phase::Opening { "0" } else if p == Phase::Open { "1" } else { "2" }.to_string())),
+    ("menu.closing", |c| c.menu.map(|(p, _)| if p.0 == Phase::Closing { "1" } else { "0" }.to_string())),
+    ("menu.cursor", |c| open_menu(c).and_then(|(_, m)| m.cursor).map(|v| v.to_string())),
+    ("menu.scroll", |c| open_menu(c).map(|(_, m)| m.scroll.to_string())),
 ];
 
 /// Names of `values.toml` the port has no getter for (see the module comment).
@@ -54,17 +71,12 @@ pub const MISSING: &[&str] = &[
     "place.battle",
     "cam.look",
     "menu.word_354f70",
-    "sora.motion",
-    "sora.motion_frame",
-    "menu.scene_state",
-    "menu.scene",
-    "menu.page",
-    "menu.next_page",
-    "menu.phase",
-    "menu.closing",
-    "menu.cursor",
-    "menu.scroll",
 ];
+
+/// The camp's phase and mirror while a menu is up (the original's page words are stale otherwise).
+fn open_menu<'a>(c: &Ctx<'a>) -> Option<(Phase, RigMenu)> {
+    c.menu.filter(|(p, _)| p.0 != Phase::Closed).map(|(p, m)| (p.0, *m))
+}
 
 pub fn read(name: &str, ctx: &Ctx) -> Option<String> {
     GETTERS.iter().find(|(n, _)| *n == name).and_then(|(_, g)| g(ctx))
@@ -137,7 +149,7 @@ mod tests {
         p.rig.vsync = Some(495_135);
         let cam = Transform::from_translation(Vec3::new(5.2026, 2.2, -0.5676));
         let area = AreaRecord { world: 2, area: 21, entrance: 99, programs: [0; 3], programs_override: None, dest_programs: [0xff; 3], place_on_load: false, run: None, placed: None };
-        let c = Ctx { k: 42, sora: Some(&s), area: Some(&area), progress: Some(&p), cam: Some(&cam) };
+        let c = Ctx { k: 42, sora: Some(&s), area: Some(&area), progress: Some(&p), cam: Some(&cam), menu: None, motion: None };
         let r = |n: &str| read(n, &c).unwrap_or_else(|| panic!("{n}"));
         assert_eq!(r("sora.pos"), "650;0;250", "the app's z is mirrored and a negative zero is printed as 0");
         assert_eq!(r("sora.facing"), "0;0;-1", "yaw 0 is app +z, game -z");
@@ -152,8 +164,28 @@ mod tests {
         let facing: Vec<f32> = read("sora.facing", &c).unwrap().split(';').map(|v| v.parse().unwrap()).collect();
         assert!((facing[0] - 1.0).abs() < 1e-6 && facing[2].abs() < 1e-6, "{facing:?}");
         // No objects: no values; a name the port lacks stays None.
-        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None };
+        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: None };
         assert!(GETTERS.iter().filter(|(n, _)| *n != "frame.step").all(|(_, g)| g(&none).is_none()));
         assert_eq!(read("menu.word_354f70", &c), None);
+    }
+
+    #[test]
+    fn menu_and_motion_values_follow_the_phase_and_the_mirror() {
+        let rig = |page, cursor| RigMenu { page, cursor, scroll: 0 };
+        let at = |phase: Phase, mirror: RigMenu, names: &[&str]| -> Vec<Option<String>> {
+            let phase = MenuPhase(phase);
+            let c = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: Some((&phase, &mirror)), motion: None };
+            names.iter().map(|n| read(n, &c)).collect()
+        };
+        let s = |v: &str| Some(v.to_string());
+        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: Some((2, 38.0)) };
+        assert_eq!((read("sora.motion", &none), read("sora.motion_frame", &none)), (s("2"), s("38")));
+        assert_eq!(read("menu.scene_state", &none), None, "no menu resources: no value");
+        let names = ["menu.scene_state", "menu.scene", "menu.closing", "menu.page", "menu.cursor"];
+        assert_eq!(at(Phase::Closed, rig(0, Some(2)), &names), [s("0"), s("-1"), s("0"), None, None], "the stale page words are empty while closed");
+        assert_eq!(at(Phase::Opening, rig(0, Some(2)), &["menu.scene_state", "menu.scene", "menu.phase"]), [s("1"), s("7"), s("0")]);
+        assert_eq!(at(Phase::Open, rig(0xa, Some(2)), &["menu.phase", "menu.page", "menu.cursor", "menu.next_page"]), [s("1"), s("10"), s("2"), s("-1")]);
+        assert_eq!(at(Phase::Open, rig(0x14, None), &["menu.cursor"]), [None], "a page the menu crate does not expose has no cursor");
+        assert_eq!(at(Phase::Closing, rig(0, Some(1)), &["menu.closing", "menu.phase", "menu.scroll"]), [s("1"), s("2"), s("0")]);
     }
 }

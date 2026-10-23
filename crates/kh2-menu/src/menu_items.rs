@@ -825,6 +825,18 @@ impl ItemsMenu {
         }
     }
 
+    /// The list cursor on screen and the scroll of the current page, for the diff rig (`shared::ui::RigMenu`): page 1's row; the Stock
+    /// grid's cell on screen (the index minus the scrolled rows) and its scroll in rows. None on the prompt pages.
+    pub fn rig_cursor(&self) -> Option<(i32, i32)> {
+        let m = self.machine.as_ref()?;
+        let int = |v: usize| i32::try_from(v).unwrap_or(i32::MAX);
+        match m.page {
+            MEMBERS => Some((int(m.cursor1), 0)),
+            STOCK => Some((int(m.cursor.saturating_sub(m.scroll * COLUMNS)), int(m.scroll))),
+            _ => None,
+        }
+    }
+
     /// Whether page 2 was just asked for (and clears the request).
     pub(super) fn take_equipment_request(&mut self) -> bool {
         std::mem::take(&mut self.equipment_requested)

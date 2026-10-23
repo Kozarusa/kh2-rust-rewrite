@@ -128,6 +128,17 @@ impl Default for MenuPhase {
     }
 }
 
+/// What the diff rig reads of the camp (`menu.page`, `menu.cursor`, `menu.scroll` of `scenarios/values.toml`): the current page and
+/// the highlighted row of that page's list, as the original's page word and list widget carry them. The menu crate writes it every
+/// frame (`kh2-menu` `mirror_rig`); `kh2-game-core` reads it for the rig's value getters and nothing else. `cursor` is `None` on a
+/// page whose cursor the menu crate does not expose.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RigMenu {
+    pub page: i32,
+    pub cursor: Option<i32>,
+    pub scroll: i32,
+}
+
 /// The systems of the lower crates that run only while the menu is closed; the menu crate gives the set the
 /// condition `menu::is_closed`.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]

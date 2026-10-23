@@ -69,7 +69,8 @@ impl Plugin for MenuPlugin {
             .init_resource::<Menu>()
             .init_resource::<crate::shared::ui::MenuPhase>()
             .configure_sets(Update, crate::shared::ui::WhileMenuClosed.run_if(is_closed))
-            .add_systems(RunFixedMainLoop, mirror_phase.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
+            .init_resource::<crate::shared::ui::RigMenu>()
+            .add_systems(RunFixedMainLoop, (mirror_phase, mirror_rig).in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
             // after the keyboard is read and after the harness has pressed its scripted keys.
@@ -111,6 +112,19 @@ pub fn is_closed(menu: Res<Menu>) -> bool {
 /// Copies the phase for the fixed-step gates of the lower crates (`shared::ui::MenuPhase`).
 fn mirror_phase(menu: Res<Menu>, mut phase: ResMut<crate::shared::ui::MenuPhase>) {
     phase.0 = menu.phase;
+}
+
+/// The page and list cursor the diff rig reads (`shared::ui::RigMenu`): page 0's cursor is the menu's own, the item and ability pages
+/// answer from their machines; any other page leaves the cursor empty.
+fn mirror_rig(menu: Res<Menu>, items: Option<Res<item_pages::ItemsMenu>>, abilities: Option<Res<crate::menu_abilities::AbilitiesMenu>>, mut rig: ResMut<crate::shared::ui::RigMenu>) {
+    let int = |v: usize| i32::try_from(v).unwrap_or(i32::MAX);
+    let from_page = match menu.page {
+        1 | 0xa => items.as_deref().and_then(item_pages::ItemsMenu::rig_cursor),
+        0xf | 0x10 => abilities.as_deref().and_then(crate::menu_abilities::AbilitiesMenu::rig_cursor),
+        _ => None,
+    };
+    let (cursor, scroll) = if menu.page == 0 { (Some(int(menu.cursor)), 0) } else { from_page.map_or((None, 0), |(c, s)| (Some(c), s)) };
+    *rig = crate::shared::ui::RigMenu { page: i32::from(menu.page), cursor, scroll };
 }
 
 /// Frames the field takes to come back to full brightness on close (clip 10: frames 56..69).

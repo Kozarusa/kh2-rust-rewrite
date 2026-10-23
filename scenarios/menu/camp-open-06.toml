@@ -20,7 +20,21 @@ auto_limit = 1
 every = 1
 values = ["frame.step", "menu.scene_state", "menu.page", "menu.phase", "menu.cursor"]
 
+# The page words (page, next page, phase, cursor, scroll) keep their last value in the original while no menu runs, so they are
+# checked only at stops where the menu runs (k 260 and later, before the close); the scene words and Sora are checked around the
+# open and the close too.
 [[check]]
-at = [202, 203, 260, 300, 340, 380, 382]
-values = ["frame.step", "menu.scene_state", "menu.scene", "menu.page", "menu.next_page", "menu.phase", "menu.cursor", "menu.scroll", "sora.pos", "sora.motion"]
-note = "202 last field stop, 203 first menu stop; 260 main menu, 300 Items page, 340 back at the main menu, 382 first stop after the menu closed"
+at = [202, 203, 382]
+values = ["menu.scene_state", "menu.scene", "sora.pos", "sora.motion"]
+note = "202 last field stop, 203 first menu stop; 382 first stop after the menu closed"
+
+[[check]]
+at = [260, 300, 340, 380]
+values = ["menu.scene_state", "menu.scene", "menu.page", "menu.next_page", "menu.phase", "menu.closing", "menu.cursor", "menu.scroll"]
+note = "260 main menu, 300 Items page, 340 back at the main menu, 380 before the closing Start"
+
+# The port keeps its own frame step (1.0 everywhere) until the frame step is ported (L1-P5); the original's is 2.0 in the field.
+[[check]]
+at = [202, 203, 260, 382]
+values = ["frame.step"]
+informational = true

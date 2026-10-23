@@ -91,7 +91,7 @@ impl Default for ScriptRun {
 
 /// What the scripts read from the rest of the game: the random word, the area lottery and the `(world, area)`
 /// bytes it matches. `run_area` uses the default (a zero random word, no lottery table).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ScriptContext {
     /// `DAT_003716a0`.
     pub lcg: u32,
@@ -101,6 +101,13 @@ pub struct ScriptContext {
     pub lottery_table: [[u8; 2]; 5],
     /// The first two bytes of `0x33e830` (current world and area).
     pub area: [u8; 2],
+}
+
+impl Default for ScriptContext {
+    /// A random word whose next roll is 99: the chance opcodes (3) take their "not picked" branch for any chance below 100, as the earlier port did.
+    fn default() -> Self {
+        ScriptContext { lcg: 0xffff_ffff, lottery: Lottery::default(), lottery_table: [[0xff; 2]; 5], area: [0; 2] }
+    }
 }
 
 /// The host `run_area` runs the commands against: it records what they ask for.

@@ -1,4 +1,4 @@
-//! Final Mix disc checks behind `docs/final-mix.md` sections 1 to 4: disc identity, the archive
+//! Final Mix disc checks behind `docs/systems/foundations/final-mix.md` sections 1 to 4: disc identity, the archive
 //! layout, file lists by kind, the tables the app reads, text and voice folders. Read-only; prints
 //! counts and names only (nothing from either disc is stored). Skips with a note unless both disc
 //! images are configured: USA (`KH2_ISO` or `local/iso.txt`) and Final Mix (`KH2_ISO_FM` or

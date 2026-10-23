@@ -1,0 +1,566 @@
+# Audio leftovers (WP-2F)
+
+Status words: **verified** = read in the decompilation or the disassembly of the user's USA
+executable; **inferred** = follows from it; **gap** = not done. Nobody has listened to any of this;
+checks are by logs and unit tests only.
+
+## Positional volume and pan for sound effects (verified, implemented)
+
+Every sound an object plays goes through `FUN_00197008(actor, se_number)` (motion trigger 8, hit
+sounds, the wall sound) or `FUN_0016baa0` (footsteps), which call `FUN_002c32b8(se_number,
+position)` with the actor's position (`FUN_0016b960`: actor +0x70, or +0x540 when `FUN_001beb00` is
+0). Effect sounds (`FUN_001de968`) do the same with the effect's position. Interface sounds use
+`FUN_002c3318` (no position: volume 0x3fff, pan 0x40).
+
+The sound engine (0x2c2000..0x2c3600) keeps a pool of 0x40-byte request slots: +0x00 the
+position (4 floats, copied at request time), +0x14 the id, +0x18 bank, +0x10 index (`FUN_002c2258`:
+`n / 1000`, `n % 1000`), +0x28 volume (default 0x3fff), +0x2c pan (default 0x40), +0x2a minimum
+volume (0), +0x30 state, +0x31 kind (0 positional). Each game tick `FUN_002c30d0` runs
+`FUN_002c2e90` over every slot; for kind 0 and state 1 or 2 it calls `FUN_002c27b0` and then sends
+volume and pan to the IOP driver (`FUN_002be49c` at the start, command 0x13; `FUN_002be564` every
+tick afterwards, command 0x15). The position is fixed, the listener is not, so volume and pan keep
+changing while a sound plays as the camera moves.
+
+`FUN_002c27b0` (the decompiler drops its VU0 code; read from the disassembly):
+
+1. The position is transformed by the 4x4 matrix at `FUN_001068c0(0) + 0x10`. That is the camera's
+   view matrix (`FUN_00106f78` builds it from eye, look-at point and up vector; `FUN_001407b8` feeds
+   it), so the listener is the camera. Camera space: x to the right of the screen, z in front.
+2. `d = |(x, y, z)|`; `steps = (int)(d * d / 100.0f)` (the word at 0x36f594 is 100).
+3. Volume is `0x3fff - steps` when `steps < 0x4000`, else 0, then clamped to the minimum volume
+   (+0x2a, 0) and 0x3fff. Full volume is only reached at distance 0; the sound is silent from about
+   1280 units (squared distance 1,638,300), game units are centimetres.
+4. The direction is normalised in 3D, then its y is set to 0 without renormalising. `angle =
+   acos(dir.z)` (`FUN_0017bf10`: at or above 1 is 0, at or below -1 is pi), wrapped by
+   `FUN_0017bbc0` as `fmod(angle + pi, 2 pi) - pi` (so exactly pi becomes -pi). `a = angle * 128 /
+   pi`.
+5. Pan: x < 0 and z > 0: `64 - a`; x < 0 and z < 0: `320 - a`; otherwise `64 + a`. Truncated to an
+   integer. The result is a position on the driver's pan circle: 0 hard left, 0x40 centre front,
+   0x80 hard right, 0xc0 behind.
+6. In `FUN_002be49c` and `FUN_002be564`, a volume above 0x39ff (steps below 1536, closer than about
+   392 units) sends pan 0x40 instead: close sounds are centred.
+
+The driver (`LIBSSL.IRX`) indexes its pan law tables with the pan: indices 0..0x7f go from left to
+right, 0x80..0xff have a negative left value (phase inversion for sources behind the listener;
+Dolby Pro Logic style), and the player masks with 0x1ff. The SPU takes a 15-bit signed volume. The
+old kh2-audio mixer masked a negative law value with 0x7fff without sign extension (a rear source
+would have been louder than the front); it now sign-extends, which changes nothing for pan 0x40.
+
+Port: `kh2_audio::positional::volume_pan` (pure, unit-tested), `audio::placement` (camera axes
+from the app's camera `Transform`, metres to game units with `SCALE`), `PlaySe::pos` and
+`PlaySe::at`. Footsteps, motion-trigger sounds and the wall sound are placed at their actor.
+`KH2_SOUNDLOG` prints `volume` and `pan` per request.
+
+Deviations and gaps:
+
+- **Per-tick update (WP-5D, verified, implemented).** The game recomputes volume and pan every
+  tick for the sound's whole life (command 0x15). Confirmed again: `FUN_002c30d0` walks the slot
+  list and calls `FUN_002c2e90`, which dispatches by kind byte (+0x31): kind 5 to `FUN_002c2d00`
+  (state 2: still playing per `FUN_002c26c8` -> `FUN_002c27b0`, `FUN_002c2a68`, `FUN_002bef1c`),
+  kind 6 to `FUN_002c2dc8`, everything else to `FUN_002c2b70` (kind 0: state 2 ->
+  `FUN_002c27b0` + `FUN_002be564`). The brief assumed the source moves; it does not. The
+  position is copied into the slot once, by `FUN_002c2760` (called from the request functions
+  `FUN_002c2380` kind 0, `FUN_002c2530` kind 5, `FUN_002c25a8`, `FUN_002c34c8`, all in the engine)
+  and nothing rewrites it afterwards. Only kind 4 (`FUN_002c2b08`, map emitters, which ask
+  `FUN_0014eb50` for a position) follows something, and that kind is not ported. So what changes
+  per tick is the listener, the camera's view matrix. Port: `audio::LiveMixes` (every positional
+  `PlaySe` and `PlayVoice` start pushes a `LiveSound` with the fixed start position, the handle
+  from `Driver::play_se_handle` / `play_voice_at`, and the entry flags or the voice minimum
+  volume), `audio::update_mixes` (FixedUpdate, `Sim::Sounds`, last in the chain) which drops
+  finished sounds and calls `set_se_mix` / `set_voice_mix` with `audio::live_mix` ->
+  `kh2_audio::positional::{se_mix, voice_mix}`. SE entry flags 0x10 (fixed volume) and 0x20
+  (fixed pan) are re-applied each tick as the driver does at the start. `KH2_SOUNDLOG=1` prints
+  `mix <kind> handle <n> volume <v> pan <p>` whenever the pair changes. Tests:
+  `positional::a_source_passing_the_listener_sweeps_volume_and_pan`,
+  `positional::entry_flags_and_minimum_volume_apply`, `audio::a_live_sound_follows_the_moving_listener`,
+  and `audio::render_pan_sweep` (writes `local/wp5d-audio/pan_sweep.wav`; nobody has listened).
+  Not verified: whether the IOP applies a command 0x15 to a sound already in flight in exactly
+  the way `Driver::set_se_mix` does (it changes the volume and pan the sequence uses for its next
+  notes and the running voices at the next 240 Hz frame).
+- Placement of the app's object sounds (WP-AU5): the volume and pan rule above was already ported; what was missing was the
+  position in the requests. Now placed: the attacker's `ReflectHitSound` (`combat::landed_hit_sounds`, at `Hit::point`), the
+  victim's hit sound (`enemy.rs`, `PlaySe::hit(..).at(h.point)`, FUN_001b2378 plays it from the victim; the hit point on its
+  hurt shape stands for the object position [inferred]), the effect element sound (`fx::tick`: where the bind is on the first
+  tick, `fx::effect_sound_position`, the request copies the position once, FUN_002c2760; elements in camera space stay
+  unplaced), wall hits and motion-trigger sounds (already placed), footsteps, prize and struggle sounds (already placed).
+  Unplaced by design: menu and system sounds, the HUD alarm (FUN_002c3318 path), the sound viewer. Still unplaced, not owned by
+  AU5: `struggle.rs` mission sounds (line 1328). Tests: `audio::tests::placed_hit_sounds_fall_with_distance`,
+  `fx::tests::effect_sound_is_placed_at_the_bind`.
+- Kind 4 (map sound emitters, `FUN_0014eb50`, a sound that follows an actor or area shape) and
+  kinds 2 and 3 (`FUN_002c33b8`, `FUN_002c3368`, used by the menu and the field BGM layer) are not
+  ported.
+- The minimum volume (+0x2a) is only written by kind 5 and 6 requests (streamed sounds).
+- A source exactly behind the camera gives pan -64 in the game (the wrap quirk above); the port
+  reproduces it.
+
+## Battle music (WP-1B; verified in the decompilation and the IOP disassembly, implemented)
+
+Code: `audio_bgm.rs` (trigger, fades), `kh2_audio::ssl::{BgmSlot, Driver::bgm_start, bgm_fade}`.
+
+The area load (`FUN_00136ec0`, from `FUN_001048e0`) puts the area's field BGM into IOP slot 0 and
+the battle BGM into slot 1. `FUN_001371d8` (numbers equal) clears and `FUN_00137300` (numbers
+differ) sets the "battle music exists" flag at 0x354ebc; `arif` +0x10 and +0x12 give the two
+numbers (`area_music`). A per-frame task `FUN_001373d0` (registered by `FUN_00137128`, priority
+300000) compares the battle flag `FUN_001903d8` (word 0x1c8a7d8) with the state it last acted on
+(0x354ebd). On a rise (and no battle fade running, 0x354eb8 = 0) it calls `FUN_00137458`; on a
+fall while one runs, `FUN_001374c0`. Both state bytes are updated either way. Pausing the BGM
+(`FUN_00137520`) clears the flag at 0x354ebc and `FUN_00137558` restores it.
+
+| | slot 0 (field) | slot 1 (battle) |
+|---|---|---|
+| battle starts (`FUN_00137458`) | command 0x11: fade to 0 over 0x3c0 = 960 frames | command 0xf, mode 0: from 0 to 0x3000 over 0xf0 = 240 frames after a delay of 0xf0 = 240 |
+| battle ends (`FUN_001374c0`) | command 0xf, mode 1 (resume): from 0 to 0x3000 over 0x1e0 = 480 frames after a delay of 0xf0 = 240 | command 0x11: fade to 0 over 0x2d0 = 720 frames |
+
+Frames are the driver's 240 Hz frames (4 s, 1 s, 1 s, 2 s, 3 s). Command 0xf handler 0x104814
+reads (slot, from, to, time, mode, delay) and calls `FUN_103cbc`; command 0x11 (handler 0x104a8c)
+reads (slot, target, time) and calls `FUN_104964`. The ramp is stepped by `FUN_1081ac` (called
+from the main loop at 0x101908): while the delay counter (+0x6a) is below the delay (+0x68) the
+slot does nothing, then `volume += step; time -= 1` with `step = (target - volume) / time`
+(integer division), and at 0 the volume snaps to the target; a target of 0 stops the sequence
+(`FUN_108900(slot, 1)`) and keeps it for a resume. `kh2-audio` ports the ramps and slot handling
+(unit test `bgm_slot_ramps_delays_and_resumes`) and the app drives them from the battle flag
+below (`audio_bgm::BattleFlag`).
+
+### The battle flag (WP-FIX-11; verified in the decompilation, implemented)
+
+The music follows the word at 0x1c8a7d8 (`FUN_001903d8` reads "not 0"). Before WP-FIX-11 the app fed
+the trigger with `sora::Battle`, the keyblade-out timer that Sora's attacks, guards and spells refill
+for 240 ticks: so every swing switched the music, with or without an enemy. The original's flag does
+not look at the player's actions at all.
+
+- **Desired state** (`FUN_001904e0`): false when the player object is not valid (`FUN_0019a3f8` on
+  `DAT_0035c998`; the hold timer below is also zeroed then). Otherwise true when any of three holds:
+  1. a limit task exists (`FUN_001b3c00`: `DAT_01d5d6b0`, created by the limit execution
+     `FUN_001b28a0`, cleared by `FUN_001b3178`, `FUN_001b32d8` and the area reset `FUN_001b2770`);
+  2. bit 0x10000 of `DAT_0035d268`, which `FUN_00190900` rebuilds every tick: cleared, then the
+     object list is walked (`FUN_00184ac8` over `FUN_001b7c88`: list `DAT_01d5d7a0` linked through
+     +0x8b4, skipping objects whose +0x108 has 0x80000 or 0x10000000 (`FUN_0019a440`), and keeping
+     only objects with +0x588 bit 0x10). The bit is set when such an object has +0x588 bit 0x400,
+     wherever it is, or when its team word +0x3b0 is 2 and its **horizontal** distance to the
+     player is **under 1200 units (12 m)**: the y component of the difference of the two positions
+     (`FUN_0016b960`: +0x70, or +0x540) is zeroed before the length; the threshold is the float at
+     0x37ad20 (1200.0 on the user's disc, read at run time).
+  3. `FUN_001a4e70`: a detached script thread (the list at 0x1c95518 that host 2.20 and the spell
+     start `FUN_001a4798` fill, docs/systems/script-host/contract.md) is running (its +0x1c lacks bit 4) for an owner that
+     is a valid friend (+0x588 bit 0x4000, set by the friend constructor `FUN_0017c718`) and not a
+     summon (bit 0x400000).
+- Who has those flags: object type 4 of `00objentry` (normal enemy) is built by `FUN_001b02b0` ->
+  `FUN_00184820` (+0x588 |= 0x10) -> `FUN_001d5c70` (+0x3b0 = 2, +0x588 |= 0x20000); types 3 and
+  0xc (bosses) by `FUN_001acf80` / `FUN_001ad0c0` -> `FUN_001acf20`, which add +0x588 bit 0x400
+  (dispatch in `FUN_0016e8c0` on the objentry type byte +4). Party members get team 1
+  (`FUN_001746e0`). So the music is about enemies within 12 m of Sora (any boss in the area), not
+  about lock-on range or attacks.
+- **Hysteresis** (`FUN_001903e8`, once per tick from the object update at 0x1b775c, unless the flag
+  is 2): `FUN_00190900` runs first; a grace timer (0x1c8a7dc) counts down by the tick scale
+  (`DAT_00356f40`, 1.0); when the desired state differs from the flag it is taken at once while
+  the grace timer is still above 0, else the hold timer (0x1c8a7e0) counts down and the flag
+  changes when it reaches 0. Whenever flag and desire agree the hold timer is reloaded: 120
+  (0x37ad18) while the flag is 1, 45 (0x37ad1c) while it is 0. So battle starts after 45 ticks of
+  an enemy in range and ends 120 ticks after the last one left. The flag setter `FUN_00190550` also
+  calls `FUN_001befc0(6)` / `FUN_001bef48(6)` (not traced) and, while the flag is 0, the update ends
+  with `FUN_001a1e68` (stores the party records); neither touches the music.
+- **Reset** (`FUN_00190370`, from the area setup `FUN_001689c0`): flag 0, hold timer 0, grace timer
+  30 (0x37ad14). Scripts force the flag to 2 (`FUN_001905a8`, from `FUN_00173478` and
+  `FUN_001b8d80`) and back to 0 (`FUN_001905c0`, from `FUN_001b99a0`); the per-tick update leaves a
+  2 alone.
+- **App** (`audio_bgm::BattleFlag`, `battle_flag_desire`; tests `battle_flag_rises_after_45_and_falls_after_120`,
+  `battle_flag_grace_after_reset_switches_at_once`, `battle_flag_desire_is_horizontal_distance_under_1200`,
+  `battle_flag_constants_from_exe`): the per-tick update and the reset are ported and the four
+  constants are read from `SLUS_210.05` at run time; the reset runs when an area finishes loading.
+  Term 2 uses the living enemies (`Enemy::alive`): every enemy the app spawns is an objentry type 4
+  object (`enemy::area_groups` takes only `KINDS`, all normal enemies; the app has no boss). Terms 1
+  and 3 are always false in the app: it has no limit task and no friends (`limit.rs` stops before
+  the task; no companion objects). The scripted state 2 is not driven (no script calls it yet). The
+  flag is updated even with `KH2_NO_MUSIC`. Log: `battle flag: 0 -> 1 (...)` / `battle flag: 1 -> 0`
+  on every change.
+- **[inferred]**: the app drops an enemy from the test when its HP reaches 0; the original keeps a
+  dead enemy object in the list until its script deletes it or the +0x108 bits above are set. The
+  writers of those +0x108 bits were not traced.
+- `sora::Battle` stays the keyblade-out timer of the player controller (not this flag); the drive
+  and reaction code still read that one.
+
+Inferred or not done:
+
+- The slot volume (+0x44) is applied in place of one of the two fixed 0x3fff factors of the volume
+  chain in `Sequence::update_voices`; which factor it replaces was not traced (inferred; at most
+  one 14-bit step of difference). Full level is 0x3000, not 0x3fff, so the app's BGM is now a bit
+  quieter than before (0.75 of the old level at the same master gain).
+- Resume (mode 1) restores the game's last checkpoint (state at 0x1e35c0, saved by routine
+  0x108068 at a counter event that was not traced). The port resumes where the field slot stopped.
+- The battle flag: see the section above (before WP-FIX-11 this bullet described the app feeding
+  its own `Battle` timer to the trigger, which is what made attacks switch the music).
+- Area changes: slot 1 is stopped when a new area's field music starts.
+- Streams (`bgm/music118.vsb`, event BGM) are not handled.
+
+## Voices (WP-1B; verified, implemented in `kh2_audio::voice` and `audio.rs`)
+
+Chain from a motion's voice trigger (13 or 14: the voice id): `FUN_00175d18(actor, id, prio)` ->
+`FUN_001ae3c8` -> `FUN_001ae4e8` (find the `vtbl` record of speaker NeoStatus and id; the record
+is 0xe bytes: speaker, id, priority, reserved, five (line, chance) byte pairs) -> `FUN_001ae538`
+(pick) -> `FUN_001970b8` / `FUN_001ae798` (queue on the actor's slot) -> `FUN_001ae7d8` (stop the
+old line and start the new one every tick).
+
+- **Random generator.** One shared word, `DAT_003716a0`, reset to 1 by `FUN_002f5fc8`; the voice
+  code steps it as `x = x * 0x10dcd` (mod 2^32). Other users of the word multiply by 0x1c587629 or
+  -0x59004c2b. `FUN_00325b38` is a software 64-bit unsigned divide.
+- **Pick** (`FUN_001ae538`): step, `roll = x / 0x028f5c29` (0..99); walk the five pairs in order;
+  a line byte below 0 is skipped (-3 asks `FUN_001ae440`); a pair with chance 0 or less joins a
+  pool; a chance pair subtracts its chance from the roll and wins when the roll goes below 0; with
+  no winner the generator is stepped again and the pool entry `x / ((2^32 + n - 1) / n)` is
+  taken; an empty pool is -1. Port: `voice::pick_line`. **Byte-identical check:**
+  `crates/kh2-audio/tests/voice_oracle.rs` runs the game's `FUN_001ae538` in `kh2-ee` on the
+  user's executable for seven records and 518 generator states each (3,626 picks) and compares
+  line and new generator state. The old app code differed in the pool draw (`(x * n) >> 32`).
+- **Voice id 3 / target dependence.** There is no special id: a record whose line byte is -3 takes
+  its line from the other party (`FUN_001ae440(speaker, other)`): -1 when equal; -1 with Auron
+  (NeoStatus 5) on either side while none of the story flags 0x184c, 0x180c, 0x182e is set (bits
+  of the save table at 0x33f6b0); otherwise `other - 1` for Sora, Donald, Goofy (0, 1, 2), 4 for
+  `pin` (15), 3 for NeoStatus 4..14, and -1 outside 1..15. The other party is the NeoStatus of
+  the actor's object at +0x9f4 (0 if it is invalid, `FUN_001699a8`). Port: `voice::other_party_line`
+  (oracle test over all 18 x 18 pairs). The app passes the lock-on target's NeoStatus (inferred
+  to be +0x9f4; Shadow and Soldier map to their `objentry` rows M_EX020, M_EX010) and no story
+  flags (they are not in the app, so Auron lines are refused).
+- **Priority slot** (`FUN_001ae798`, per-actor object at +0xb08: +8 queued line, +0xc priority,
+  +0x10 sound handle, +0x18 actor): with nothing queued or playing the line is taken; otherwise it
+  replaces the queued line only when its priority (the record's byte 2) is at least the queued
+  one's. Port: `voice::VoiceSlot`.
+- **Bank path.** Format at 0x37b900: `voice/%s/battle/%s%d_%s.vsb` with the language folder
+  (`DAT_00349d40`), the world code, the area's `arif` record short at +0x30 (`FUN_001933a0`
+  record, so `<n>` is not always 0) and the speaker name (table 0x35ee10 indexed by NeoStatus:
+  sora, donald, goofy, ...). Three banks stay loaded (0x1cb8290, `FUN_001ae180`).
+- **Japanese versus USA.** The language table at 0x349d44 is `jp, us, uk, it, sp, gr, fr`, and
+  start-up `FUN_00101d68` calls `FUN_00105cb0(2)`, which stores entry 2: this USA executable
+  always uses `us`. No code path in it selects `jp`; the Final Mix executable (`SLPM_666.75`) is a
+  different file that was not examined, so what it passes is a gap. Port: `voice::language`
+  reads the table and the index from the executable.
+- **Playback.** A voice line is a kind 5 sound (`FUN_002c2530`): positional at the actor like
+  sound effects (`FUN_002c2d00` -> `FUN_002c27b0`) with a minimum volume of 0x1800 (`actor +
+  0x2c7`, constructors 0x1746e0, 0x174800). The app plays it through the driver's pan law at the
+  volume and pan computed at the start and re-mixed every tick against the camera
+  (`audio::update_mixes`, see "Per-tick update" above).
+
+## Footstep leftovers (WP-1B)
+
+- **Bit 0x20 of `*(actor + 0xc) + 8`.** `FUN_00183730` returns 0x12 for it, else the ground
+  material. The word is the class descriptor's flag word. `FUN_0016a2f0` (the per-tick actor
+  update) tests bits 2 and 0x20 of the same word together before a block that clears the
+  velocity fields and calls descriptor slot 4 (inferred: a jump or ground set-up; the purpose
+  of that block was not established). Which descriptors carry bit 0x20 and what sets it was not found (no writer in the
+  main executable's decompilation). Port: `footstep::actor_material` (tested); Sora and the two
+  ported enemies pass 0.
+- **Kind 8: the stop step (WP-6A, ported).** `FUN_0017af10` is slot 6 of the mover descriptor
+  classes at 0x35cbb0 (mover 0, the ground mover, registered by `FUN_00179880` in the table at
+  0x1c88eb0) and 0x371298 (mover 0x2b), called by `FUN_0016a2f0` every tick as
+  `(*(desc->vtable + 0x18))(desc, actor)`. It has two branches on actor +0x1c, the commanded speed
+  (the w of the input vector at +0x10: `FUN_001774d8` writes the walk speed +0x110 or the run speed
+  +0x114 while the stick is out, 0 without input; the AI versions are `FUN_001775e8`,
+  `FUN_00177710`):
+  - commanded (+0x1c > 0): for a party actor (+0x588 bit 0x80, set only by the party constructors
+    `FUN_00176e00`, `FUN_00176f88`) whose last requested motion id is 0 (idle), the dust effects 10
+    and 11 (`FUN_001b1c90`, not for NeoStatus 0xe). No sound. The wanted motion is 1 (walk) or 2
+    (run, when `(+0x110 + +0x114) * DAT_0037a4e8 <= +0x1c`).
+  - not commanded: for a party actor whose last requested motion id is 1 or 2 and whose +0x164 bit
+    0 is clear, footstep kind 8 (`FUN_0016baa0(actor, 8)`) and the dust effects 8 and 9 (not for
+    NeoStatus 0xe). The wanted motion is 0.
+  - Both end with `FUN_0017aeb8(desc, actor, wanted)`. It is a motion request, not a shake (the
+    WP-1B/5D reading was wrong): when controller +0x20 (actor +0x160) has bit 4, or bit 0x10 and the
+    wanted id is not 0, it calls `FUN_0017e2d8(DAT_0037a4e4, 0, controller, wanted)`, which starts the
+    motion (`FUN_0017e220`) when `FUN_0017e278` allows it.
+  - The fields: actor +0x154 is controller (+0x140) +0x14, the motion id last requested
+    (`FUN_0017e000` stores it). Actor +0x160 / +0x164 are controller +0x20 / +0x24, the range-trigger
+    flags of the playing motion (`FUN_00188030`: range 0 sets +0x20 bit 4, range 2 bit 0x10, range
+    0x2a (42) sets +0x24 bit 0, range 0x2c sets bit 1; `FUN_0017f3d0` clears them and `FUN_0017dd38`
+    zeroes +0x24 when a motion starts). On the disc, Sora's A000, A001 and A002 (idle, walk, run)
+    carry range 0 over every frame, and A005 (landing, motion 5) carries range 42 over every frame
+    and range 2 from frame 12.
+  - The one-shot gate that WP-5D could not find: walk and run have range 0 open, so the same call
+    asks for idle; +0x154 becomes 0 and the next tick fails the test. Range 42 keeps the step out
+    while the landing motion plays (and the landing's id 5 fails the test anyway).
+  - Port: `kh2_audio::footstep::stop_step` (test `stop_step_gate_of_fun_0017af10`) and
+    `audio::footsteps`, which plays it for a grounded Sora in the ground state when the stick is let
+    go while the previous tick's motion id (body slot / 4) was 1 or 2 and its range 42 was closed
+    (the app's controller has asked for idle before the sound system runs). Log line with
+    `KH2_SOUNDLOG=1`: `footstep A000 stop (FUN_0017af10) kind 8 material 0 neo 1 -> None` (tt00,
+    stick let go after running; tt00's floor has material 0, so the number is None there: the sound
+    itself was neither produced on a sounding floor in a run nor listened to). The dust effects 8 to 11 are
+    ported in the section "Enemy voices, enemy footsteps and footstep dust" below (`fx::foot_dust`).
+- **Enemy footsteps.** Shadow and Soldier motions have no trigger 2, so nothing to play. Hook
+  for another enemy: in `enemy.rs` where the enemy's motion triggers are walked, resolve
+  `footstep_number(record, neo_status, actor_material(desc_flags, ground), kind, &mut counter)`
+  for each trigger 2 and write `PlaySe::number(n, None).at(position)`; the counter is per actor.
+  `audio::area_soundinfo` and `audio::neo_status` (make it `pub`) give the record and bank.
+
+## Enemy voices, enemy footsteps and footstep dust (WP-7L)
+
+Status words as above; nobody has listened to any of this.
+
+- **Enemy voice bank (verified).** `FUN_00196b58` and `FUN_00196d18` (base constructors of talking
+  objects, +0x588 bit 0) build the voice slot at actor +0x9b8 only when the object file (actor +0x7b0, the
+  `.apdx`) holds a BAR entry of type 0x22 (`FUN_001684c0(file, 0x22)`); the slot's play method is
+  `FUN_001ae8e0` -> `FUN_002c37b8(bank data, line, position, minimum volume 0x1800)` -> `FUN_002c25a8`.
+  So an enemy's voice is NOT a `voice/<lang>/battle` bank: `obj/N_EX570_BTL.apdx` entry `seif` (38 lines),
+  `N_EX500_BTL.apdx` `hyne` (26), `N_EX600_BTL.apdx` `sezt` (40) are `IopVoice` banks; Shadow, Soldier,
+  Dusk and the Dancer have none. The party use `FUN_001ae180` banks (`voice/..`) instead.
+  Host 1.262 (`0x1709c8`) and motion frame trigger 13/14 (dispatcher 0x188498 case 13/14, 0x1886f4: needs
+  +0x588 bit 0; priority = second parameter when the trigger has two, else 0) call the object's method +0x54;
+  for these enemies it is `FUN_001970b8` ([inferred] for N_EX500/N_EX600, whose tables were not traced),
+  and the first argument is the line number of the enemy's own bank. Priority rule `FUN_001ae798`
+  (`voice::VoiceSlot`, one per enemy). `FUN_001ae7d8` rewrites the playing sound's position from the actor
+  every tick (`FUN_002c34c8`): voices follow their speaker (`LiveSound::follow`, also for Sora's lines;
+  the "position is fixed" note above holds for kind 0 sound effects only).
+  Port: `audio::enemy_voice`, `enemy_voice_calls` (host queue), `motion_sounds`. Log:
+  `voice enemy <name> line <n> priority <p> -> bank <apdx> entry 0x22 id <n>`. Tests:
+  `enemy_voice_banks_are_the_object_files_own_entry`, `enemy_voice_requests_carry_their_slot`.
+- **Enemy footsteps (hook ported, nothing to play today).** `audio::enemy_footsteps`: trigger 2 resolves
+  `footstep_number` with a per-enemy counter; trigger 19 asks for dust. None of the app's seven enemy kinds
+  has a trigger 2 or 19 in any motion (`enemy_motion_sets_carry_no_footstep_triggers`); the NeoStatus ->
+  bank chain resolves for all of them (`enemy_footstep_numbers_resolve_per_kind`: bank 729 in tt04).
+- **Footstep dust `FUN_001b1c90` (rule ported; no dust element found on the disc).** Callers: frame
+  trigger 19 (dispatcher case 19, 0x1887d0, kind = parameter 0) and `FUN_0017af10` (kinds 8/9 with the stop
+  step, 10/11 when movement starts from idle; not for NeoStatus 0xe). Rule: ground material -> class byte
+  (table 0x37b9b8), mask = bit class | bit kind+0x20, first element of the area manager's PAX
+  (`DAT_0035a7f0`, set by `FUN_0015e6c0` from map +0x50 [inferred: the map's type 18 entry]) whose
+  category holds the mask (`FUN_001db9e0`); kinds 0..0x13 probe a vertical line 50 above to 100 below the
+  foot (0x37b598/0x37b59c) and start only on a hit, turned to the foot-to-toe direction. Port:
+  `kh2_audio::footstep::DustRules` (tables read from the exe, test `dust_rules_match_the_executable_memory`),
+  `fx::foot_dust`, `fx::AreaFx`. Gaps: (1) the foot point and direction use the actor's position and facing,
+  not the bones 0x8028/0x8029/0x802c/0x802d (`FUN_0016aa18` maps them through `*(actor+0x8b0)` vtable +0x18,
+  not decoded); (2) no map PAX of tt01, tt02, tt04, tt05, tt10 has an element whose category selects dust
+  (tt02: all categories 0; tt04/05: 0 and 0x8000000000000001; tt10: 0x200 damage categories), so the
+  lookup never starts anything on these areas. WP-AU3 settled this: the manager is the map's PAX
+  (`FUN_0015e6c0` -> `FUN_001db4d0(0x35a7f0, FUN_001491f8(map))`, map +0x50 is the BAR entry of type 18
+  stored by `FUN_00149348`; `0x35a7f0` is installed nowhere else), and the dust elements exist, but in other
+  areas: the categories there are class bit | `1 << (kind + 0x20)` plus bit 63 (for example `0x8000000300000004`:
+  class 2, kinds 0 and 1). Of the 217 maps with an effect file, 34 hold kinds 8 to 11: start dust 10/11 for class 2
+  in al02, hb06, hb07, hb18, he01, mu00, po04, wi00 to wi04 and others; stop dust 8/9 for class 9 in al09,
+  ca10 to ca15, hb10, hb11, he03, lk09, mu02, mu03, po01, po03, tt10 and tt36. So in tt02, tt04 and tt05 the
+  original starts no dust. Disc runs (`KH2_FXLOG=1 KH2_WALK=1`, ground material 3 = class 2):
+  `tt25: foot dust kind 3 (Sora): material 3 class 2 -> element id 4`, run steps kinds 2 and 3 on material 11
+  (class 7) -> element id 9; `al02: foot dust kind 10 (Sora): material 3 class 2 -> element id 10` (and 11, same
+  element, `fx 10 objs 1 batches 1 verts 4`); the stop dust 8/9 found no element where Sora stopped (tt25 and al02
+  have none for the class there, `mask 0x10000000004: no element`). No harness area put Sora on a class 9
+  floor (material 13), so a started stop dust (8/9) was not seen. A screenshot of the al02 start
+  (`KH2_SHOT_AT=3.15`) shows a pale haze on the floor behind Sora; whether that is the dust was not confirmed.
+  Gap (3): the foot bone ids 0x28, 0x29, 0x2c, 0x2d (bone numbers with bit 0x8000) go through the type-4 object
+  at actor +0x8b0 (`FUN_00168d30` stores `FUN_001a79d8`, entry type 4 of the object's file), method +0x18; that
+  method was not found (the vtable word is patched in the model block at load, the decomp has no caller to
+  trace). The bone table's own index field equals the bone's position (bones 40 and 41 are torso bones of Sora),
+  so the ids are not bone positions. Tests: `dust_elements_follow_the_area_effect_files_on_the_disc`,
+  `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` (now on tt25).
+
+## Sound viewer: how to use (WP-SV1; the app's own developer tool, not in the original)
+
+The original game has no sound test the app can port, so `crates/kh2-app/src/sound_test.rs` is the
+app's own overlay for identifying ids: it steps through every sound the game can play and plays one
+on demand through the same driver and request path the game uses (`audio::play_se`, the voice bank
+cache and `Driver::play_voice_at`, `audio::play_bgm`); there is no second audio backend. Nobody has
+listened to its output; checks are by its log lines and unit tests.
+
+Start: `target\debug\kh2-game.exe tt04` and press **F10**, or start with the viewer open:
+`$env:KH2_SOUNDTEST='1'; target\debug\kh2-game.exe tt04`. Keys while it is open (the game's movement,
+attack, guard, lock-on and camera keys are swallowed, so nothing drives Sora or the camera; close it
+with F10 to play):
+
+| key | does |
+|---|---|
+| Left / Right | previous / next id in the bank (empty ids are skipped, both ends wrap) |
+| Shift + Left / Right | 100 ids |
+| PageUp / PageDown | 10 ids (Shift: 100) |
+| Up / Down | previous / next bank (lands on the bank's first filled id) |
+| Enter or Space | play the current id (the one before is stopped first) |
+| Backspace | stop |
+| F10 | close |
+
+The overlay (top right, debug-HUD style text) shows the source, the bank name and file, the entry
+and id, the data known about it (WD bank, track count, group and flags of a sound effect; duration
+and sample rate of a voice line; WD of a BGM), the volume and pan the driver is given, and the last
+play. Banks, in order: the global SE banks `se/se<nnn>.seb` (`se000` .. `se998`), the private SE
+banks of the objects the app uses (`obj/P_EX100.apdx`, `obj/W_EX010.apdx`, the enemy kinds' files),
+the party voice banks `voice/<lang>/battle/<world><n>_<speaker>.vsb` (every world, `<n>` 0..7, every
+speaker name of the executable), the enemies' own voice banks (entry type 0x22 of their object
+files, named `<file>#0x22`), then `bgm` (`bgm/music<nnn>.bgm`, played in the field slot: it replaces
+the area music until the next area load).
+
+**Id numbering** is the one `KH2_SOUNDLOG=1` prints for the game's own requests, so a viewer id and a
+game log id mean the same thing:
+
+- a sound effect: the game's number is `bank * 1000 + index` (`FUN_002c2258`: `n / 1000`, `n % 1000`);
+  the log prints `se <bank>:<index> (<apdx or ->)`, the viewer shows `id 2001` and `log: se 2:1` for
+  entry 1 of `se002`. The interface sounds are NOT in `se002`: they are entries of `se000` (`se 0:<id>`, section "System sounds" below; `se000` and `se999` are listed with a `[boot bank, driver slot N]` note).
+  An object's own bank (`PlaySe::apdx`) is listed by its file; the log form adds the file in brackets.
+- a voice line: `voice <file>:<line>` (`<file>#0x22` for an enemy's bank inside its object file). The
+  viewer's id is the line.
+- a BGM: `music <n>`; the id is the number of `bgm/music<nnn>.bgm`.
+
+Every play prints one line: `soundtest bank <name> entry <n> id <id> (<log form>) <data> volume <v>
+pan <p> playing|not started`, for example `soundtest bank se002 entry 1 id 2001 (se 2:1) wd 20 tracks
+1 group 0 flags 0x00 volume 0x3fff pan 0x40 playing`. The viewer plays without a position, as the
+game's interface sounds do (`FUN_002c3318`: volume 0x3fff, pan 0x40; entry flags 0x10 / 0x20 still
+pin the volume or pan in `Driver::play_se_handle`); a voice line is played at the same level and
+centre pan, where the game would place it at its speaker with a minimum volume of 0x1800; a BGM at
+the full slot level 0x3000.
+
+`KH2_SOUNDTEST_LIST=1` prints every bank at start: `soundtest list <Source> <name> (<file>): <filled>
+of <len> ids filled, <first log form> .. <last log form>`, then `soundtest list: <banks> banks, <ids>
+ids`. A harness run with scripted keys (the harness knows Left, Right, Up, Down, Enter, Space,
+Backspace; F10 and PageUp/PageDown are not scriptable): `$env:KH2_SOUNDTEST='1'; $env:KH2_NO_MUSIC='1';
+$env:KH2_SCREENSHOT='local\sv1.png'; $env:KH2_SHOT_AT='9'; $env:KH2_KEYS='7:Right,7.3:Enter,8:Down,8.3:Enter';
+target\debug\kh2-game.exe tt04`.
+
+Tests (`cargo test -p kh2-app soundtest`): `soundtest_step_skips_empty_ids`, `soundtest_step_wraps_at_ends`,
+`soundtest_jumps_by_10_and_100`, `soundtest_bank_step_wraps_and_lands_on_first_filled`,
+`soundtest_step_entry_edge_cases`. Added for it: `Driver::stop_se` (keys the sound's notes off and drops
+its player) and `Vsb::line_info` (size and rate of a line without decoding it).
+
+## System sounds: the interface bank is `se000.seb`, not "bank 2" (WP-SE2; verified in the decompilation, implemented)
+
+Earlier docs read `FUN_002be49c(2, id, ...)` as "bank 2, index id" and the app played `PlaySe::number(2000 + id)`
+(`se002.seb` has two entries, so the log said `se 2:9 (-) ... not found` and the interface sounds never played). The
+`2` is the driver SLOT, not the game's bank number. Chain (all read in the decompilation):
+
+- A request by number: `FUN_002c2338` splits `n` with `FUN_002c2258` (bank = `n / 1000`, index = `n % 1000`) and turns the bank
+  number into a driver slot with `FUN_002c19d0` -> `FUN_002c3e48(0x1e33b50, bank)`: a table of (slot, bank number, state) triples,
+  the slot of the entry whose bank number matches and whose state is 1 (loaded), else -1 (the request is dropped: state 3 in
+  `FUN_002c2298`). `FUN_002c2b70` then calls `FUN_002be49c(slot, index, id, volume, pan)` with that slot (+0x18).
+- The interface calls skip the lookup: `FUN_002c14a8(sound, 0)` is `FUN_002be49c(2, sound, 0, 0x3fff, 0x40)`: slot 2 directly.
+- Which file is in slot 2: the boot routine `FUN_002c0eb0` (called from `FUN_002c0e00` at 0x2c0e28) reads the file names at
+  0x383238 (`se/se000.seb`), 0x383248 (`se/se999.seb`), 0x383258 (`se/wave0000.wd`), 0x383268 (`se/wave0001.wd`) and loads
+  `se000.seb` into slot 2 (`FUN_002c1378(2, ..)` at 0x2c0f10 -> `FUN_002be054`, which checks the "Se" tag and sends IOP command
+  4/0xd), `se999.seb` into slot 3 (0x2c0f74), `wave0000.wd` into wave slot 2 (`FUN_002c1348(2, ..)` -> `FUN_002bde74`, IOP
+  command 5/0xb) and `wave0001.wd` into slot 3. `FUN_002c0da8` registers the slots in the table: `FUN_002c3a90(0x1e33b50, 2, 0)`
+  and `(.., 3, 999)`, i.e. slot 2 is game bank 0 and slot 3 is game bank 999 ([inferred] that `FUN_002c0da8` runs at boot: its
+  callers were not traced; the slot contents come from `FUN_002c0eb0` either way).
+- So: **system sound `id` = entry `id` of `se/se000.seb` = request number `id` (bank 0)**; the log form is `se 0:<id>`.
+  Cursor 1, confirm 2, open 3, cancel 4, refused 5, the HUD danger alarm 9, an item used 37 are entries of `se000.seb` (the
+  ids themselves come from the tables in docs/systems/ui/menus-pause-m1.md section 9 and `FUN_002c1528`). The prize and item sounds of the field
+  (`number(0xe)`, `number(0x12)`) were always bank 0 and are the same bank.
+- Other banks are area banks: the area's sound record names the banks it needs, `FUN_001365d0` loads them (`FUN_002c1270` /
+  `FUN_002c12b8` build the `se<nnn>.seb` / `wave<nnnn>.wd` names at 0x383278 / 0x383288 from the area's bank numbers) into
+  streaming slots chosen by `FUN_002c3cd8` and registers the number with `FUN_002c3a90`. Bank 2 (a two-entry `se002.seb`) is
+  such a bank: a request `2xxx` finds a slot only while an area that names bank 2 is loaded. The app keeps `se<bank>.seb` by
+  bank number for these (`audio::load_bank`) [inferred: the file name equals the bank number for every file the app uses; the
+  header's bank field equals the file number for the files listed by the viewer].
+
+Port: `kh2_audio::ssl::SYSTEM_BANK` (0), `SYSTEM_BANK_2` (999), `boot_slot`; `audio::PlaySe::system(id)`;
+`hud_gauge::DANGER_ALARM_SE = 9`; `menu::menu_sound` constants 1..5 (`menu_sound::system_id` maps the pages' old `2000 + id`
+constants). Test `system_sounds_resolve_in_the_boot_bank` (needs the disc): `se000` entries 1, 2, 3, 4, 5 and 9 have tracks and
+entry 9's wave bank loads. The sound viewer lists `se000` as `se 0:1 .. se 0:313` with `[boot bank, driver slot 2]`, `se999` with
+`[.. slot 3]`; `KH2_SOUNDTEST_LIST=1` prints it. Gap: the bank 999 sounds (`se999.seb`) are not requested by any app code yet
+(who plays them was not searched). Nobody has listened.
+
+## The danger alarm (WP-F1 item 13; verified in the decompilation, implemented; nobody has listened)
+
+The HP panel sounds an alarm while Sora's HP is in danger (`hp <= max >> 2`, `FUN_001a0be0`). Start
+`FUN_002c1528`: sets `DAT_0036f58c`, `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0, 0x3fff, 0x40)`: driver slot 2
+(= `se000.seb`, game bank 0; WP-SE2 corrected the earlier "bank 2"), sound 9, full volume, centre pan (the app's
+`PlaySe::number(9)` = `se 0:9`, `hud_gauge::DANGER_ALARM_SE`).
+Stop `FUN_002c1550`: clears the flag, `FUN_002c14f0(9, 0x3c, 0)` -> `FUN_002be5dc(2, 9, 0, -1, 0x3c)`: a fade
+of 0x3c frames. The rule (`hud_gauge::alarm_step`): without an event `FUN_00157310` starts it when not knocked
+out (`FUN_00166710`), the alarm silent (`FUN_002c1518`) and in danger (`FUN_001666e8`), stops it when it sounds
+and the danger is over or Sora is knocked out; the hit handler `FUN_00157040` starts it when the hit leaves the
+panel in state 1 (`FUN_00157cf0`) with the alarm silent; the heal handler `FUN_00157108` stops it when the heal
+ends the danger. Other stops: `FUN_001573c8`, `FUN_002c0d00`, `FUN_002c10b0`, `FUN_002c11e0`, `FUN_002c57b8`
+(panel teardown and sound-system resets, not read further). Port: one `PlaySe::number(9)` per start, log
+`hud: danger alarm starts (0x2c1528: system sound 9, se000, hp N/M)`; the stop is logged only (`hud: danger alarm
+stops`): the app's mixer has no stop or fade for a sound effect, so a looping sample would run once through.
+Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SOUNDLOG=1 KH2_HUDHP=7:2`
+(the panel's displayed HP drops into danger at 7 s): `se 0:9 (-) volume 0x3fff pan 0x40 playing` (before WP-SE2: `se 2:9 (-) ... not found`).
+
+## WP-AU4: sound-effect render checks (nobody has listened)
+
+- Offline render of the boot bank (`audio::tests::render_system_sounds_metrics`, needs the disc; `KH2_AU4_OUT=<dir>` writes WAVs):
+  no entry clips; the menu sounds 1..5 peak at 0.11 to 0.54 at master 0.6, DC within 0.0001. The user's recordings of the original
+  (pause menu, save point) peak at 0.37 to 0.56 including music, so the menu sounds are not louder than the original offline.
+  The live path was not recorded; the menu sounds stay muted.
+- ADPCM block shift 13..15 acts as 9 (`adpcm::block_shift`; SPU documentation, PCSX2 decoder as cross-check). No boot bank sample uses it.
+- Sequence command 0x39 takes two argument bytes (`ssl::arg_len`). With one, entries 12, 14 (the prize bounce), 17, 25, 26, 41 to 43,
+  47, 53, 101, 173, 175, 179 and 300 to 306 of `se000.seb` ended before their notes and were silent; 19 of 22 silent entries now sound
+  (12, 46 and 174 still do not: 174 is empty, 46 uses commands 0x5a/0x5b the driver port does not know, 12 not examined).
+- The save point's effect element 2 requests sound 29 with `WORLD_POINT.apdx`, which has no sound block, so it plays `se000.seb` entry 29
+  (2.4 s, peak 0.49). Enemy hits `65535:0/1` come from the enemy's own bank (`M_EX990.apdx`, bank 214).
+- Live path (WP-AU4, `KH2_AUDIO_DUMP=<file>` appends the stream's rendered f32 stereo chunks; `KH2_SOUNDLOG=1`): tt02 with
+  `KH2_SAVEPOINT_WATCH=5` gives peak 0.490, DC -0.001, no clipping, equal to the offline render of `se 0:29` (so the offline numbers hold
+  for the live path); the original's save point walk recording peaks at 0.365 including music. A tt04 `b_44` fight without music gave peak 1.0
+  with 546 clipped samples in seconds 8 and 34 of 43. Of the 215 sound requests that played, all but 18 were unplaced (volume 0x3fff, pan
+  centre): the enemy hit sounds (`65535:0/1`, 99), Sora's `0:128` (38) and `999:132..139` (35), `0:111/113` and the effect sounds. The
+  unplaced requests are the hook described above (`combat.rs`, `enemy.rs`, `fx.rs`, motion sounds of the player): they need `.at(..)`.
+  `se 0:13` (43 requests in 43 s, no apdx) is the footstep.
+- Command 0x39 (two arguments): the old one-argument reading desynchronised 131 of the 463 sound entries across banks 0 to 399 (the track
+  then ran garbage as commands or ended early). These are likely the "sharp, static-y, corrupted" effects the user reported. The BGM
+  sequences are unaffected (0 of 100 contain command 0x39).
+
+## WP-AU5: placed object sounds, re-measured (nobody has listened)
+
+- Live dump, tt04 `b_44` fight (`KH2_NO_MUSIC=1 KH2_WAVE_GROUP=b_44 KH2_SOUNDLOG=1 KH2_AUDIO_DUMP`, 43 s shot time): the requests now
+  carry volumes from 0x181b to 0x3f80 and pans spread over the circle (before: 197 of 215 at 0x3fff centre). Peak still reaches 1.0
+  once (second 9) with 156 clipped samples (before: 546 in two seconds); the other seconds peak 0.1 to 0.9. One entry alone
+  peaks 0.1 to 0.5 (offline, master 0.6), so the clipped samples are several near sounds starting together; the SPU adds and clamps
+  the same way, and no limiter exists in the original path, so none was added. `se 500:*` (weapon sounds, 61 + 8 requests) log
+  `not found`: the bank lookup finds no entry for bank 500 in the object's `.apdx` (gap, not searched further).
+- Save point (tt02, `KH2_SAVEPOINT_WATCH=5`): the effect sound `se 0:29` now starts at volume 0x3011, pan 0x4a (Sora next to it). The
+  entry peaks 0.49 at full volume, so 0x3011/0x3fff gives about 0.37, the level of the original's whole mix (0.365,
+  `local/reports/pcsx2-ref/savepoint-walk.wav`) [volume taken as linear in the mixer, inferred]. The earlier excess was the missing position.
+- Pause menu (`KH2_NO_ENEMIES=1 KH2_KEYS=8:Enter:0.2,10:Down:0.2,11.5:Down:0.2,13:Up:0.2,14.5:Escape:0.2`, tt02, with
+  `MENU_SOUND_ENABLED` set to true in a throwaway build): the menu opened and played `se 0:3`, `0:1` x3 and `0:4` at 0x3fff centre
+  (the system path); the dump peaks at 0.228 without music, no clipping, DC -0.00002. The original's pause-menu recording peaks
+  about 0.38 with music, so the live sounds are not louder; the flag in `menu.rs` (not owned by AU5) is left false: change it
+  to true to enable.
+- Enemy-originated sounds in the Dusk fight (offline peak at master 0.6 and audible length): `65535:0/1` hit sounds 0.26/0.27, 0.4 s;
+  `214:19` 0.35, 0.65 s (flags 0x5); `214:22..25` 0.04 to 0.15, 0.1 to 1.0 s; `0:111` 0.17, 0.9 s; `0:113` 0.41, 1.0 s; `0:0` is a silent
+  entry; Sora's own `0:128` 0.17 and `999:132/136/137` 0.15 to 0.23. The ones that could read as guard or cure sounds are the long
+  tonal `0:113` and `0:111` (played from the enemy motion triggers of M_EX990 and M_EX940) and
+  `214:19`. Which one the user means is not established [inferred]; the guard/cure complaint stays deferred.
+
+## WP-AU6: weapon sounds, loudness against the original (nobody has listened)
+
+- Sound numbers of 500000 and up (`se 500:*`). `FUN_00197008` (the object method behind motion trigger 8, the hit sound
+  `FUN_0018c6d0`, the wall sound `FUN_0018ca78`, `FUN_0017f8f8` and `FUN_001b2378`) replaces `500xxx` by
+  `bank * 1000 + xxx`, where `bank` is the short at +2 of the record at object `+0x9b4`; for the keyblade object (owner flag
+  `+0x588 & 0x40`) that is its own record, otherwise the owner's (`+0xaf8`, flag 4). The record is `node + 0x38` of the object's
+  resource node (`FUN_0016ffe0`, written by the object constructors `FUN_00196b58` and `FUN_00196d18`), and its +2 short is the id
+  `FUN_0016f568` gets back from the sound driver (`FUN_002c1578`) after registering the object's `se` (type 0x1f) and `wave`
+  (type 0x20) blocks of the `.apdx`. So 500 means "my own bank". The USA disc has no global `se/se500.seb`
+  (`load_bank(500, None)` is `None`); the keyblades' banks live only in their `.apdx`: `W_EX010` (block bank 500, 61 entries),
+  `W_EX020` (535, 36), `W_EX030` (560, 40) (`audio::tests::weapon_sounds_resolve_in_every_keyblades_own_bank`).
+  The app matched the request's bank against the block's number, so only the weapon numbered 500 played; the other two logged
+  `not found` (13 requests in a 43 s Dusk fight: `500:34` and `500:35` of `W_EX020`/`W_EX030`). Now `PlaySe::object_sound` turns
+  bank 500 into `OWN_BANK` when the object has an `.apdx`, used by the motion triggers (`motion_sound_request`), the hit sound
+  (`combat::hit_sound_request`) and the wall sound. Fight run `KH2_NO_MUSIC=1 KH2_WAVE_GROUP=b_44 KH2_SOUNDLOG=1`, tt04, J pressed
+  from 8 s: 0 `not found` for any `500` request (before: 13); the remaining `not found` are `0:0` of `M_EX990` (an empty entry) and
+  one `270:24` of `M_EX850`. The sound is the entry's own volume (`PlaySe` carries no volume; the mixer uses the placed volume
+  and the entry's flags as for every sound). Element sounds of effects (`FUN_001dd0d0` -> `FUN_002c32b8`) do not go through
+  `FUN_00197008` and are left as they were. Not matched against the recordings: the user's recordings hold no isolated keyblade
+  swing, so onsets and levels of the weapon sounds are not compared [gap].
+- Struggle (`struggle.rs`, the mission start/end/fail sounds): the original calls `FUN_002c3318`, which runs the request
+  without `FUN_002c2760` (the position copy) and with the "no position" mode argument (`FUN_002c22b8(slot, 1, 1)` against
+  `FUN_002c22b8(slot, 1, 0)` of `FUN_002c2380`). So the sound is unplaced, volume 0x3fff and pan centre, like the HUD's; the
+  call at `struggle.rs:1328` stays as it is.
+- Effect sounds: the element's sound is requested in `FUN_001dd0d0` after the bind update and BEFORE the destroy test, so an
+  effect that ends on its first tick still sounds (the app does too: the request is written before `effect.done`). Only an
+  effect whose owner is gone before it ever had a bind is dropped by the app with its sound; the original's record would hold
+  its creation matrix, which the app does not keep [gap, no test]. `fx::effect_sound_request` holds the placement rule
+  (world element placed at its bind, camera-space element unplaced, `fx::tests::effect_sound_requests_are_placed_unless_the_element_is_camera_space`).
+  Callers: `combat::hit_sound_request` (`landed_hit_requests_carry_the_bank_and_the_hit_point`) and `audio::motion_sound_request`
+  (`motion_sound_requests_are_placed_and_remap_bank_500`) are the parts of `landed_hit_sounds` and `motion_sounds` that build
+  the request; the surrounding lookups need an animator and a `GameData`, which the unit tests do not construct.
+- Loudness against the original. The original's fight recordings (`local/reports/pcsx2-ref/enemy-attack.wav`, `pickups.wav`,
+  `audio-combat1-bgm-and-sfx.wav`, float stereo, music included) saturate: their samples stop at exactly 0.985047 (31 to 35
+  samples at that value per recording, 0.7 to 1.6 per second), so the original's path clamps like the app's mixer (`Mixer::render`,
+  clamp at 1.0) and the SPU2 has the same 48 voices (`Mixer::play` drops the quietest at 48). Samples above 0.9 per second:
+  original 9.4 to 19.7, app 15 to 16. Level over 100 ms windows (RMS): original median 0.17, p90 0.25, p99 0.32; app with music
+  median 0.105, p90 0.17, p99 0.32 (max 0.37 against 0.34); without music median 0.046. Samples at or above 0.985 per second:
+  original 0.7 to 1.6, app 6.5 to 7.6 (clipped samples at 1.0 in 46 s: 298 without, 336 with music; AU5 had 156 in a shorter
+  window). So the app is not louder on the whole (lower median and p90) but its peaks reach the ceiling about five times as
+  often. The peaks are bursts: in second 8 the log shows `0:13` footsteps four times within 50 ms (several Dusks in step), 
+  `697:*` and `0:17` together; the footstep volumes are 0x23fb to 0x36f1 each. The recordings give no per-sound
+  breakdown, so no gain was changed; the ceiling 0.985047 of the recordings (against the app's 1.0) is probably the recorder's
+  output stage [inferred] and nothing is scaled to it.
+- Enemy-originated tonal sounds in the Dusk fight (`KH2_SOUNDLOG=1`, the new `motion sound` log line names the motion):
+  `0:113` (peak 0.41, 1.0 s) is the element sound of the defeat effect of a Dusk (it fires once per kill, together with the
+  death effect, game effect ids 7 to 10); `0:111` (0.17, 0.9 s) is an effect element sound at the enemy's arrival or the wave's
+  start (several at once when a wave appears); `214:19` (0.35, 0.65 s) is the `ReflectHitSound` of the Dusk's attack row 17
+  played when it hits Sora (`sora hit: atkp 17` precedes it in the log). None comes from a motion trigger. If the user means a
+  guard-like or cure-like chime, `0:113` (once per kill, long and tonal) is the candidate [inferred]. Nothing changed:
+  no evidence that they are wrong, and the original's own levels are not known per sound.
+- Harness: `KH2_SOUNDLOG=1` now also prints `motion sound <bank>:<index> of <apdx> motion <tag> frame <f>` for motion
+  trigger 8. Reading the dump: `KH2_AUDIO_DUMP=<file>` f32 stereo at 48 kHz, no header.

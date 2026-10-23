@@ -1,4 +1,4 @@
-//! Message windows: a framed text box (WP-6D). Rules in `kh2_image::window` and docs/hud.md
+//! Message windows: a framed text box (WP-6D). Rules in `kh2_image::window` and docs/systems/ui/hud-banners-windows.md
 //! ("Message windows").
 //!
 //! What the game does (`SLUS_210.05`): a window object (base 0x1aaf20, update 0x1ab170, draw
@@ -31,7 +31,7 @@ use super::hud_gfx::{Edge, HudScene, Node};
 use super::hud_text::{Label, TextSys};
 use crate::audio::PlaySe;
 
-/// The tutorial presenter (docs/hud.md "Tutorial windows"): opens windows from the game's own messages.
+/// The tutorial presenter (docs/systems/ui/hud-banners-windows.md "Tutorial windows"): opens windows from the game's own messages.
 #[path = "hud_tutorial.rs"]
 pub(crate) mod hud_tutorial;
 
@@ -322,7 +322,7 @@ pub fn update(
             if let Some((kind, x, y)) = pointer_of(&r.tokens) {
                 let n = &mut scene.nodes[pointer];
                 n.pos = [x as f32, y as f32];
-                // Positions are in the 512 wide HUD space; the ring and deck sit at the screen edges (docs/hud.md, edge layout) [inferred: the pointer follows the side it is on].
+                // Positions are in the 512 wide HUD space; the ring and deck sit at the screen edges (docs/systems/ui/contract.md, edge layout) [inferred: the pointer follows the side it is on].
                 n.edge = if x > 256 { Edge::Right } else { Edge::Left };
                 n.visible = true;
                 scene.set_group(pointer, kind as usize + 1);

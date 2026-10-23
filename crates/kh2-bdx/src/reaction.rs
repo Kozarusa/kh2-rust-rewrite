@@ -2,7 +2,7 @@
 //! as event 11 (0xb) with the arguments (controller, command id, target record) (FUN_0016b420), and a
 //! script offers commands itself with host 1.165 (slot, command, object, flag), 1.237 (four commands)
 //! and 1.325 (send an event 11 to another object). This module reads both from a program without
-//! running it. See docs/limits-reactions.md.
+//! running it. See docs/systems/drive-limits-summons/contract.md.
 
 use std::collections::BTreeSet;
 

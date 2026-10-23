@@ -1,4 +1,4 @@
-//! `07localset.bin`: the story programs' area table (docs/events.md section 4).
+//! `07localset.bin`: the story programs' area table (docs/systems/events-movies/npc-savepoints.md section 4).
 //!
 //! The game loads the file into `DAT_01c8af88` (`FUN_00198058`) and a type-2 jump record asks it for
 //! the area a story program belongs to (`FUN_00198080(out, key, world)`, called by `FUN_0019d8f0`

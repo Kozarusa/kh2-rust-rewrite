@@ -1,4 +1,4 @@
-//! The Characters page (6) and the Character Links page (0xb) of Jiminy's Journal (docs/menus.md 20.9, WP-MN12).
+//! The Characters page (6) and the Character Links page (0xb) of Jiminy's Journal (docs/systems/ui/menus-journal.md 20.9, WP-MN12).
 //!
 //! Both pages are one builder in the original (`FUN_002ae3e8`; the page id tells them apart: `FUN_002af398(page != 6,
 //! -1)`): a map of faces over the book page, a free pointer the player moves with the pad, the name of the face under the

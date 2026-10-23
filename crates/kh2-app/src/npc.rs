@@ -1,4 +1,4 @@
-//! Townspeople: the class-5 objects of an area's `map` program groups (WP-E2, docs/events.md
+//! Townspeople: the class-5 objects of an area's `map` program groups (WP-E2, docs/systems/events-movies/npc-savepoints.md
 //! section 3 and the E2 stage).
 //!
 //! The game makes an object of `00objentry` type 15 (`N_EX500_RTN`, `N_EX510_RTN`, ...) through
@@ -7,7 +7,7 @@
 //! record's word +0x24 (`FUN_001899d0`, bits 0..6), a parameter block at +0xb10 (host 5.33) and
 //! the walk path at +0x508 (`FUN_00183c30`: a `WalkPath` of the object's own spawn group found by
 //! its id, `FUN_00199cc0`). The model's own BDX (`rtn_default`) runs on it like an enemy script:
-//! `NpcHost` answers the group 5 library (the NPC routine library of docs/bdx.md) and the path
+//! `NpcHost` answers the group 5 library (the NPC routine library of docs/systems/script-host/contract.md) and the path
 //! hosts of group 1 (1.177 set path, 1.178 path velocity) and hands everything else to the enemy
 //! host (`BevyHost`), so the per-run host-call table of `KH2_BDXLOG=1` covers these objects too.
 //!
@@ -664,7 +664,7 @@ pub(crate) fn npc_update(
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Talk (WP-E3, docs/events.md section 3 "Talk")
+// Talk (WP-E3, docs/systems/events-movies/npc-savepoints.md section 3 "Talk")
 //
 // The offer: the player's controller asks every object for reaction candidates (FUN_0019cb70): a
 // type-5 collision part whose volume the player's type-1 body touches offers its id as a command,
@@ -955,7 +955,7 @@ fn talk_show_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd:
 }
 
 /// ...and taken out again after it, so `reaction_cmd`'s own offer and accept never see it (they
-/// handle the enemies' offers; see the outside-ownership note in docs/events.md section 3).
+/// handle the enemies' offers; see the outside-ownership note in docs/systems/events-movies/npc-savepoints.md section 3).
 fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd::ReactionOffer>>) {
     if let (Some(slot), Some(o)) = (slot.as_deref_mut(), talk.offer)
         && slot.0 == Some(o)
@@ -2382,7 +2382,7 @@ pub fn in_cone(pos: Vec3, yaw: f32, point: Vec3, part: Option<(Vec3, i16)>) -> b
     }
 }
 
-/// The head look-at controller of a townsperson (docs/events.md section 3, "Head look-at").
+/// The head look-at controller of a townsperson (docs/systems/events-movies/npc-savepoints.md section 3, "Head look-at").
 ///
 /// The game keeps it at object +0x4a0 (0x60 bytes): +4 the mode (0 off, 1 toward a point, 2 toward an
 /// object, 3 toward a direction), +0xc the joint (the halfword +6 of the object's record of type

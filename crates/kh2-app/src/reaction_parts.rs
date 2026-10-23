@@ -6,7 +6,7 @@
 //! overlaps it, the command whose id is in the record is offered (FUN_0019cb70, called for every
 //! object by FUN_0019cad0 from the player's controller FUN_0019c670). The Soldier has five such parts
 //! with the command id 34 (a cross of five ellipsoids around it), which is how command 34 reaches him;
-//! no script offers it. See docs/limits-reactions.md.
+//! no script offers it. See docs/systems/drive-limits-summons/contract.md.
 //!
 //! Record layout [V from FUN_001894d0, FUN_00188e70, FUN_0019cb70]:
 //!

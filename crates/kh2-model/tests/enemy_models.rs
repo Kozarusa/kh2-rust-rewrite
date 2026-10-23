@@ -93,7 +93,7 @@ fn enemy_and_party_models_decode_with_sane_meshes_and_textures() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
-/// M_EX870 is the invisible half of the eh17 fighter pair: four triangles, no texture (docs/enemies.md, WP-EN11b).
+/// M_EX870 is the invisible half of the eh17 fighter pair: four triangles, no texture (docs/systems/script-host/contract.md, WP-EN11b).
 #[test]
 fn m_ex870_is_the_known_untextured_placeholder() {
     let Some(mut a) = open() else { return };

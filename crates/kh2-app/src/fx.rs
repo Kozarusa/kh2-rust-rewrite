@@ -87,7 +87,7 @@ pub const EFFECT_DEATH: u16 = 2;
 /// Low category bits of an effect element that the victim-side `DamageEffect` lookup requires.
 const CATEGORY_DAMAGE: u64 = 0x200;
 
-/// Effects the game's damage and death code starts, as requests (see `docs/effects-damage.md` for
+/// Effects the game's damage and death code starts, as requests (see `docs/systems/combat-effects/effects-damage.md` for
 /// the hook points in `combat.rs` and `enemy.rs`). `fx.rs` itself turns every `combat::Hit` into
 /// `Damage` or `Ineffective`. `enemy::receive_hits` sends `Death` when HP reaches 0 (the Heartless
 /// scripts' `dead` mode asks for it too, in `enemy_ai`); a second `Death` for the same victim is ignored.
@@ -679,7 +679,7 @@ pub const SPARK_EVICT_FADE: f32 = 4.0;
 /// of `FUN_0018d090`, the wall spark of `FUN_0018ca78` and the clash spark of `FUN_0018d560`. A new entry
 /// takes the slot of the oldest, and the effect that was in it is faded out (`FUN_001da080(4.0, effect)`).
 /// This is the only thing that ends a looping spark such as system effect 0xd, which has no owner and no
-/// end of its own (docs/hit-reaction.md "Lifetime of the clash spark").
+/// end of its own (docs/systems/combat-effects/hit-reaction.md "Lifetime of the clash spark").
 #[derive(Resource, Default)]
 pub struct SparkRing {
     slots: [Option<Entity>; SPARK_RING_SLOTS],
@@ -701,7 +701,7 @@ pub struct Evicted;
 
 /// Marks a spark registered in the ring. [inferred] A looping one (system effect 0xd) also ends after its own
 /// life plus the fade: the decompiled rule only ends it when 8 further sparks follow, but the user sees a lone
-/// clash spark stay (docs/hit-reaction.md "Lifetime of the clash spark").
+/// clash spark stay (docs/systems/combat-effects/hit-reaction.md "Lifetime of the clash spark").
 #[derive(Component)]
 pub struct RingSpark;
 

@@ -36,7 +36,7 @@ use crate::SCALE;
 /// The bones the weapons hang from, by hand: 0 the right hand (bone 178, checked on screen), 1 the
 /// left hand (bone 86, the mirror of 178, inferred: the game's attach path `FUN_001751b0` ->
 /// `FUN_00184190` ends in resource handles, not a bone number; `objentry.WeaponJoint` is the
-/// data candidate, see docs/drive-forms.md). The game attaches hand 1 only while a drive form is
+/// data candidate, see docs/systems/drive-limits-summons/drive-forms.md). The game attaches hand 1 only while a drive form is
 /// active (`FUN_00176f88`: form field 1..5 or 9).
 pub const HAND_BONES: [usize; 2] = [178, 86];
 
@@ -164,7 +164,7 @@ mod mid {
 /// A Square press while moving (Dodge Roll learned) that is released before this many ticks is a
 /// tap: the dodge roll; still held at this tick it is the Quick Run. The number is the Final Mix
 /// executable's: the roll's motion A180 carries frame trigger type 34 at tick 10, whose handler
-/// (FM 0x189c78) starts Quick Run when Square is still held (docs/final-mix.md "Tap and hold").
+/// (FM 0x189c78) starts Quick Run when Square is still held (docs/systems/foundations/final-mix.md "Tap and hold").
 /// The USA executable has no roll, so the rule is a Final Mix research result [FM rule constant].
 const TAP_TICKS: f32 = 10.0;
 
@@ -331,7 +331,7 @@ pub enum SquareGround {
     QuickRun,
 }
 
-/// The Square decision after the explicit keys, in the Final Mix order (FM 0x178eb0, docs/final-mix.md):
+/// The Square decision after the explicit keys, in the Final Mix order (FM 0x178eb0, docs/systems/foundations/final-mix.md):
 /// stick at rest: the guard first; then the Dodge Roll (growth slot 4); then Quick Run (slot 1;
 /// needs the stick pushed); then the guard again. With neither learned, a moving press therefore
 /// still guards, as the USA code does (it has no stick test in the guard). `moving` is the stick
@@ -412,7 +412,7 @@ pub struct Growth {
     pub quick_run: u8,
     pub aerial_dodge: u8,
     pub glide: u8,
-    /// The fifth growth kind (growth slot 4 in Final Mix, docs/final-mix.md): from `Progress`.
+    /// The fifth growth kind (growth slot 4 in Final Mix, docs/systems/foundations/final-mix.md): from `Progress`.
     pub dodge_roll: u8,
 }
 
@@ -1333,7 +1333,7 @@ pub fn tick(
     let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
     // A playing mission layout or the fight's stop: no input reaches the controller (WP-F1 item 2).
-    // Tinker Bell's revive event takes the pad from the players for its 42 ticks (`FUN_00196280`, docs/summons.md).
+    // Tinker Bell's revive event takes the pad from the players for its 42 ticks (`FUN_00196280`, docs/systems/drive-limits-summons/contract.md).
     let locked = mission.as_deref().is_some_and(|m| m.control_locked() || m.fight_stopped()) || summons.as_deref().is_some_and(|m| m.revive_pad_locked());
     if locked {
         if pad.any_input() && move_log() {
@@ -1719,7 +1719,7 @@ pub fn tick(
             } else if square {
                 // FUN_00177ea0's order: the explicit actions first (they need a combo or finisher
                 // window, so from idle they never start), then the dash, then the guard.
-                // The Final Mix order (`square_ground`, docs/final-mix.md): still = guard; moving with
+                // The Final Mix order (`square_ground`, docs/systems/foundations/final-mix.md): still = guard; moving with
                 // Dodge Roll learned = the roll (a hold of `TAP_TICKS` ticks becomes the Quick Run when
                 // that is learned); moving with only Quick Run learned = Quick Run at the press (USA
                 // FUN_00178108); moving with neither = the guard (USA FUN_00178080, no stick test).
@@ -2028,7 +2028,7 @@ pub fn tick(
         State::Down => {
             s.motor.vel = Vec3::ZERO;
             // No revival while the mission holds the player: the original keeps Sora down through the
-            // result (docs/struggle.md). The game over (`menu_gameover`, docs/menus.md section 26) owns the knock-out
+            // result (docs/systems/world-minigames/struggle.md). The game over (`menu_gameover`, docs/systems/ui/menus-gameover.md section 26) owns the knock-out
             // where the original has one; this stand-up is what is left where it does not (a mission with host
             // 1.317's bit, a drive form's end, no disc rows for the list).
             if s.timer > 180.0 && !locked && !s.game_over {
@@ -2744,7 +2744,7 @@ mod tests {
     }
 
     /// The decision table of a Square press on the ground: still / moving x Dodge Roll x Quick Run
-    /// x tap / hold (FM 0x178eb0 order, docs/final-mix.md; the tap/hold part is `dash_step`).
+    /// x tap / hold (FM 0x178eb0 order, docs/systems/foundations/final-mix.md; the tap/hold part is `dash_step`).
     #[test]
     fn square_decision_table() {
         use SquareGround::{Guard, QuickRun, Roll};

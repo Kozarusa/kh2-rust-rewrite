@@ -1,4 +1,4 @@
-//! The pause menu's Party page, WP-MN7 (docs/menus.md 2.5 and section 19).
+//! The pause menu's Party page, WP-MN7 (docs/systems/ui/menus-pause.md 2.5 and docs/systems/ui/menus-party.md section 19).
 //!
 //! What the original does (`SLUS_210.05`): the camp's Party row opens page 0x14 (`FUN_0026dbd8`), a **horizontal**
 //! list of the party's members (`FUN_0026d378` gives both lists the previous / next masks 0x40 and 0x80, Left and
@@ -34,7 +34,7 @@ use crate::menu_pages::Exe;
 use crate::party::{PartyHidden, PartyMember, PartySlots};
 use crate::progress::SORA;
 
-/// Camp page ids of the Party screen (`FUN_00251848` jump table, docs/menus.md 1.4).
+/// Camp page ids of the Party screen (`FUN_00251848` jump table, docs/systems/ui/menus-pause.md 1.4).
 pub const PAGE_PICK: u16 = 0x14;
 pub const PAGE_SWITCH: u16 = 0x16;
 pub const PAGES: [u16; 2] = [PAGE_PICK, PAGE_SWITCH];
@@ -687,7 +687,7 @@ mod tests {
 
     /// The groups the page draws, read from `camp.2ld` (skipped without `KH2_ISO`): the frame is the 492 x 254 panel with
     /// an enter, a hold and a leave group, the columns and plates repeat every 118 units, the leader's plate and the fourth
-    /// column have colours of their own, the marker pulses (docs/menus.md 19.2). Printed with their extents.
+    /// column have colours of their own, the marker pulses (docs/systems/ui/menus-party.md 19.2). Printed with their extents.
     #[test]
     fn the_party_groups_exist_in_camp() {
         let Some(mut a) = disc() else { return };

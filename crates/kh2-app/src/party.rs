@@ -1,11 +1,11 @@
-//! Party members, stages 1 and 2 of docs/party.md section 9: Donald and Goofy (whoever the world's
+//! Party members, stages 1 and 2 of docs/systems/party/party-friend-ai.md section 9: Donald and Goofy (whoever the world's
 //! party names) stand where the area's `map` script puts `FRIEND_1` / `FRIEND_2`, with their models,
 //! motion sets and weapons, and follow the player under the friend AI's follow rules: the follow
 //! points, the speed modes, the steer, the player's trail and the warp (catch-up). In battle (the
 //! game's battle flag, FUN_001903d8) they choose targets and actions and attack (stage 2).
 //!
 //! Who: the world's party slot bytes start from preset 1 (`party_rules::apply_preset`, the writer of
-//! the new-game bytes is a gap, docs/party.md section 10); `FRIEND_1` is slot byte 1 and `FRIEND_2`
+//! the new-game bytes is a gap, docs/systems/party/party-friend-ai.md section 10); `FRIEND_1` is slot byte 1 and `FRIEND_2`
 //! slot byte 2 (FUN_0016e208 -> FUN_0017cd20), resolved through the world's merged `memt` record.
 //! The member takes the first free party slot (FUN_0017cd08) and the follow position slot + 1.
 //!
@@ -507,7 +507,7 @@ pub struct PartySlots {
 
 impl PartySlots {
     /// An area of `world` loads: the world's bytes stay as they are (the Party page's edits included); a world
-    /// with no record yet starts from `fresh` [inferred: the app has no new-game writer, docs/party.md section 10].
+    /// with no record yet starts from `fresh` [inferred: the app has no new-game writer, docs/systems/party/party-friend-ai.md section 10].
     /// Returns whether the bytes were carried over.
     pub fn enter_world(&mut self, world: u16, fresh: impl FnOnce() -> [u8; 4]) -> bool {
         if self.started {
@@ -702,7 +702,7 @@ pub struct PartyMember {
     target: Option<Target>,
     /// The battle style, setting byte 0 (party record +0xd4; FUN_0010df08 reads it through vtable +0x98).
     /// 0 at a new game (`Progress::init_party` zeroes the bytes); `KH2_PARTY_STYLE=<n>` sets both members.
-    /// The Party page does not write it yet (docs/party.md section 4).
+    /// The Party page does not write it yet (docs/systems/party/party-friend-ai.md section 4).
     pub style: u8,
     /// +0xcec: the last enemy whose hit the member took (FUN_001106b8).
     attacker: Option<Entity>,
@@ -978,7 +978,7 @@ const PLAYER_ENTITY: u32 = 0x236;
 /// The bone the members' hand objects hang on, by model: found by looking at the hand on screen with
 /// `KH2_PARTY_WEAPON_BONE` (as Sora's 178 was); the game's attach path (FUN_001751b0 -> FUN_00184190)
 /// ends in resource handles, not a bone number, and objentry `WeaponJoint` (2 Donald, 3 Goofy) is not a
-/// bone index of these models (docs/party.md section 11).
+/// bone index of these models (docs/systems/party/party-built.md section 11).
 fn weapon_bone(model: &str) -> Option<usize> {
     if let Some(b) = std::env::var("KH2_PARTY_WEAPON_BONE").ok().and_then(|v| v.parse().ok()) {
         return Some(b);
@@ -1145,7 +1145,7 @@ fn auto_heal_pass(progress: &mut crate::progress::Progress, bytes: [u8; 4], merg
 /// A jump's party reset (WP-PT1; `FUN_001abfe8`, run by `FUN_00104e18` / `FUN_00104d58`): ends a drive form where the
 /// code says so (the Revert request, the app's form end [inferred]) and restores HP and MP of Sora and the standing members
 /// (`FUN_001ac130` for the blocks 1 to 15: HP raised by its maximum and clamped, MP set to its maximum with a running MP
-/// charge ended; the same pair a form start runs, docs/drive-forms.md). A member at 0 HP is left as it is [inferred: the app
+/// charge ended; the same pair a form start runs, docs/systems/drive-limits-summons/drive-forms.md). A member at 0 HP is left as it is [inferred: the app
 /// has no revive path here].
 #[allow(clippy::too_many_arguments)]
 fn jump_reset(
@@ -1372,7 +1372,7 @@ fn spawn_party(
         }
     }
     // Harness: `KH2_PARTY_AT_RECORD=1` puts Sora at the player's row of the friends' group (the app
-    // starts him at its own spawn point; the game places the player at his row, docs/events.md). A
+    // starts him at its own spawn point; the game places the player at his row, docs/systems/core-runtime/contract.md). A
     // test aid, not the game's rule.
     if std::env::var("KH2_PARTY_AT_RECORD").is_ok_and(|v| v == "1")
         && let (Some(r), Ok((mut tf, mut s))) = (player_rec.first(), sora.single_mut())
@@ -2840,7 +2840,7 @@ fn party_forced_hits(
     }
 }
 
-/// The party panels' inputs (docs/party.md section 7): per party slot the member's status block as the
+/// The party panels' inputs (docs/systems/party/party-friend-ai.md section 7): per party slot the member's status block as the
 /// panel reads it (HP +0 over +4, MP +0x180 over +0x184; FUN_0013dcd8 registers slot + 1 at creation,
 /// summons get none). The harness fill `KH2_HUDPARTY` keeps precedence.
 fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party::PartyMembers>>, mut filled: Local<bool>) {
@@ -2922,7 +2922,7 @@ pub struct LimitMembers {
     pub away: bool,
 }
 
-/// Hide and show (docs/party.md section 6, "Drive forms"): when a drive form starts (`DriveState::form`
+/// Hide and show (docs/systems/party/party-friend-ai.md section 6, "Drive forms"): when a drive form starts (`DriveState::form`
 /// becomes non-zero: FUN_001b4c28 -> FUN_001c76b0) every member the form takes (`form_takes`,
 /// FUN_001c77a8) is hidden by FUN_001c7600 (a 15 frame fade-out, bit 0x10, the list entry); when it ends
 /// (FUN_001b4630 / FUN_001b46b8 -> FUN_001c79c8) every listed member comes back through FUN_001c7ab0 with
@@ -2940,7 +2940,7 @@ fn party_hide(
 ) {
     let f = data.fades;
     let form = drive.as_deref().map_or(0, |d| d.form);
-    // The limit (docs/limits-reactions.md): FUN_001b28a0 hides both party objects with no fade (FUN_001c75d0 with 0
+    // The limit (docs/systems/drive-limits-summons/contract.md): FUN_001b28a0 hides both party objects with no fade (FUN_001c75d0 with 0
     // frames); its end (FUN_001b37f8 -> FUN_001c79c8) brings the listed members back.
     for e in limit.read() {
         if e.away {
@@ -3078,7 +3078,7 @@ mod tests {
 
     /// WP-PA2: the entry point `refresh_target` runs every style on one synthetic scene. The member is at the origin,
     /// the player at x 100; enemy A stands at x 300 (member 300, player 200 away), enemy B at x -150 (member 150,
-    /// player 250). Each style picks by its own rule (docs/party.md section 4).
+    /// player 250). Each style picks by its own rule (docs/systems/party/party-friend-ai.md section 4).
     #[test]
     fn party_every_style_chooses_by_its_own_rule() {
         let mut w = bevy::ecs::world::World::new();
@@ -3579,7 +3579,7 @@ mod tests {
         }
     }
 
-    /// The executable's follow constants are the ones docs/party.md names (printed, and checked for
+    /// The executable's follow constants are the ones docs/systems/party/contract.md names (printed, and checked for
     /// the shape the rules rely on: two mirrored side offsets, a positive forward part).
     #[test]
     fn party_consts_from_the_executable() {

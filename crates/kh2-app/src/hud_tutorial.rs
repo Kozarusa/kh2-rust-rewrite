@@ -1,9 +1,9 @@
 //! The tutorial windows of the first Seifer fight (WP-T1): the black message box at the top centre with the
 //! game's own tutorial text, and the pointer arrow over the gauge it explains. Rules and evidence in
-//! docs/hud.md ("Tutorial windows").
+//! docs/systems/ui/hud-banners-windows.md ("Tutorial windows").
 //!
 //! What the game does (`SLUS_210.05`):
-//! - The mission script `msn/us/TT04_MS107.bar` (Seifer, spawn parameter 1; docs/struggle.md) opens the window in its
+//! - The mission script `msn/us/TT04_MS107.bar` (Seifer, spawn parameter 1; docs/systems/world-minigames/struggle.md) opens the window in its
 //!   event 3 thread, at the first instruction: `push 0x3ef7`, host call 1.296. Host 1.296 is `FUN_001744a0`: it builds
 //!   a window object of class `FUN_001abba0` (0x1194 bytes; constructor chain `FUN_001ab830`, the window class 1
 //!   of `kh2_image::window::CLASSES`: font 0 at 16, colour 6, top centre (256, 52), frame kind 4, 432 wide)

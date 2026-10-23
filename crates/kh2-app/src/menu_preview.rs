@@ -1,4 +1,4 @@
-//! The party standing in the camp menu's top page: the 3D preview object (docs/menus.md 16.6, 16.8; WP-MN1).
+//! The party standing in the camp menu's top page: the 3D preview object (docs/systems/ui/menus-new-help.md 16.6, 16.8; WP-MN1).
 //!
 //! The original (`SLUS_210.05`): `FUN_00295720` creates the object `DAT_0036d1f8` (`FUN_0023a018`, vtable 0x36ca50)
 //! when the camp scene starts (`FUN_0024ef30` passes 4 as its mode). Page 0's build `FUN_00250a00` fills one slot per
@@ -143,7 +143,7 @@ pub(super) struct Preview {
 }
 
 /// The world whose slot y is 0x3d instead of 0x60 (`FUN_00250a00` asks `FUN_0027c218`: byte `+0xc` of the save block
-/// 0x33e860 is 10). World index 10 is `lk` (Pride Lands) in the table at 0x349dc0 (docs/hud.md); that byte is the
+/// 0x33e860 is 10). World index 10 is `lk` (Pride Lands) in the table at 0x349dc0 (docs/systems/ui/contract.md); that byte is the
 /// world the player stands in [inferred: `FUN_00149df0` saves it and writes 0xf, the world map, on leaving].
 pub fn in_world_10(area: &str) -> bool {
     area.get(..2) == Some("lk")
@@ -155,7 +155,7 @@ pub fn alpha_of(quads: &[kh2_image::seqd::Quad]) -> f32 {
     quads.iter().map(|q| q.color[0][3] as f32 / 128.0).fold(0.0, f32::max).clamp(0.0, 1.0)
 }
 
-/// Fades the picture with the panel outline: the models' draw takes the outline's alpha (docs/menus.md 16.8).
+/// Fades the picture with the panel outline: the models' draw takes the outline's alpha (docs/systems/ui/menus-new-help.md 16.8).
 /// The port draws the models into a picture, so the picture carries the alpha (`Node::label_fade`).
 fn fade(menu: Res<Menu>, mut scene: ResMut<MenuScene>, mut last: Local<f32>) {
     // The Party page draws the models in a node of its own and fades them itself (menu_party.rs).

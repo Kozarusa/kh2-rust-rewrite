@@ -1,4 +1,4 @@
-//! `.2ld` layout archives: the images and layouts of the menu screens (docs/menus.md section 1.3.1).
+//! `.2ld` layout archives: the images and layouts of the menu screens (docs/systems/ui/menus-pause.md section 1.3.1).
 //!
 //! A `.2ld` is a BAR of two entries: type 29 `IMGZ` (the images) and type 28 `LAYD` (the layout).
 //! The menu's loader (`FUN_0024f558`, `FUN_0024f908`) names an animation group of one of the embedded

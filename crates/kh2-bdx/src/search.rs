@@ -1,6 +1,6 @@
 //! The target search of host functions 6.3, 6.4, 6.5 and 10.55 (party members' scripts: Goofy's
 //! `tornado` and `turbo`). The game keeps the search state in a block the script owns (its own memory);
-//! the runtime reads and writes that block itself and asks the host only for the objects (docs/party.md
+//! the runtime reads and writes that block itself and asks the host only for the objects (docs/systems/party/party-specials.md
 //! section 17).
 //!
 //! The block (FUN_002f01a0 lays it out):

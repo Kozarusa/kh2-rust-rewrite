@@ -1,4 +1,4 @@
-//! Oracle check behind docs/events.md section 2 (exit volumes): `Activator::contains` against the
+//! Oracle check behind docs/systems/core-runtime/areas.md section 2 (exit volumes): `Activator::contains` against the
 //! game's own routines run in kh2-ee on the user's executable. FUN_001d8600 builds a volume from a
 //! 0x40-byte activator record, then FUN_001d89a0 (box) or FUN_001d8a70 (cylinder) tests a point.
 //! The records are the real exit activators of every Twilight Town area plus synthetic ones with

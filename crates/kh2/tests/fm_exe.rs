@@ -1,4 +1,4 @@
-//! Final Mix executable checks behind `docs/final-mix.md`: the rules the doc states for the Final
+//! Final Mix executable checks behind `docs/systems/foundations/final-mix.md`: the rules the doc states for the Final
 //! Mix player controls (Square: guard, dodge roll, Quick Run) and the executable facts of
 //! section 5, read from the instruction words of the user's two executables at run time.
 //! Read-only; nothing from either disc is stored. Skips with a note unless both disc images are

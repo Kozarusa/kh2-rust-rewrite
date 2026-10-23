@@ -1,5 +1,5 @@
 //! The revive's screen fade: the fader object at 0x356b30 (`FUN_0014a978`) as the camera event of Tinker Bell's revive drives it
-//! (event command 0x12, mode 2 -> `FUN_0014a7c8(object, 0x32, 1)` -> `FUN_0014a710`, then one `FUN_0014a818` a tick). Docs: docs/summons.md,
+//! (event command 0x12, mode 2 -> `FUN_0014a7c8(object, 0x32, 1)` -> `FUN_0014a710`, then one `FUN_0014a818` a tick). Docs: docs/systems/drive-limits-summons/summons-objects-1.md,
 //! "WP-RV5".
 //!
 //! The object's blend word (+0x90) is the GS register ALPHA_1 (the packet `FUN_0014b408` sends: the register id at +0x98 is 0x42, set by
@@ -127,7 +127,7 @@ impl Plugin for ReviveFadePlugin {
 const HALF: f32 = 4000.0;
 
 /// The quad: centred on the HUD camera (256, -224), on the keyhole wipe's layer (above the HUD and the menus; the original's task
-/// priority 0x19640 runs after the HUD's 8000, docs/summons.md).
+/// priority 0x19640 runs after the HUD's 8000, docs/systems/drive-limits-summons/contract.md).
 pub fn spawn(commands: &mut Commands, images: &mut Assets<Image>, meshes: &mut Assets<Mesh>, materials: &mut Assets<ReviveFadeMaterial>) {
     let white = images.add(Image::new_fill(
         Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },

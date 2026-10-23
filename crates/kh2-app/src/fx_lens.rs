@@ -6,7 +6,7 @@
 //! `DAT_00360b04`, `DAT_00360b08`, `DAT_00360b1c`), so while the scene is being drawn it shows the picture of the
 //! previous frame, HUD included, shifted along the model's normals and tinted, blended over the new scene
 //! (GS ALPHA 0x44: `Cs * As + Cd * (1 - As)`). Frame after frame the ghost of what was on screen is carried
-//! forward and shifted again: the smear of the Seifer intro's cut (docs/camera.md "The intro camera").
+//! forward and shifted again: the smear of the Seifer intro's cut (docs/systems/player-camera/camera-event.md "The intro camera").
 //!
 //! The app does the same with two passes:
 //! - after the HUD camera has drawn (the last thing in the picture), its main texture is copied into a history
@@ -188,7 +188,7 @@ impl LensPipeline {
 /// The display buffer's size (GS page 0, 512 x 448; `FUN_0014dcd0`). The history texture has this size, not the
 /// window's: every pass of the feedback (copy down, bilinear sample, copy down again) blurs by a texel of the
 /// console's buffer, which is what makes the original's ghost a smooth stretched blur rather than separate copies
-/// (docs/camera.md "The intro camera", WP-FX13).
+/// (docs/systems/player-camera/camera-event.md "The intro camera", WP-FX13).
 const HISTORY_SIZE: Extent3d = Extent3d { width: 512, height: 448, depth_or_array_layers: 1 };
 
 /// Per vertex: clip position (4 floats), texture position (2), tint and weight (4).

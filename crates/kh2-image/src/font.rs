@@ -1,6 +1,6 @@
 //! The game's text fonts: glyph atlases and widths from `msg/<lang>/fontimage.bar` and
 //! `msg/<lang>/fontinfo.bar`. Layout and rules were read from the game's text drawing code in a
-//! local decompilation (docs/hud.md lists the addresses); the file layouts were found by
+//! local decompilation (docs/systems/ui/contract.md lists the addresses); the file layouts were found by
 //! decoding the files and checking them against that code.
 //!
 //! `fontimage.bar` holds three type-36 entries: `sys` (a 512x256 4-bit atlas of 18x24 cells),
@@ -180,7 +180,7 @@ impl FontSet {
     /// row (`Font::clut_row` plus the page). The palette colour is kept as it is (0x80 stays
     /// 128/255) and alpha is the palette's (0x80 = opaque, expanded to 0xff).
     ///
-    /// The game draws text as `texel * vertex colour >> 7` (0x230738, per docs/hud.md)
+    /// The game draws text as `texel * vertex colour >> 7` (0x230738, per docs/systems/ui/contract.md)
     /// with the palette's 0x80 as the texel, so the product is `colour / 255` of full brightness;
     /// a renderer that divides the vertex colour by 128 (`hud_gfx`) gets that product only from
     /// these texels. (An atlas with the colour doubled made every colour above 0x80 clamp to white;

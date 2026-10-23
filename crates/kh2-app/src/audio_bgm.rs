@@ -17,7 +17,7 @@
 //!
 //! A frame of the fades is one 240 Hz driver frame (`kh2_audio::ssl::FRAME_HZ`).
 //!
-//! The battle flag is the game's own ([`BattleFlag`], docs/audio.md "The battle flag"): it is
+//! The battle flag is the game's own ([`BattleFlag`], docs/systems/audio/audio.md "The battle flag"): it is
 //! wanted while a normal enemy stands within 1200 units of the player horizontally
 //! (`FUN_00190900`), a limit runs or a friend's script thread runs (`FUN_001904e0`), and it follows
 //! that wish with a hold of 45 ticks up and 120 down (`FUN_001903e8`). Sora's attacks do not

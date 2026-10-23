@@ -1,4 +1,4 @@
-//! Pure rules of the party members' field behaviour (docs/party.md, stage 1 of section 9): the slot
+//! Pure rules of the party members' field behaviour (docs/systems/party/party-friend-ai.md, stage 1 of section 9): the slot
 //! bytes and the objects `FRIEND_1` / `FRIEND_2` stand for, the friend-AI class and its follow
 //! thresholds, the follow points around the player, the follow step, the steer, the player trail and
 //! the warp (catch-up). Each function names the game routine it ports; `party.rs` runs them.
@@ -19,7 +19,7 @@ pub const FRIEND_1: u32 = 0x237;
 pub const FRIEND_2: u32 = 0x238;
 /// "No member" in a slot byte (FUN_001a71e8 masks the byte with 0x1f; 0x10 is empty).
 pub const EMPTY: u8 = 0x10;
-/// The party preset stage 1 starts from (docs/party.md section 9: "default preset 1").
+/// The party preset stage 1 starts from (docs/systems/party/party-friend-ai.md section 9: "default preset 1").
 pub const DEFAULT_PRESET: usize = 1;
 /// Points in the player's trail (FUN_0010b270: 32 entries after a 16-byte header at 0x3b36c0).
 pub const TRAIL_LEN: usize = 32;
@@ -41,7 +41,7 @@ pub const ROW_BATTLE_PLAYER: usize = 1;
 pub const ROW_BATTLE_TARGET: usize = 2;
 /// Speed modes (+0xb78): 0 stand, 1 walk, 2 run (FUN_0010e5b8).
 pub const MODES: usize = 3;
-/// AI classes in the parameter table at 0x34ea00 (docs/party.md section 4).
+/// AI classes in the parameter table at 0x34ea00 (docs/systems/party/party-friend-ai.md section 4).
 pub const CLASSES: usize = 19;
 
 /// The follow thresholds of one AI class: `[row][mode]` = (slow-down distance, speed-up distance),
@@ -290,9 +290,9 @@ pub struct ResetEffect {
     pub end_form: bool,
     /// The loop over the status blocks 1 to 15 (`FUN_001ac130`): HP raised by its maximum and clamped (`FUN_001a0100`)
     /// and MP set to its maximum with a running MP charge ended (`FUN_001a0240`), the same pair a form start runs
-    /// (docs/drive-forms.md).
+    /// (docs/systems/drive-limits-summons/drive-forms.md).
     pub restore: bool,
-    /// Code 5 raises bit 0x40000 of `DAT_0035d268` (the HUD's locked drive command, docs/hud.md); the app does not model it.
+    /// Code 5 raises bit 0x40000 of `DAT_0035d268` (the HUD's locked drive command, docs/systems/ui/contract.md); the app does not model it.
     pub lock_drive_command: bool,
 }
 

@@ -17,7 +17,7 @@
 //! is (-32, -32) from the ring's centre, turned about that centre by the mask's angle (+0x110;
 //! positive is clockwise on screen); the second is an axis-aligned rectangle at +0x140 with its
 //! position and size set per frame. Sora's own rule (0x1552a0) with this geometry gives exactly the
-//! 270 degree clockwise sweep from west that docs/hud.md records, which fixes the reading.
+//! 270 degree clockwise sweep from west that docs/systems/ui/contract.md records, which fixes the reading.
 //!
 //! Party rules: HP (0x154818, called twice by 0x1551a0: slot 1 with the trail value at panel +0x24
 //! over the maximum, slot 2 with HP over maximum from the member's +0x48c): angle = f * pi - pi/2,
@@ -69,7 +69,7 @@ pub struct PartyMember {
 #[derive(Resource, Default, Clone, Debug)]
 pub struct PartyMembers(pub Vec<PartyMember>);
 
-/// What the summon asks of the party panel (WP-SUM8, docs/summons.md "The summon face panel"). While a summon
+/// What the summon asks of the party panel (WP-SUM8, docs/systems/drive-limits-summons/summons-stages.md "The summon face panel"). While a summon
 /// object holds party slot 0 and the gauge is in mode 3, the party panels give way to one panel built like a party
 /// panel: sequence group 154 (once), then 155 (looping), with the summon's own `face` picture in it; when the
 /// gauge leaves mode 3 group 156 plays out (FUN_00156fe8 / FUN_00157020 -> FUN_00156e30). `summon.rs` fills it.
@@ -138,7 +138,7 @@ pub struct PartyNodes {
 }
 
 /// Index of the `face` pair in a member's object file: the first two adjacent entries tagged `face` (IMGD, SEQD;
-/// member resource +0x7b0 tag "face", docs/hud.md), not simply the file's last pair.
+/// member resource +0x7b0 tag "face", docs/systems/ui/contract.md), not simply the file's last pair.
 pub fn face_pair(tags: &[&str]) -> Option<usize> {
     tags.windows(2).position(|w| w[0] == "face" && w[1] == "face")
 }
@@ -155,7 +155,7 @@ fn load_face(data: &[u8], images: &mut Assets<Image>) -> Option<hud_gfx::SeqFile
 /// The model each slot's portrait comes from. The member's own object file holds the `face` pair
 /// (member resource +0x7b0, tag "face", fetched by 0x16b998 as for Sora's `P_EX100`), so the model name
 /// is the key. With no member in the field, the harness fill `KH2_HUDPARTY` shows slot 0 as Donald
-/// (`P_EX020`) and slot 1 as Goofy (`P_EX030`), the members' slots in docs/party.md (the panel of slot 1
+/// (`P_EX020`) and slot 1 as Goofy (`P_EX030`), the members' slots in docs/systems/party/contract.md (the panel of slot 1
 /// lies above that of slot 0, as in the user's picture of the original: Goofy on top, Donald below).
 fn model_of(slot: usize, members: &[&str]) -> Option<String> {
     if let Some(m) = members.get(slot) {

@@ -1,8 +1,8 @@
-//! The party members' own BDX scripts (stage 1 of docs/party.md section 9: "the member's BDX attached
+//! The party members' own BDX scripts (stage 1 of docs/systems/party/party-friend-ai.md section 9: "the member's BDX attached
 //! and put in `idle`"). Each member's model file carries a script (BAR type 3 of `obj/<model>.mdlx`,
 //! `kh2 bdx P_EX020`): its init event registers the modes (`appear`, `idle`, `idle_time`, `footwork`,
 //! `mode_battle`, the spells ...) and its main event only yields; the native friend AI starts modes by
-//! name (docs/party.md section 4, action records +0x20). Stage 1 starts the script when the member
+//! name (docs/systems/party/party-friend-ai.md section 4, action records +0x20). Stage 1 starts the script when the member
 //! appears and switches it to `idle`, then runs it every tick through the enemy host (`BevyHost`).
 //!
 //! The script runs through `friend_host::FriendHost`: its motion requests go through the player-type
@@ -155,7 +155,7 @@ fn friend_attach(mut commands: Commands, disc: Res<Disc>, mut scripts: ResMut<Fr
 /// last advance, as `enemy_ai` builds them for enemies: range triggers 16..19 active, frame triggers 9..12
 /// crossed (the dispatcher 0x188498). The members' scripts wait on bit 0 of +0x239 for the cast (Donald's
 /// R089a after motion 192, whose trigger 9 lies at tick 26). [inferred] Frame triggers are counted from the
-/// motion's first frame, as `party` does for the item motion (docs/party.md section 10).
+/// motion's first frame, as `party` does for the item motion (docs/systems/party/party-friend-ai.md section 10).
 pub(crate) fn trigger_bits(anim: &Animator) -> [u8; 2] {
     let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return [0; 2] };
     let g = |f: f32| (f - m.frame_start) * crate::data::LOGIC_HZ / m.fps.max(1.0);

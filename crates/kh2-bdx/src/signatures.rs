@@ -3,7 +3,7 @@
 //! The game's interpreter takes a host function's argument count from the table at 0x35bce8
 //! (`exe.rs`). The tables of group 3 (the Gummi ship scripts), group 9 (the Gummi menu scripts) and
 //! entries 0 and 1 of group 4 are empty in the executable file and nothing in the executable or on the
-//! disc fills them in (see docs/bdx.md), so scripts that call them cannot be run from the table. Their
+//! disc fills them in (see docs/systems/script-host/contract.md), so scripts that call them cannot be run from the table. Their
 //! argument counts are recovered here from the scripts themselves. The compiler pushes a call's
 //! arguments one after the other and leaves the operand stack empty at the end of every statement, so
 //!

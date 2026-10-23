@@ -1,5 +1,5 @@
 //! Against the user's disc (skipped without KH2_ISO or local/iso.txt): every area file on the disc parses, and the enemy the app's areas spawn most (after Shadow and Soldier) is the Dusk.
-//! `cargo test -p kh2-ard --test disc -- --nocapture` prints the list (docs/enemies.md).
+//! `cargo test -p kh2-ard --test disc -- --nocapture` prints the list (docs/systems/script-host/contract.md).
 
 use std::collections::BTreeMap;
 
@@ -116,7 +116,7 @@ fn tt_areas(a: &mut kh2_archive::Archive) -> Vec<(String, kh2_ard::Area)> {
         .collect()
 }
 
-/// docs/events.md section 1: the opcodes of every Twilight Town area script, with counts per area
+/// docs/systems/core-runtime/areas.md section 1: the opcodes of every Twilight Town area script, with counts per area
 /// and in total, and the trigger definitions (opcode 0xc) decoded.
 #[test]
 fn twilight_town_area_script_opcodes() {
@@ -149,7 +149,7 @@ fn twilight_town_area_script_opcodes() {
     assert!(total.contains_key(&kh2_ard::OP_SPAWN));
 }
 
-/// docs/events.md section 2: every spawn group of Twilight Town with its kind, the exits (kind 1:
+/// docs/systems/core-runtime/areas.md section 2: every spawn group of Twilight Town with its kind, the exits (kind 1:
 /// header +0x1c area, +0x1d entrance), activator volumes, walk paths and signals; and the BAR
 /// entries of type 3 (scripts) and 0x16 (events) of each area file.
 #[test]
@@ -195,7 +195,7 @@ fn twilight_town_groups_exits_and_events() {
     eprintln!("group kinds over tt: {kinds:?}");
 }
 
-/// docs/events.md section 6: every Twilight Town event (type 0x16 entry) splits into commands
+/// docs/systems/events-movies/event-player.md section 6: every Twilight Town event (type 0x16 entry) splits into commands
 /// `u16 size, u16 opcode` to its last byte or a size-0 end; the opcodes used, with counts.
 #[test]
 fn twilight_town_events_split_into_commands() {
@@ -228,7 +228,7 @@ fn twilight_town_events_split_into_commands() {
     eprintln!("07localset tt: {n} (program, area) pairs {pairs:x?}");
 }
 
-/// docs/events.md sections 5 and 7: the Twilight Town story flags (world 2 of `00progress.bin`)
+/// docs/systems/core-runtime/story-flags.md section 5 and docs/systems/core-runtime/areas.md 7: the Twilight Town story flags (world 2 of `00progress.bin`)
 /// whose side effects write area program bytes, and the music the area scripts set (opcode 0x10)
 /// next to the `arif` pairs of `03system.bin`.
 #[test]
@@ -272,7 +272,7 @@ fn twilight_town_story_flags_and_music() {
     }
 }
 
-/// WP-E1c (docs/events.md section 2, "Lock"): the exit-lock table `dsa` of `00progress.bin`
+/// WP-E1c (docs/systems/core-runtime/areas.md section 2, "Lock"): the exit-lock table `dsa` of `00progress.bin`
 /// (FUN_0017fd10 -> FUN_001951f8; read by FUN_00195208) and the Twilight Town story flags whose
 /// side effects (ops 2..5: FUN_00195260, FUN_00195288, FUN_001952a0, FUN_00195300) write a lock
 /// halfword. Every entry index a flag names is inside the table.
@@ -301,7 +301,7 @@ fn the_exit_lock_table_and_the_flags_that_write_it() {
     }
 }
 
-/// WP-E1 (docs/events.md section 9): every Twilight Town area run with programs (0, 0, 0) through
+/// WP-E1 (docs/systems/events-movies/events-plan.md section 9): every Twilight Town area run with programs (0, 0, 0) through
 /// `kh2_ard::run::run_area` for each entrance a player entity names: the groups loaded, where the
 /// player starts (FUN_001981a0), the exits of the loaded groups and the triggers on event 1 (an
 /// exit touched) that would take an exit over. tt04 has a start for entrance 1 and an exit to tt03.
@@ -342,7 +342,7 @@ fn twilight_town_entrances_and_exits_with_program_zero() {
     assert!(tt04.0, "tt04 has no player start for entrance 1 in its program-0 groups");
     assert!(tt04.1, "tt04 has no exit to tt03 in its program-0 groups");
 }
-/// docs/events.md section 3, "Talk" (WP-E3): `libretto-tt.bar` parses, its records are sorted by
+/// docs/systems/events-movies/npc-savepoints.md section 3, "Talk" (WP-E3): `libretto-tt.bar` parses, its records are sorted by
 /// id (the game finds them by binary search, `FUN_001b64b0`), every program reads to its op 0, and
 /// every Twilight Town townsperson (objentry type 15) with a talk id (spawn record +0x28) has a
 /// program. Prints each townsperson's talk id, part command (+0x2c) and program.
@@ -414,7 +414,7 @@ fn twilight_town_tt01_short_events() {
         let d = ard.events.get(tag).unwrap_or_else(|| panic!("tt01 holds event {tag}"));
         let cmds = kh2_ard::parse_event(d).expect("event");
         assert!(!cmds.is_empty(), "tt01 event {tag} has commands");
-        // Opcode 8 is the end marker the timeline thread waits for (docs/events.md, FUN_00222668).
+        // Opcode 8 is the end marker the timeline thread waits for (docs/systems/core-runtime/contract.md, FUN_00222668).
         assert!(cmds.iter().any(|c| c.opcode == 8), "tt01 event {tag} has its end opcode 8");
         for c in &cmds {
             eprintln!("tt01 {tag}: op {:#x} ({} bytes) {:02x?}", c.opcode, c.data.len(), c.data);
@@ -450,7 +450,7 @@ fn twilight_town_world_record_programs() {
     eprintln!("{n} programs carry opcode 0xf");
 }
 
-/// WP-JT2 A: `07localset.bin` on the user's disc (docs/events.md section 4): Twilight Town's entry holds 144
+/// WP-JT2 A: `07localset.bin` on the user's disc (docs/systems/events-movies/npc-savepoints.md section 4): Twilight Town's entry holds 144
 /// `(program, area)` pairs, the prologue's Seifer fight key 0xb5 and the event chain's key 0x4d both belong to
 /// tt04 (area 4), and a key the world does not list gives no area.
 #[test]

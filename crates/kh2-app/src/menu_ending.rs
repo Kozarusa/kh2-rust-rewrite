@@ -1,4 +1,4 @@
-//! The battle report: menu kind 0xe (`ending.2ld`; docs/menus.md section 24), opened by a jump record of type 5.
+//! The battle report: menu kind 0xe (`ending.2ld`; docs/systems/ui/menus-shop.md section 24), opened by a jump record of type 5.
 //!
 //! What the original does (`SLUS_210.05`, read in WP-JT4): `FUN_0019d9d8` case 5 calls `FUN_0024f0b8(0xe, -1)`, which
 //! requests the kind's scene (record 0x380650, scene 9). Its init `FUN_00292f18` loads `ending.2ld` (the file name
@@ -9,8 +9,8 @@
 //!
 //! What the port does: the layout, title and rows are drawn from the file; the values come from [`Report`]. Rows 3 to 7
 //! (save `+0x2fdc`, `+0x2dbe`, `+0x2fe2`, `+0x2fea`, `+0x2fec`) are read from `Progress` ([`Report::from_progress`]); only
-//! the form change (`drive.rs`) writes one of them so far, the others have no event in the app (docs/menus.md 24.4a). Rows 1
-//! and 2 (`FUN_002787b0`, `FUN_001de018`) have no source and stay 0 (docs/menus.md 24.4). The screen holds the field frozen until a confirm,
+//! the form change (`drive.rs`) writes one of them so far, the others have no event in the app (docs/systems/ui/menus-shop.md 24.4a). Rows 1
+//! and 2 (`FUN_002787b0`, `FUN_001de018`) have no source and stay 0 (docs/systems/ui/menus-shop.md 24.4). The screen holds the field frozen until a confirm,
 //! cancel or Start press closes it [inferred: the original's task never reads the pad and leaves with a scene change from
 //! an event, which the app does not have].
 

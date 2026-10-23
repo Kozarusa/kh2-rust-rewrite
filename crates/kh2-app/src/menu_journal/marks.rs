@@ -1,4 +1,4 @@
-//! The journal's NEW tags and the scroll bar object (docs/menus.md 20.9, WP-MN12).
+//! The journal's NEW tags and the scroll bar object (docs/systems/ui/menus-journal.md 20.9, WP-MN12).
 //!
 //! The original keeps two bit sets. The "seen" set lives in the save (`FUN_002b70e0` = save block + 0x38f0: one bit per
 //! story record, album record, treasure, map, character and so on). The "new" buffer `DAT_0036d4e8` (0x128 bytes,

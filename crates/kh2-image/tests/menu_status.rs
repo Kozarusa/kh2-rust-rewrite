@@ -1,5 +1,5 @@
 //! Read-only tests against the user's executable and menu files (skipped without `KH2_ISO` or
-//! `local/iso.txt`): the Status screen's tables (docs/menus.md 2.6 and section 10). Values are read at
+//! `local/iso.txt`): the Status screen's tables (docs/systems/ui/menus-pause.md 2.6 and docs/systems/ui/menus-status.md section 10). Values are read at
 //! run time and printed; the asserts check the structure the doc states. Nothing is copied into the
 //! repository.
 
@@ -61,7 +61,7 @@ fn text(m: &Messages, id: u16) -> String {
     m.text(u32::from(id & 0x7fff)).unwrap_or_else(|| "<none>".into())
 }
 
-/// The tables of the Status screen (addresses in docs/menus.md 2.6): the three number formats the page
+/// The tables of the Status screen (addresses in docs/systems/ui/menus-pause.md 2.6): the three number formats the page
 /// prints with, the tab name messages, the row tables of the three kinds of tab and the group each row
 /// type draws.
 #[test]

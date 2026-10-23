@@ -1,4 +1,4 @@
-//! The pause menu's Status pages, stage M2 (docs/menus.md 2.6 and section 10).
+//! The pause menu's Status pages, stage M2 (docs/systems/ui/menus-pause.md 2.6 and docs/systems/ui/menus-status.md section 10).
 //!
 //! What the original does (`SLUS_210.05`): Status is camp page 0x17 (a list of the party's tabs) and page
 //! 0x18 (the numbers of the chosen tab, two columns of ten rows). `FUN_00265c48` builds page 0x17,
@@ -34,7 +34,7 @@ use crate::menu_pages::Exe;
 use crate::progress::Progress;
 use crate::sora::Sora;
 
-/// Camp page ids of the Status screen (`FUN_00251848` jump table, docs/menus.md 1.4).
+/// Camp page ids of the Status screen (`FUN_00251848` jump table, docs/systems/ui/menus-pause.md 1.4).
 pub const PAGE_TABS: u16 = 0x17;
 pub const PAGE_NUMBERS: u16 = 0x18;
 
@@ -624,7 +624,7 @@ impl Tables {
 
 // --- the screen -------------------------------------------------------------------------------------
 
-/// System sounds (docs/menus.md 9: bank 2 of the sound driver, `PlaySe::number(2000 + id)`).
+/// System sounds (docs/systems/ui/menus-pause-m1.md 9: bank 2 of the sound driver, `PlaySe::number(2000 + id)`).
 pub const CURSOR: u32 = 2001;
 pub const CONFIRM: u32 = 2002;
 pub const CANCEL: u32 = 2004;
@@ -644,7 +644,7 @@ const REPEAT_EVERY: u32 = 6;
 /// own sizes come from the sequence (rows 200 wide and 20 high above their origin, a row pitch of 24, a
 /// column pitch of 232; the value plates 164 wide with a pitch of 170); the list objects' origins are set
 /// by code that was not read (`FUN_00138ed0` on the lists, `FUN_0029b600`), so these are chosen to fit the
-/// canvas [inferred] (docs/menus.md 10.3): page 0x17 shows the tab list at the left and the plates of the
+/// canvas [inferred] (docs/systems/ui/menus-status.md 10.3): page 0x17 shows the tab list at the left and the plates of the
 /// highlighted tab at the right, page 0x18 the wide rows across the screen.
 mod at {
     /// The tab list: the origin of the first row, as page 0's list (`menu.rs`), and the row pitch.
@@ -832,7 +832,7 @@ fn input(
     let dir = if keys.pressed(KeyCode::ArrowUp) { -1i8 } else if keys.pressed(KeyCode::ArrowDown) { 1 } else { 0 };
     let fresh = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown);
     // One move per new press (wrapping) and, while held, one per `REPEAT_EVERY` frames after the delay
-    // (not wrapping): `FUN_002977a8`, docs/menus.md 1.7.
+    // (not wrapping): `FUN_002977a8`, docs/systems/ui/menus-pause.md 1.7.
     let mut step = None;
     if dir == 0 {
         ui.held = (0, 0);

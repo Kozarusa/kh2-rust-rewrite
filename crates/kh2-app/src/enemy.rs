@@ -1891,7 +1891,7 @@ pub fn receive_hits(
     mut ineffective: MessageWriter<IneffectiveHit>,
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
     mut game: MessageWriter<crate::fx::GameEffect>,
-    drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
+    drive: (Option<Res<crate::shared::drive::DriveRules>>, Option<Res<crate::shared::drive::DriveState>>),
     (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::magic::MagicState>>),
     (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
     (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
@@ -1930,7 +1930,7 @@ pub fn receive_hits(
         // Anti form multiplies the damage Sora deals (FUN_001a0610), then the attacker's ability
         // block adds its element and combo/reaction boosts (FUN_001a0a18, FUN_001a0aa8).
         if let (Some(rules), Some(state)) = (&drive.0, &drive.1) {
-            dmg = crate::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
+            dmg = crate::shared::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
         }
         if let Some(ab) = &abilities {
             dmg = crate::shared::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);

@@ -31,6 +31,7 @@ kh2-enemy = { path = "crates/kh2-enemy" }
 kh2-player = { path = "crates/kh2-player" }
 kh2-party = { path = "crates/kh2-party" }
 kh2-event = { path = "crates/kh2-event" }
+kh2-hud = { path = "crates/kh2-hud" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev]

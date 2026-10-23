@@ -425,7 +425,7 @@ fn drive_test_set() -> bool {
 
 /// One frame of the panel's reaction to Sora's HP: the event handlers run by 0x157e48 (hit 0x157040,
 /// heal 0x157108) or, without an event, the state switch 0x157230. Then the HP trail (0x1574d8).
-pub(crate) fn panel_frame(scene: &mut HudScene, p: &mut SoraPanel, hp: i32, max: i32, ko: bool) {
+pub fn panel_frame(scene: &mut HudScene, p: &mut SoraPanel, hp: i32, max: i32, ko: bool) {
     let state = PanelState::of(hp, max, ko);
     let s = state as usize;
     let last = p.state.unwrap_or(PanelState::Normal);

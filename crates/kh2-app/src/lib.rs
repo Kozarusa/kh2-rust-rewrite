@@ -16,10 +16,10 @@ pub use kh2_enemy::*;
 pub use kh2_player::*;
 pub use kh2_party::*;
 pub use kh2_event::*;
+pub use kh2_hud::*;
 
 mod plugins;
 mod asset_viewer;
-mod hud;
 mod menu;
 mod menu_abilities;
 mod menu_ending;

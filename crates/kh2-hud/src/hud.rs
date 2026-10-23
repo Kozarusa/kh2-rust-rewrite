@@ -14,32 +14,32 @@ pub use crate::shared::hud::{DamagePopup, DebugHud};
 
 // The HUD's own files sit beside this one; they are submodules so `main.rs` stays untouched.
 #[path = "hud_gauge.rs"]
-pub(crate) mod hud_gauge;
-pub(crate) use kh2_game_core::hud_gfx;
+pub mod hud_gauge;
+pub use kh2_game_core::hud_gfx;
 #[path = "hud_target.rs"]
-pub(crate) mod hud_target;
+pub mod hud_target;
 #[path = "hud_banner.rs"]
 mod hud_banner;
 #[path = "hud_menu.rs"]
-pub(crate) mod hud_menu;
-pub(crate) use kh2_game_core::hud_text;
+pub mod hud_menu;
+pub use kh2_game_core::hud_text;
 #[path = "hud_card.rs"]
 mod hud_card;
 #[path = "hud_party.rs"]
-pub(crate) mod hud_party;
+pub mod hud_party;
 #[path = "hud_msgwin.rs"]
-pub(crate) mod hud_msgwin;
+pub mod hud_msgwin;
 #[path = "hud_mission.rs"]
 mod hud_mission;
 
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::HudGfxPlugin;
 #[allow(unused_imports)] // re-exported for the keyhole wipe in area_jump.rs
-pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode, SeqFile};
+pub use hud_gfx::{HudCamera, HudScene, Node as HudNode, SeqFile};
 /// The asset path of the HUD quad shader (`menu_gfx`).
-pub(crate) use hud_gfx::HUD_QUAD_SHADER;
+pub use hud_gfx::HUD_QUAD_SHADER;
 /// A node's text, for the event player's subtitle lines (`event_player::subtitles`).
-pub(crate) use hud_text::Label;
+pub use hud_text::Label;
 use hud_banner::{BannerNodes, ExperiencePopups, HudBanner, NumberStrips, StripNodes};
 use hud_card::{AreaCard, CardNodes};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};

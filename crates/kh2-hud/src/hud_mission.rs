@@ -25,7 +25,7 @@ use bevy::prelude::*;
 
 // The INFORMATION bar (WP-I1) sits beside this file; a submodule so `hud.rs` stays untouched.
 #[path = "hud_info.rs"]
-pub(crate) mod hud_info;
+pub mod hud_info;
 
 use super::hud_gfx::{Edge, HudScene, Node, SeqFile};
 use crate::assets::Disc;

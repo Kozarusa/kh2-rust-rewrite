@@ -34,7 +34,7 @@ pub use crate::shared::hud::{pages, ScriptWindow};
 
 /// The tutorial presenter (docs/systems/ui/hud-banners-windows.md "Tutorial windows"): opens windows from the game's own messages.
 #[path = "hud_tutorial.rs"]
-pub(crate) mod hud_tutorial;
+pub mod hud_tutorial;
 
 /// A window to show: the message and the window class (index into `kh2_image::window::CLASSES`).
 #[derive(Clone, Debug, PartialEq)]

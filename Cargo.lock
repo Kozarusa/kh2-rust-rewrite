@@ -3327,6 +3327,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-factory",
 ]
 
 [[package]]
@@ -3395,6 +3396,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-factory",
  "kh2-ps2",
 ]
 

@@ -475,7 +475,7 @@ fn start_locked(mission: Option<&crate::struggle::Mission>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn input(
+pub fn input(
     mut menu: ResMut<Menu>,
     mut scene: ResMut<MenuScene>,
     mut keys: ResMut<ButtonInput<KeyCode>>,

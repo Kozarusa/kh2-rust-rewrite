@@ -568,7 +568,7 @@ fn load(disc: Res<Disc>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<Me
 
 /// The second layer set of `save.2ld`: the BAR entries of type 0x1c are `save` and `load` (`FUN_0023c438(file, n)` takes the n-th of
 /// them, `FUN_002557a8` builds with 0 and `FUN_00258bf0` with 1). `None` unless the entry parses and its sequence 0 exists.
-pub(crate) fn load_layd(file: &[u8]) -> Option<Layd> {
+pub fn load_layd(file: &[u8]) -> Option<Layd> {
     let entries = kh2_bar::parse(file).ok()?;
     let e = entries.iter().filter(|e| e.kind == 28).nth(1)?;
     let l = layd::parse_layd(e.data)?;

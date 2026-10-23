@@ -21,6 +21,7 @@ kh2-player.workspace = true
 kh2-party.workspace = true
 kh2-event.workspace = true
 kh2-hud.workspace = true
+kh2-menu.workspace = true
 kh2-archive.workspace = true
 kh2-model.workspace = true
 kh2-anim.workspace = true

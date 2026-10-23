@@ -36,7 +36,7 @@ use crate::enemy_host::{call_id, compute_drop, parse_przt, prize_row, BevyHost, 
 use crate::enemy_obj::{handle_of_serial, AppearRamp, Appearing, CreatedHandle, Obj, ObjTable, Other, Remote, FLAG_UNHITTABLE, HIT, PLAYER, REMOTE_PATIENCE};
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
 use crate::motor::wrap_angle;
-use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
+use crate::shared::reaction::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
 use crate::schedule::Sim;
 use crate::skel::Animator;
 use crate::shared::sora::Sora;

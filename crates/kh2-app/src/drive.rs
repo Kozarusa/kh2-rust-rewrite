@@ -234,7 +234,7 @@ struct ChargeHook {
 
 #[allow(clippy::too_many_arguments)]
 fn charge_tick(
-    mut cmds: MessageReader<crate::reaction_cmd::PlayerReactionCmd>,
+    mut cmds: MessageReader<crate::shared::reaction::PlayerReactionCmd>,
     rules: Res<DriveRules>,
     battle: Res<Battle>,
     mut state: ResMut<DriveState>,
@@ -242,7 +242,7 @@ fn charge_tick(
     mut sora_q: Query<&mut Sora>,
     mut anims: Query<&mut Animator>,
 ) {
-    use crate::reaction_cmd::PlayerReactionCmd;
+    use crate::shared::reaction::PlayerReactionCmd;
     let Ok(mut s) = sora_q.single_mut() else {
         cmds.clear();
         return;

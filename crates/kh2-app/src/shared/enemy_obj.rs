@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use kh2_bdx::Vec4;
 
 use crate::motor::Motor;
-use crate::reaction_cmd::PlayerReactionCmd;
+use crate::shared::reaction::PlayerReactionCmd;
 
 /// The attack rows `enemy::receive_hits` has seen, by `atkp` id: (original `EnemyReaction`, `Element`). The hit record's byte +0x27 is
 /// the row's byte +10 (FUN_0018b618 stores it next to the effective reaction at +0x26; host 2.64 reads it, 0x18e0e0) and host 2.85

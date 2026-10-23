@@ -39,6 +39,8 @@ use crate::skel::Animator;
 use crate::sora::{Sora, State};
 use crate::SCALE;
 
+pub use crate::shared::reaction::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
+
 /// Range trigger id of the offer.
 pub const TRIGGER: u8 = 20;
 
@@ -196,7 +198,7 @@ pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
     // FUN_001ba2c0 case 0x7f (with 0x37, the save point's): 5 while FUN_001c6c08(0x35fec0, 0) answers non-zero. Of
     // that state word the app has the drive form (bit 1, as `savepoint::save_status` reads it); the summon and the
     // third state are not tracked [approx].
-    if c.execute == crate::menu_shop::EXECUTE_EVENT && ctx.form != 0 {
+    if c.execute == crate::shared::reaction::EXECUTE_EVENT && ctx.form != 0 {
         own = Status::Blocked;
     }
     if c.execute == EXECUTE_MP_COMMAND {
@@ -276,57 +278,6 @@ pub fn bump_use(uses: &mut ReactionUses, progress: Option<&mut crate::progress::
     }
 }
 
-/// Sent when the player accepts an offer. `enemy_ai.rs` delivers it to the target's script as event
-/// 0xb (event 11) with the arguments (player, `cmd`, target record {target object, `pos`, 0, -1, 0}).
-#[derive(Message, Clone, Copy, Debug)]
-pub struct ReactionAccepted {
-    pub cmd: u16,
-    pub pos: i16,
-    pub target: Entity,
-}
-
-/// What a target's script asks of the *player* while a reaction command runs: the host calls the
-/// Soldier's command-34 thread makes on the player's context (docs/systems/drive-limits-summons/contract.md). Written by
-/// `enemy_ai.rs`; the consumer is the player side, `player_reaction.rs` (paired motion, velocity,
-/// unhittable flag and queued motion are applied to Sora; `Charge` is still not consumed).
-#[allow(dead_code)]
-#[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub enum PlayerReactionCmd {
-    /// Host 1.29 (FUN_0017f160): play entry `slot` of `from`'s motion set on the player's body with
-    /// `blend` frames (the entry holds one sub-motion per player model, named `%03d0` of the player's
-    /// objentry byte +7). `serial` is the value the player's +0x158 takes; the script compares it with
-    /// `obj_word_158` to see whether its motion is still the one running.
-    /// `ticks` is the sub-motion's length in 60 Hz ticks (0 when the entry has none for the player's model).
-    PairedMotion { from: Entity, slot: usize, blend: f32, serial: i32, ticks: f32 },
-    /// Host 1.70 / 1.71 with bit 3 on the player: cannot be hit (FUN_0019a4f0 tests it).
-    Unhittable(bool),
-    /// Host 1.89: the player's secondary velocity vector (+0x880): unit direction in the app's space
-    /// and speed in centimetres per tick. Set again every tick while the script wants it.
-    Velocity { dir: Vec3, speed: f32 },
-    /// Host 1.13: queue motion `slot` of the player's own set behind the running one (FUN_0017e170).
-    QueueMotion { slot: usize, blend: f32 },
-    /// Commands 455 and 457 accepted by a player of Mickey's class (FUN_001ce518, not the generic
-    /// accept path; Sora's class sends them to the target as event 11): the player's timer at +0xb68 is set (120 ticks and motion 0xc1 for 455, 30 ticks and no motion for
-    /// 457); while it runs FUN_001ce240 adds one unit to the drive gauge (FUN_001a0290) each time its
-    /// second timer (+0xb6c) runs out with the motion near its end, and at zero asks for motion 5. The
-    /// consumer (`drive.rs`, `sora.rs`) is a hook.
-    Charge { ticks: f32, motion: Option<u16> },
-}
-
-/// The player's part of a running reaction command, as the scripts see it.
-#[derive(Resource, Default, Debug)]
-pub struct PlayerReaction {
-    /// The player's +0x158: the serial of the motion `play_motion_with` last started on him (the
-    /// counter at 0x35ccb0 counts down from 0 and never returns above -1).
-    pub serial: i32,
-    /// Set by the player side when the paired motion has ended (bit 1 of the player's +0x160, read by
-    /// host 1.14). Set by `player_reaction.rs` from the real end of Sora's paired motion.
-    pub paired_done: bool,
-    /// Ticks left of Sora's current paired motion (`player_reaction.rs` writes it from the animator
-    /// every tick).
-    pub remaining: Option<f32>,
-}
-
 /// The Auto Limit offer (`FUN_001d25e0` through `FUN_0019d430`): the command shown now, the party the tests saw (handed to
 /// `limit.rs` when the offer is accepted) and the harness list `KH2_AUTO_LIMIT=<member ids>`, members treated as holding Auto Limit
 /// and their limit abilities (a test aid; the real source is the member's saved ability list).
@@ -334,8 +285,8 @@ pub struct PlayerReaction {
 pub struct AutoLimit {
     /// The command offered last tick: the "wanted" id of `FUN_001d25e0` that wins without a draw.
     pub shown: u16,
-    party: crate::limit::Party,
-    pretend: Vec<u8>,
+    pub party: crate::limit::Party,
+    pub pretend: Vec<u8>,
 }
 
 /// The accept key was pressed (Triangle in the game).
@@ -359,8 +310,8 @@ struct FakeOffer(Option<u16>);
 /// native source of reaction commands).
 #[derive(Resource, Default)]
 struct Parts {
-    by_kind: HashMap<&'static str, Table>,
-    player: Option<parts::Rec>,
+    pub by_kind: HashMap<&'static str, Table>,
+    pub player: Option<parts::Rec>,
 }
 
 /// The enemies whose collision tables the native offer reads: every kind the app spawns
@@ -569,7 +520,7 @@ fn native_offers(
             }
         }
     }
-    let Some(player) = parts::shape_of(body, player_pos, player_yaw) else { return };
+    let Some(player) = crate::reaction_parts::shape_of(body, player_pos, player_yaw) else { return };
     let (epos, eyaw) = (tr.translation / SCALE, tr.rotation.to_euler(EulerRot::YXZ).0);
     // The one part walk of FUN_0019cb70 is `npc::part_offer` (the townspeople and the save points use
     // it too). An enemy has no spawn-record command, so a part with id 0x83 finds none (0xffff names
@@ -681,7 +632,7 @@ fn accept(
     targets: Query<&Enemy>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut talk: Option<ResMut<crate::npc::Talk>>,
-    mut shop: Option<ResMut<crate::menu_shop::ShopRequest>>,
+    mut shop: Option<ResMut<crate::shared::reaction::ShopRequest>>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
     mut limit_start: MessageWriter<crate::limit::StartLimit>,
     auto: Res<AutoLimit>,
@@ -710,13 +661,13 @@ fn accept(
         // 0x1e is Examine (FUN_001a54a8: the talk program in the top window, `npc.rs`). 0x7f fires the field event of
         // the pending command (`FUN_00197b70(+6, 0)`) [inferred: the row's Argument]: the Shop rows' events open menu
         // kind 4 (`menu_shop.rs`); other events are not ported.
-        if matches!(c.execute, crate::npc::EXECUTE_TALK | crate::npc::EXECUTE_EXAMINE | crate::savepoint::EXECUTE_SAVE) {
+        if matches!(c.execute, crate::shared::reaction::EXECUTE_TALK | crate::shared::reaction::EXECUTE_EXAMINE | crate::shared::reaction::EXECUTE_SAVE) {
             if let Some(t) = talk.as_deref_mut() {
                 t.accepted = Some(a);
             }
-        } else if c.execute == crate::menu_shop::EXECUTE_EVENT {
+        } else if c.execute == crate::shared::reaction::EXECUTE_EVENT {
             let event = c.argument as u16 as u32;
-            if crate::menu_shop::opens_shop(event)
+            if crate::shared::reaction::opens_shop(event)
                 && let Some(s) = shop.as_deref_mut()
             {
                 s.0 = Some(event as u16);
@@ -792,6 +743,123 @@ fn accept(
             a.from
         );
     }
+}
+
+/// The talk state: the world's talk table, the current offer and the talk that runs.
+#[derive(Resource, Default)]
+pub struct Talk {
+    pub world: Option<String>,
+    pub lib: Option<kh2_ard::libretto::Libretto>,
+    /// The candidate for the player's slot 1 this tick (a townsperson's, or a save point's that
+    /// `savepoint.rs` puts in after it).
+    pub offer: Option<crate::reaction_cmd::Active>,
+    /// The townspeople's own candidate (for the log).
+    pub npc_offer: Option<crate::reaction_cmd::Active>,
+    /// The offer `reaction_cmd::accept` dispatched this tick (Execute 0x1f here, 0x37 in
+    /// `savepoint.rs`): the accept key was pressed while this candidate held the player's slot 1.
+    pub accepted: Option<crate::reaction_cmd::Active>,
+    pub run: Option<TalkRun>,
+}
+
+pub struct TalkRun {
+    pub npc: Entity,
+    pub tag: String,
+    pub ops: Vec<kh2_ard::libretto::Op>,
+    pub at: usize,
+    /// A message window of this run is open.
+    pub window: bool,
+    /// The target's facing before the talk (FUN_0016a890), given back at the end.
+    pub yaw: f32,
+    /// The talk camera was started (FUN_00159688).
+    pub camera: bool,
+    /// An Examine (FUN_001a5510), not a talk (FUN_001a5728).
+    pub examine: bool,
+}
+
+impl Talk {
+    /// Drops the running talk (an area load ends it without the talk task's own ending). A run that
+    /// started the talk camera hands back the request that ends it, so the rig does not stay in mode 4.
+    pub fn drop_run(&mut self) -> Option<crate::camera::TalkCam> {
+        self.run.take().filter(|r| r.camera).map(|_| crate::camera::TalkCam::End)
+    }
+
+    /// `FUN_001b6408`: `libretto-<world>.bar`'s talk table (once per world).
+    pub fn load(&mut self, disc: &Disc, world: &str) {
+        if self.world.as_deref() == Some(world) {
+            return;
+        }
+        self.world = Some(world.to_string());
+        self.lib = disc.read(&format!("libretto-{world}.bar")).and_then(|f| kh2_ard::libretto::Libretto::from_bar(&f));
+        match &self.lib {
+            Some(l) => info!("npc: talk table libretto-{world}.bar: {} talk ids (FUN_001b6408)", l.records.len()),
+            None => warn!("npc: libretto-{world}.bar is not readable; townspeople cannot be talked to"),
+        }
+    }
+
+    /// Whether a talk runs (the player's control is locked, bit 0 of 0x1d5d7b8).
+    pub fn running(&self) -> bool {
+        self.run.is_some()
+    }
+}
+
+/// A reaction part with this id offers the command of the object's spawn record (+0x2c).
+pub const PART_FROM_RECORD: u16 = 0x83;
+
+/// One offer candidate of an object's reaction parts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartOffer {
+    pub cmd: u16,
+    pub part: u8,
+    pub status: crate::reaction_cmd::Status,
+    pub priority: u8,
+    /// Distance from the part's centre to the player (the tie-break of FUN_0019c520).
+    pub dist: f32,
+}
+
+/// FUN_0019cb70 for one object: every usable type-5 part whose volume touches the player's body
+/// offers its id, a part with id 0x83 the record's +0x2c (`record_cmd`); the best by priority, then
+/// by distance (FUN_0019c520). `on` / `off` are the parameters of the range triggers 4 and 5 of the
+/// object's playing motion; positions are the app's space in centimetres.
+#[allow(clippy::too_many_arguments)]
+pub fn part_offer(
+    rules: &crate::reaction_cmd::ReactionRules,
+    table: &crate::reaction_parts::Table,
+    record_cmd: u16,
+    (on, off): (&[i16], &[i16]),
+    (pos, yaw): (Vec3, f32),
+    player: &crate::reaction_parts::Shape,
+    (player_pos, player_yaw): (Vec3, f32),
+    (ctx, window): (&crate::reaction_cmd::Ctx, Option<u16>),
+) -> Option<PartOffer> {
+    use crate::reaction_cmd::{native_gate, status, Ctx, Status};
+    let mut best: Option<PartOffer> = None;
+    for r in table.reaction_parts() {
+        if !crate::reaction_parts::part_usable(table, r.part, on, off) {
+            continue;
+        }
+        let cmd = if r.id == PART_FROM_RECORD { record_cmd } else { r.id };
+        let Some(c) = rules.cmd(cmd) else { continue };
+        if !native_gate(c, ctx.battle, window) {
+            continue;
+        }
+        let Some(shape) = crate::reaction_parts::shape_of(r, pos, yaw) else { continue };
+        if crate::reaction_parts::shapes_overlap(&shape, player) != Some(true) {
+            continue;
+        }
+        let dist = (shape.center - player_pos).length();
+        if best.is_some_and(|b| c.priority < b.priority || (c.priority == b.priority && b.dist <= dist)) {
+            continue;
+        }
+        let mut st = status(&rules.cmds, c, &Ctx { distance: (pos - player_pos).with_y(0.0).length(), ..*ctx });
+        if st == Status::Available && c.range > -1.0 {
+            let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
+            if (pos - player_pos).normalize_or_zero().dot(face) < c.range {
+                st = Status::TooFar;
+            }
+        }
+        best = Some(PartOffer { cmd, part: r.part, status: st, priority: c.priority, dist });
+    }
+    best
 }
 
 #[cfg(test)]

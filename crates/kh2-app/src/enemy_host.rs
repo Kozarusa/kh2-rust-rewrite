@@ -17,7 +17,7 @@ use crate::enemy_obj::{
     from_game, to_game, yaw_of, Fade, MotionReq, Obj, Remote, EFFECT, FLAG_BIT_UNHITTABLE, GAUGES, MOVE_VECTOR, PLAYER, RECORD, RECORD_SIZE, TARGET,
 };
 use crate::motor::wrap_angle;
-use crate::reaction_cmd::PlayerReactionCmd;
+use crate::shared::reaction::PlayerReactionCmd;
 use crate::skel::Rig;
 use crate::world::World;
 use crate::SCALE;

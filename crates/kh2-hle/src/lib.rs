@@ -5,7 +5,11 @@
 //! * [`kernel`]: the EE kernel in Rust (boot contract `HYB-boot` sections 2.1 to 2.3): the syscall
 //!   trap, threads with a priority scheduler, semaphores, INTC and DMAC handler tables with interrupt
 //!   delivery at instruction boundaries, and a virtual clock (VBlank at 59.94 Hz, timer 2
-//!   overflow, `DelayThread` wake-ups). The IOP services (`iop/`, HYB-4) are a separate work package.
+//!   overflow, `DelayThread` wake-ups).
+//! * [`iop`]: the IOP side in Rust (HYB-4): hooks on the SIF RPC client functions, the servers
+//!   (loadfile, the cdvd ids over the user's disc, the pad library, memory card, sound driver), the
+//!   sound command ring decoder and the pad script. With the kernel it boots the executable to
+//!   the request for `ovl_title.x`.
 //! * [`hw`]: the memory-mapped register pages (HYB-5): DMA completion and interrupts, scratchpad
 //!   copies, GS CSR, timer 0, the unimplemented-register check, and the movie hook.
 //!
@@ -32,6 +36,7 @@
 //! clock. Each is labelled where it is written.
 
 pub mod hw;
+pub mod iop;
 pub mod kernel;
 
 pub use kernel::{Kernel, Machine, RunStop};

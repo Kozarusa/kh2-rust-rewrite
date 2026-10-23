@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use crate::Sheet;
 
-pub const KNOWN: &[&str] = &["rust_table", "rust_system"];
+pub const KNOWN: &[&str] = &["rust_table", "rust_system", crate::ledger::STRUT];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
@@ -235,6 +235,8 @@ pub fn render_all(sheets: &BTreeMap<String, Sheet>) -> Result<BTreeMap<String, S
         let code = match s.strut.as_str() {
             "rust_table" => rust_table(s)?,
             "rust_system" => rust_system(s)?,
+            // The function ledger renders no code.
+            crate::ledger::STRUT => continue,
             other => return Err(format!("{}: unknown strut {other}", s.name)),
         };
         out.insert(format!("{}.rs", s.name), code);

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod ledger;
 pub mod strut;
 
 #[derive(Debug, Clone)]
@@ -113,6 +114,8 @@ pub struct Report {
     pub warnings: Vec<String>,
     /// sheet -> (rows, finished)
     pub grid: BTreeMap<String, (usize, usize)>,
+    /// The function ledger's one-line summary (`sheets/functions.json`), when the sheet exists.
+    pub ledger: Option<String>,
 }
 
 impl Report {
@@ -142,8 +145,14 @@ impl Report {
         for w in &self.warnings {
             let _ = writeln!(s, "warning: {w}");
         }
-        for e in &self.errors {
+        if let Some(l) = &self.ledger {
+            let _ = writeln!(s, "{l}");
+        }
+        for e in self.errors.iter().take(detail.max(20)) {
             let _ = writeln!(s, "ERROR: {e}");
+        }
+        if self.errors.len() > detail.max(20) {
+            let _ = writeln!(s, "ERROR: ... {} more", self.errors.len() - detail.max(20));
         }
         let total: usize = self.grid.values().map(|g| g.0).sum();
         let done: usize = self.grid.values().map(|g| g.1).sum();
@@ -172,12 +181,21 @@ pub fn preflight(root: &Path) -> Report {
         sheets.iter().map(|(n, s)| (n.as_str(), s.rows.iter().map(|row| s.key_of(row)).collect())).collect();
     let unfinished_rows: BTreeSet<(String, String)> = sheets
         .values()
+        .filter(|s| s.strut != ledger::STRUT)
         .flat_map(|s| {
             s.rows.iter().filter(|row| row.iter().any(Value::is_null)).map(move |row| (s.name.clone(), s.key_of(row).to_string()))
         })
         .collect();
 
     for s in sheets.values() {
+        if s.strut == ledger::STRUT {
+            // The function ledger has its own checks (its rows are statuses, never unfinished cells).
+            let (rows, _) = ledger::rows(s);
+            let cites = ledger::scan_tree(root, &ledger::index(&rows));
+            r.errors.extend(ledger::check(s, sheets.get("systems"), Some(&cites)));
+            r.ledger = Some(ledger::summary(s));
+            continue;
+        }
         // Shape.
         if s.columns.len() != s.types.len() {
             r.errors.push(format!("{}: {} columns but {} types", s.name, s.columns.len(), s.types.len()));

@@ -7,10 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use kh2_bdx::{Call, Host, Program, Runtime, Value, analyze, reaction};
 
 fn open_disc() -> Option<kh2_archive::Archive> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("reaction")?;
     kh2_archive::Archive::open(&path).ok()
 }
 

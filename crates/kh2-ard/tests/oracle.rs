@@ -13,14 +13,7 @@ const POINT: u32 = 0x0182_0000;
 const IDENTITY: u32 = 0x354a60;
 
 fn open() -> Option<(Ee, kh2_archive::Archive)> {
-    let path = std::env::var("KH2_ISO")
-        .ok()
-        .or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))
-        .filter(|p| std::path::Path::new(p).exists());
-    let Some(path) = path else {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    };
+    let path = kh2_factory::disc_path("oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
     let names = std::fs::read_to_string("../../local/kh2idx.txt").ok();

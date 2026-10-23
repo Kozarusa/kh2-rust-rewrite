@@ -11,3 +11,6 @@ kh2-bar.workspace = true
 
 [build-dependencies]
 kh2-sheets.workspace = true
+
+[dev-dependencies]
+kh2-factory.workspace = true

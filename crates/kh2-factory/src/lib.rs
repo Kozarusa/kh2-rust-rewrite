@@ -49,6 +49,16 @@ pub fn skip(what: &str) {
     eprintln!("skipped: {what}: no disc image (set KH2_ISO or local/iso.txt)");
 }
 
+/// The path of the user's disc (`KH2_ISO` or `local/iso.txt`) when the file exists, or `None` after [`skip`]: for
+/// tests that open the image themselves.
+pub fn disc_path(what: &str) -> Option<String> {
+    let p = iso_path();
+    if p.is_none() {
+        skip(what);
+    }
+    p
+}
+
 /// The user's disc (`KH2_ISO` or `local/iso.txt`), or `None` after [`skip`]: the one helper disc tests share.
 pub fn disc(what: &str) -> Option<kh2_archive::Archive> {
     let a = iso_path().and_then(|p| kh2_archive::Archive::open(p).ok());

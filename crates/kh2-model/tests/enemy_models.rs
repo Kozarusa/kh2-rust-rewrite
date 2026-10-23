@@ -7,10 +7,7 @@
 use kh2_model::Model;
 
 fn open() -> Option<kh2_archive::Archive> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("enemy_models")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let names = std::fs::read_to_string("../../local/kh2idx.txt").ok();
     let list: Vec<&str> = names.as_deref().map(|l| l.lines().filter(|l| l.ends_with(".idx")).collect()).unwrap_or_default();

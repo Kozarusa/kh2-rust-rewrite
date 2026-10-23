@@ -20,14 +20,7 @@ const STUB: u32 = 0x0183_1000;
 const OUT: u32 = 0x0184_0000;
 
 fn open() -> Option<Ee> {
-    let path = std::env::var("KH2_ISO")
-        .ok()
-        .or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))
-        .filter(|p| std::path::Path::new(p).exists());
-    let Some(path) = path else {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    };
+    let path = kh2_factory::disc_path("ability_oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
     let mut ee = Ee::new();

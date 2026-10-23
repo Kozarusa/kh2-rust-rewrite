@@ -6,14 +6,7 @@
 use kh2_bdx::{Insn, Program, analyze};
 
 fn archive() -> Option<kh2_archive::Archive> {
-    let path = std::env::var("KH2_ISO")
-        .ok()
-        .or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))
-        .filter(|p| std::path::Path::new(p).exists());
-    let Some(path) = path else {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    };
+    let path = kh2_factory::disc_path("ability_scripts")?;
     kh2_archive::Archive::open(&path).ok()
 }
 

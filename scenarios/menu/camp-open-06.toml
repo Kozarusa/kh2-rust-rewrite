@@ -29,9 +29,16 @@ values = ["menu.scene_state", "menu.scene", "sora.pos", "sora.motion"]
 note = "202 last field stop, 203 first menu stop; 382 first stop after the menu closed"
 
 [[check]]
-at = [260, 300, 340, 380]
+at = [260, 300, 340, 350]
 values = ["menu.scene_state", "menu.scene", "menu.page", "menu.next_page", "menu.phase", "menu.closing", "menu.cursor", "menu.scroll"]
-note = "260 main menu, 300 Items page, 340 back at the main menu, 380 before the closing Start"
+note = "260 main menu, 300 Items page, 340 back at the main menu, 350 before the closing Start (k 360)"
+
+# The close: the original's Start at k 360 begins a return that ends at k 381 (scene state 3 for the last frames); the scene words
+# are checked on the way out (the page words are stale or empty there).
+[[check]]
+at = [366, 372, 378, 380]
+values = ["menu.scene_state", "menu.scene", "menu.closing"]
+note = "the closing Start was pressed at k 360"
 
 # The port keeps its own frame step (1.0 everywhere) until the frame step is ported (L1-P5); the original's is 2.0 in the field.
 [[check]]

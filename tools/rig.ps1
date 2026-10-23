@@ -84,6 +84,13 @@ if (-not $PortOnly) {
     if ($OriginalOnly) { Write-Host "rig: original trace in $origCsv"; exit 0 }
 } elseif (-not (Test-Path $origCsv)) {
     Fail "-PortOnly: no original trace at $origCsv (run once without -PortOnly)"
+} else {
+    $parts = @($file, $plan.pad, (Join-Path $KhRoot 'scenariosalues.toml'), $stateFile) | Where-Object { $_ }
+    $key = ($parts | ForEach-Object { (Get-FileHash -Algorithm SHA1 -LiteralPath $_).Hash }) -join ''
+    $keyFile = Join-Path $out 'orig.key'
+    if (-not (Test-Path $keyFile) -or (Get-Content $keyFile -Raw).Trim() -ne $key) {
+        Write-Host 'rig: warning: the cached original trace is not from this scenario, pad script, values.toml and state (rows may be missing); run without -PortOnly'
+    }
 }
 
 # --- the port ---------------------------------------------------------------------------------------------------------------
@@ -100,6 +107,7 @@ Write-Host "rig: running $name on the port (turbo, area $($plan.area))"
 $log = Join-Path $out 'port.log'
 try {
     $proc = Start-Process -FilePath $gameExe -ArgumentList $plan.area -WorkingDirectory $out -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+    $null = $proc.Handle   # keeps the handle so ExitCode is readable after the exit
     if (-not $proc.WaitForExit(600000)) { $proc.Kill(); Fail 'the port run did not finish in 10 minutes' }
 } finally {
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }

@@ -20,8 +20,9 @@ const fn page(name: &'static str, lo: u32, hi: u32, hle: &'static str) -> Page {
     Page { name, lo, hi, hle }
 }
 
-/// Pages in address order. The IPU, its FIFO and the DMA channels 3 and 4 are movie-only
-/// (`MOVIE_ONLY`); VU memory is plain storage in `kh2-ee` and never logged.
+/// Pages in address order. libdma's init (0x2fa288) resets every channel's registers, so all ten
+/// channel pages are accepted; which channels may be started is `start_allowed`. The IPU and its
+/// FIFO are movie-only (`MOVIE_ONLY`); VU memory is plain storage in `kh2-ee` and never logged.
 pub const PAGES: &[Page] = &[
     page("T0", 0x1000_0000, 0x1000_0040, "COUNT follows the HBLANK count of the virtual clock"),
     page("T1", 0x1000_0800, 0x1000_0840, "stored"),
@@ -32,9 +33,14 @@ pub const PAGES: &[Page] = &[
     page("VIF0 FIFO", 0x1000_4000, 0x1000_4010, "swallowed"),
     page("VIF1", 0x1000_3C00, 0x1000_3D00, "idle: STAT reads 0"),
     page("VIF1 FIFO", 0x1000_5000, 0x1000_5010, "swallowed"),
+    page("D0 VIF0", 0x1000_8000, 0x1000_8100, "reset only (libdma init); a start is unimplemented"),
     page("D1 VIF1", 0x1000_9000, 0x1000_9100, "completes at once"),
     page("D2 GIF", 0x1000_A000, 0x1000_A100, "completes at once"),
+    page("D3 IPU_FROM", 0x1000_B000, 0x1000_B100, "reset only; a start is a movie"),
+    page("D4 IPU_TO", 0x1000_B400, 0x1000_B500, "reset only; a start is a movie"),
     page("D5 SIF0", 0x1000_C000, 0x1000_C100, "idle; arming sets no status bit"),
+    page("D6 SIF1", 0x1000_C400, 0x1000_C500, "reset only (libdma init); a start is unimplemented"),
+    page("D7 SIF2", 0x1000_C800, 0x1000_C900, "reset only (libdma init); a start is unimplemented"),
     page("D8 SPR_FROM", 0x1000_D000, 0x1000_D100, "real copy"),
     page("D9 SPR_TO", 0x1000_D400, 0x1000_D500, "real copy"),
     page("DMAC", 0x1000_E000, 0x1000_E070, "D_CTRL stored; D_STAT write-1-to-clear status, toggled mask"),
@@ -54,8 +60,6 @@ pub const PAGES: &[Page] = &[
 pub const MOVIE_ONLY: &[Page] = &[
     page("IPU", 0x1000_2000, 0x1000_2040, "movie"),
     page("IPU FIFO", 0x1000_7000, 0x1000_7020, "movie"),
-    page("D3 IPU_FROM", 0x1000_B000, 0x1000_B100, "movie"),
-    page("D4 IPU_TO", 0x1000_B400, 0x1000_B500, "movie"),
 ];
 
 /// The page an address is in, or `None` for an access outside the contract.
@@ -81,4 +85,10 @@ pub fn channel_of_chcr(addr: u32) -> Option<u32> {
 /// Channels whose other end is the IOP: only a SIF event completes them, never the CHCR write.
 pub fn iop_channel(ch: u32) -> bool {
     (5..=7).contains(&ch)
+}
+
+/// Channels game code starts: VIF1, GIF, SIF0 (sifcmd re-arm) and the scratchpad pair. A start of
+/// the others (VIF0, SIF1/2, and the IPU pair which only a movie starts) is unimplemented.
+pub fn start_allowed(ch: u32) -> bool {
+    matches!(ch, 1 | 2 | 5 | 8 | 9)
 }

@@ -33,9 +33,16 @@ fn every_page_accepts_its_first_register_without_complaint() {
 #[test]
 fn a_register_outside_the_pages_is_logged_and_fails_the_clean_check() {
     let mut m = HwMachine::new();
-    // D0 (VIF0 DMA), D6, an unlisted word beside INTC, an IPU command and an IPU DMA channel.
+    // The libdma reset of every channel is fine, a start of D0, D6 or the IPU channel is not, nor
+    // an unlisted word beside INTC or an IPU command.
+    for ch in 0..10 {
+        wr(&mut m, pages::CHANNEL_BASE[ch], 0);
+        wr(&mut m, pages::CHANNEL_BASE[ch] + 0x10, 0);
+    }
+    m.sync();
+    assert!(m.hw.unimplemented.is_empty(), "resetting every channel is the libdma init");
     for a in [0x1000_8000, 0x1000_C400, 0x1000_F400, 0x1000_2000, 0x1000_B000] {
-        wr(&mut m, a, 1);
+        wr(&mut m, a, 0x100);
     }
     m.sync();
     let addrs: Vec<u32> = m.hw.unimplemented.iter().map(|u| u.addr).collect();

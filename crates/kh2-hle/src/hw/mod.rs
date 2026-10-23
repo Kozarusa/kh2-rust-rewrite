@@ -130,7 +130,12 @@ impl HwModel {
                 if let Some(ch) = pages::channel_of_chcr(a)
                     && w.value & 0x100 != 0
                 {
-                    self.dma_start(ee, k, ch, w.value as u32);
+                    if pages::start_allowed(ch) {
+                        self.dma_start(ee, k, ch, w.value as u32);
+                    } else {
+                        let movie_only = matches!(ch, 3 | 4).then_some(pages::PAGES.iter().find(|p| p.lo == a).map_or("", |p| p.name));
+                        self.unimplemented.push(Unimplemented { pc: w.pc, addr: w.addr, size: w.size, value: w.value, movie_only });
+                    }
                 }
             }
         }

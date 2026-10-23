@@ -10,5 +10,6 @@ kh2-ps2.workspace = true
 kh2-bar.workspace = true
 
 [dev-dependencies]
+kh2-factory.workspace = true
 png = "0.17"
 kh2-archive.workspace = true

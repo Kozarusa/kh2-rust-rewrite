@@ -6,10 +6,7 @@ use kh2_bdx::mock::{MockHost, SELF_OBJ};
 use kh2_bdx::{HostTable, Program, Runtime, analyze};
 
 fn open() -> Option<(kh2_archive::Archive, Vec<u8>)> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("disc")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
     Some((a, elf))

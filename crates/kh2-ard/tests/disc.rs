@@ -6,10 +6,7 @@ use std::collections::BTreeMap;
 use kh2_tables::tables as t;
 
 fn open() -> Option<kh2_archive::Archive> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("disc")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     // The `ard/` files live in the world index 000tt.idx, which is listed once its name is known;
     // the whole name list (when fetched) also names the entries for the listing test.

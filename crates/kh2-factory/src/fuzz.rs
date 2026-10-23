@@ -149,17 +149,34 @@ impl Rng {
     pub fn float(&mut self) -> f32 {
         match self.below(10) {
             0..=1 => [0.0, 1.0, -1.0, 0.5, -0.5, 2.0, 100.0, -100.0, 1e-4, std::f32::consts::PI][self.below(10) as usize],
+            2 => EDGE_FLOATS[self.below(EDGE_FLOATS.len() as u64) as usize],
             _ => {
                 let scale = [1.0f32, 10.0, 1000.0, 1e5][self.below(4) as usize];
                 ((self.word() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * scale
             }
         }
     }
+    /// A float for one case: in one draw of four a value already drawn for this case (`pool`), so two floats of a case
+    /// are often exactly equal (a `<` and a `<=` in the original differ only there); otherwise a fresh [`Rng::float`].
+    pub fn float_pooled(&mut self, pool: &mut Vec<f32>) -> f32 {
+        if !pool.is_empty() && self.below(4) == 0 {
+            return pool[self.below(pool.len() as u64) as usize];
+        }
+        let f = self.float();
+        pool.push(f);
+        f
+    }
 }
+
+/// The float edge values: both zeros, plus and minus one. Huge values are left out (a loop in the original such as the
+/// angle wrap runs for ever on them), and infinities and NaN
+/// are not drawn: the EE's FPU has none (an all-ones exponent is an ordinary large number there, and the interpreter
+/// follows it), so a port on Rust floats legitimately differs from the original on them and the game never holds them.
+pub const EDGE_FLOATS: [f32; 4] = [0.0, -0.0, 1.0, -1.0];
 
 /// Fills a block tree depth-first; returns the block's index. Pointer fields with a sub-block hold the sub-block's
 /// handle (index + 1), or 0 (null) in one case of eight.
-fn fill(rng: &mut Rng, b: &Block, out: &mut Vec<Vec<u8>>, nulls: bool) -> usize {
+fn fill(rng: &mut Rng, b: &Block, out: &mut Vec<Vec<u8>>, nulls: bool, pool: &mut Vec<f32>) -> usize {
     let mut bytes: Vec<u8> = (0..b.size).map(|_| rng.word() as u8).collect();
     for &(off, w, k) in b.fields {
         let o = off as usize;
@@ -167,15 +184,20 @@ fn fill(rng: &mut Rng, b: &Block, out: &mut Vec<Vec<u8>>, nulls: bool) -> usize 
         match k {
             Kind::Float => {
                 for c in dst.chunks_mut(4) {
-                    let f = rng.float().to_le_bytes();
+                    let f = rng.float_pooled(pool).to_le_bytes();
                     let n = c.len();
                     c.copy_from_slice(&f[..n]);
                 }
             }
             Kind::Int => {
-                let v = rng.int(&[]).to_le_bytes();
+                // Small values (states, flags, counts) are drawn often: a field the original compares against 1 or
+                // 2, or tests for zero, would otherwise rarely take the value that reaches the next comparison.
+                let v = if rng.below(4) == 0 { rng.below(4) as i32 } else { rng.int(&[]) }.to_le_bytes();
                 for (i, c) in dst.iter_mut().enumerate() {
                     *c = if i < 4 { v[i] } else { 0 };
+                }
+                if w == 1 && rng.below(2) == 0 {
+                    dst[0] = 0;
                 }
             }
             Kind::Ptr => dst.fill(0),
@@ -184,7 +206,7 @@ fn fill(rng: &mut Rng, b: &Block, out: &mut Vec<Vec<u8>>, nulls: bool) -> usize 
     let idx = out.len();
     out.push(bytes);
     for (field, sub) in b.subs {
-        let s = fill(rng, sub, out, nulls);
+        let s = fill(rng, sub, out, nulls, pool);
         let h = if nulls && rng.below(8) == 0 { 0 } else { s as u32 + 1 };
         let f = *field as usize;
         out[idx][f..f + 4].copy_from_slice(&h.to_le_bytes());
@@ -264,7 +286,7 @@ fn hook_zero(e: &mut Ee) {
 }
 
 fn feq(a: f32, b: f32) -> bool {
-    a.to_bits() == b.to_bits() || (a - b).abs() <= 1e-5 * (1.0 + a.abs().max(b.abs()))
+    a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-5 * (1.0 + a.abs().max(b.abs()))
 }
 
 /// A fault that means the generated input is outside the function's domain: signed overflow or
@@ -326,6 +348,7 @@ pub fn fuzz_with(ee: &mut Ee, spec: &Spec, cases: u32, seed: u64, mut port: impl
         // Inputs.
         let mut case = Case { ints: Vec::new(), floats: Vec::new(), blocks: Vec::new(), globals: Vec::new() };
         let mut regs = Vec::new();
+        let mut pool: Vec<f32> = Vec::new();
         for a in spec.args {
             match a {
                 Arg::Int(c) => {
@@ -339,13 +362,13 @@ pub fn fuzz_with(ee: &mut Ee, spec: &Spec, cases: u32, seed: u64, mut port: impl
                     regs.push(v);
                 }
                 Arg::Ptr(b) => {
-                    let i = fill(&mut rng, b, &mut case.blocks, spec.nulls);
+                    let i = fill(&mut rng, b, &mut case.blocks, spec.nulls, &mut pool);
                     case.ints.push(i as u64);
                     regs.push(block_addr(i) as u64);
                 }
             }
         }
-        case.floats = (0..spec.floats).map(|_| rng.float()).collect();
+        case.floats = (0..spec.floats).map(|_| rng.float_pooled(&mut pool)).collect();
         for (i, &(_, len, random)) in spec.globals.iter().enumerate() {
             case.globals.push(if random { (0..len).map(|_| rng.word() as u8).collect() } else { image[i].clone() });
         }

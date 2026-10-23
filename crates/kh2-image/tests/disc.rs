@@ -5,11 +5,7 @@ use kh2_image::font::{Font, FontSet};
 use kh2_image::text::{self, ColorTable, Messages, Style, Token};
 
 fn open() -> Option<kh2_archive::Archive> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-        return None;
-    }
+    let path = kh2_factory::disc_path("disc")?;
     kh2_archive::Archive::open(&path).ok()
 }
 

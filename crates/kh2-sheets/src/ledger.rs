@@ -6,11 +6,14 @@
 //! derives `read` / `ported` / `verified` from citations, and the ledger checks of the preflight.
 //!
 //! Tree conventions the scan reads (FAC 2.1):
-//! - `read`: the address is cited in a doc under `docs/` (`FUN_001a0180`, `0x1a0180`, `0x001a_0180`).
+//! - `read`: the address is cited in a doc under `docs/` (`FUN_001a0180`, `0x1a0180`, `0x001a_0180`), on a line that
+//!   does not say the function was not read ([`NOT_READ_PHRASES`]) and outside a gaps section ([`read_mentions`]).
 //! - `ported`: a doc comment line `/// orig 0x1a0180` (overlays: `/// orig ovl0 0x1f18014`) in non-test Rust code.
-//! - `verified`: the address appears in the name of a `#[test]` function (`orig_1a0180_matches_the_game`, the
-//!   generated oracle tests, or any test name with the address as a `_`-separated token) or in that test's doc
-//!   comment.
+//! - `tested`: the address appears in the name of a hand-written `#[test]` function (any test name with the address as
+//!   a `_`-separated token) or in that test's doc comment.
+//! - `verified`: the same, for an oracle test: the test (or a helper of its file that it calls) uses `Ee` or the
+//!   factory harness (`fuzz(`), so the original ran in kh2-ee (`orig_1a0180_matches_the_game` and the kh2-ee oracle
+//!   tests). Precedence: verified over tested over ported over read.
 //!
 //! Test code is a file under a `tests/` or `benches/` folder, or the rest of a file from a `#[cfg(test)]` module on
 //! (brace-matched). Statuses `read`/`ported`/`verified` are only ever set by the scan; `not-needed:<reason>`, the
@@ -27,10 +30,11 @@ use crate::Sheet;
 pub const IMAGES: [&str; 5] = ["main", "ovl0", "ovl1", "ovl2", "ovl3"];
 pub const COLUMNS: [&str; 7] = ["addr", "image", "size", "system", "status", "evidence", "note"];
 /// Statuses in order. `not-needed` always carries its reason.
-pub const STATUSES: [&str; 9] = [
+pub const STATUSES: [&str; 10] = [
     "unread",
     "read",
     "ported",
+    "tested",
     "verified",
     "not-needed:sdk",
     "not-needed:debug",
@@ -172,8 +176,11 @@ pub struct Cites {
     pub code: BTreeMap<Key, BTreeSet<String>>,
     /// `/// orig` doc comment lines in non-test code.
     pub orig: BTreeMap<Key, BTreeSet<String>>,
-    /// `#[test]` functions (`path::name`) that carry the address in their name or doc comment.
+    /// Hand-written `#[test]` functions (`path::name`) that carry the address in their name or doc comment.
     pub tests: BTreeMap<Key, BTreeSet<String>>,
+    /// Oracle tests: `#[test]` functions like the above that run the original through kh2-ee (they call `Ee`, the
+    /// factory harness, or a helper of their file that does).
+    pub oracle: BTreeMap<Key, BTreeSet<String>>,
 }
 
 /// Function starts by address (an address that starts functions in several overlays maps to all of them).
@@ -234,6 +241,55 @@ pub fn mentions(text: &str) -> Vec<u32> {
     out
 }
 
+/// Phrases (lower case) that make a doc line say the function was not read: a gap marker, a fruitless search, an
+/// explicit "not read". An address cited only on such lines is not `read`.
+pub const NOT_READ_PHRASES: [&str; 12] = [
+    "not read",
+    "unread",
+    "[gap",
+    "gap:",
+    "gaps:",
+    "searched",
+    "not decompiled",
+    "not inspected",
+    "not examined",
+    "not traced",
+    "not looked at",
+    "never read",
+];
+
+/// Whether a doc line says the function was not read (see [`NOT_READ_PHRASES`]).
+pub fn not_read_line(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    NOT_READ_PHRASES.iter().any(|p| l.contains(p))
+}
+
+/// The addresses a doc text counts as read: the mentions on every line except those that say the function was not
+/// read, and except the lines under a heading whose text names gaps (`## Gaps`) up to the next heading of the same or
+/// a higher level.
+pub fn read_mentions(text: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut gap_level: Option<usize> = None;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            let level = t.chars().take_while(|&ch| ch == '#').count();
+            if gap_level.is_some_and(|g| level <= g) {
+                gap_level = None;
+            }
+            if gap_level.is_none() && t.to_ascii_lowercase().contains("gap") {
+                gap_level = Some(level);
+            }
+            continue;
+        }
+        if gap_level.is_some() || not_read_line(line) {
+            continue;
+        }
+        out.extend(mentions(line));
+    }
+    out
+}
+
 /// The address of a `/// orig [ovlN] 0x...` line, with its image when one is named.
 pub fn orig_line(line: &str) -> Option<(Option<u8>, u32)> {
     let r = line.trim_start().strip_prefix("///")?.trim_start().strip_prefix("orig ")?.trim_start();
@@ -255,17 +311,14 @@ pub fn name_tokens(name: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Per line of a Rust source: whether it is test code (inside a `#[cfg(test)]` item, found by brace matching that
-/// skips comments, strings and character literals).
-pub fn test_lines(src: &str) -> Vec<bool> {
-    let lines: Vec<&str> = src.lines().collect();
-    let mut out = vec![false; lines.len()];
-    // Brace depth at the start of every line.
+/// Brace depth at the start of every line of a Rust source (comments, strings and character literals skipped), and
+/// the depth at its end.
+pub fn depths(lines: &[&str]) -> (Vec<i64>, i64) {
     let mut depth_at = Vec::with_capacity(lines.len());
     let mut depth: i64 = 0;
     let mut block = 0u32;
     let mut in_str = false;
-    for l in &lines {
+    for l in lines {
         depth_at.push(depth);
         let b = l.as_bytes();
         let mut i = 0;
@@ -323,6 +376,34 @@ pub fn test_lines(src: &str) -> Vec<bool> {
             i += 1;
         }
     }
+    (depth_at, depth)
+}
+
+/// The last line of the item whose first line is `n`: the line where the brace depth comes back to the depth at
+/// `n` after having gone above it (a `;` item ends on its own line).
+pub fn item_end(lines: &[&str], depth_at: &[i64], end_depth: i64, n: usize) -> usize {
+    let d = depth_at[n];
+    let mut opened = false;
+    let mut j = n;
+    while j < lines.len() {
+        let next = depth_at.get(j + 1).copied().unwrap_or(end_depth);
+        if next > d || lines[j].contains('{') {
+            opened = true;
+        }
+        if (opened && next <= d) || (!opened && lines[j].trim_end().ends_with(';')) {
+            break;
+        }
+        j += 1;
+    }
+    j.min(lines.len().saturating_sub(1))
+}
+
+/// Per line of a Rust source: whether it is test code (inside a `#[cfg(test)]` item, found by brace matching that
+/// skips comments, strings and character literals).
+pub fn test_lines(src: &str) -> Vec<bool> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = vec![false; lines.len()];
+    let (depth_at, depth) = depths(&lines);
     let mut i = 0;
     while i < lines.len() {
         if lines[i].trim_start().starts_with("#[cfg(test)]") {
@@ -369,11 +450,84 @@ fn rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
 }
 
+/// Whether `text` calls `name(` (the name not the tail of a longer identifier).
+fn calls(text: &str, name: &str) -> bool {
+    let pat = format!("{name}(");
+    text.match_indices(&pat).any(|(i, _)| !text[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_'))
+}
+
+/// Whether `text` mentions the identifier `Ee` (the kh2-ee interpreter type).
+fn has_word(text: &str, w: &str) -> bool {
+    text.match_indices(w).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + w.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// An oracle marker (what makes a test run the original through kh2-ee): the `Ee` type or crate (`Ee::new()`,
+/// `&mut Ee`, `kh2_ee::...`), or a call of the factory harness (`fuzz(` / `fuzz_with(`), comments left out.
+pub fn oracle_marker(text: &str) -> bool {
+    has_word(text, "Ee") || has_word(text, "kh2_ee") || calls(text, "fuzz") || calls(text, "fuzz_with")
+}
+
+/// The name of the function an item line declares (`fn x`, `pub fn x`, `pub(crate) fn x`, `const fn x`, ...).
+fn fn_name(t: &str) -> Option<String> {
+    let mut r = t;
+    for _ in 0..4 {
+        for p in ["pub(crate) ", "pub(super) ", "pub ", "const ", "async ", "unsafe "] {
+            if let Some(x) = r.strip_prefix(p) {
+                r = x;
+            }
+        }
+    }
+    let rest = r.strip_prefix("fn ")?;
+    let name: String = rest.chars().take_while(|ch| ch.is_alphanumeric() || *ch == '_').collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Per line: (function name, last line of its body, its text without `//` comments, whether it carries `#[test]`)
+/// for every line that declares a function.
+fn functions(lines: &[&str]) -> BTreeMap<usize, (String, usize, String, bool)> {
+    let (depth_at, end_depth) = depths(lines);
+    let mut out = BTreeMap::new();
+    let mut test_attr = false;
+    for (n, l) in lines.iter().enumerate() {
+        let t = l.trim_start();
+        if t.starts_with("#[test]") {
+            test_attr = true;
+        } else if let Some(name) = fn_name(t) {
+            let end = item_end(lines, &depth_at, end_depth, n);
+            let text: Vec<&str> = lines[n..=end].iter().map(|x| x.split("//").next().unwrap_or("")).collect();
+            out.insert(n, (name, end, text.join("\n"), test_attr));
+            test_attr = false;
+        } else if !(t.is_empty() || t.starts_with("#[") || t.starts_with("//")) {
+            test_attr = false;
+        }
+    }
+    out
+}
+
+/// Names of the helpers of one source file that run the original through kh2-ee: the non-test functions with an
+/// oracle marker in their text, and (to a fixed point) those that call one of them.
+fn oracle_helpers(fns: &BTreeMap<usize, (String, usize, String, bool)>) -> BTreeSet<String> {
+    let mut h: BTreeSet<String> = fns.values().filter(|f| !f.3 && oracle_marker(&f.2)).map(|f| f.0.clone()).collect();
+    loop {
+        let more: Vec<String> = fns.values().filter(|f| !f.3 && !h.contains(&f.0) && h.iter().any(|x| calls(&f.2, x))).map(|f| f.0.clone()).collect();
+        if more.is_empty() {
+            return h;
+        }
+        h.extend(more);
+    }
+}
+
 /// Scans one Rust source (its repository-relative path decides whether it is a test file).
 pub fn scan_rust(path: &str, src: &str, idx: &HashMap<u32, Vec<Key>>, c: &mut Cites) {
     let test_file = path.split('/').any(|p| p == "tests" || p == "benches");
     let tests = test_lines(src);
     let lines: Vec<&str> = src.lines().collect();
+    let fns = if test_file || tests.iter().any(|&t| t) { functions(&lines) } else { BTreeMap::new() };
+    let helpers = oracle_helpers(&fns);
     let mut doc: Vec<&str> = Vec::new();
     let mut pending_test = false;
     for (n, l) in lines.iter().enumerate() {
@@ -406,9 +560,11 @@ pub fn scan_rust(path: &str, src: &str, idx: &HashMap<u32, Vec<Key>>, c: &mut Ci
                 for d in &doc {
                     addrs.extend(mentions(d));
                 }
+                let oracle = fns.get(&n).is_some_and(|f| oracle_marker(&f.2) || helpers.iter().any(|h| calls(&f.2, h)));
                 for a in addrs {
                     if let Some(k) = resolve(idx, a, None) {
-                        c.tests.entry(k).or_default().insert(format!("{path}::{name}"));
+                        let map = if oracle { &mut c.oracle } else { &mut c.tests };
+                        map.entry(k).or_default().insert(format!("{path}::{name}"));
                     }
                 }
             }
@@ -436,7 +592,7 @@ pub fn scan_tree(root: &Path, idx: &HashMap<u32, Vec<Key>>) -> Cites {
     for f in &files {
         if let Ok(t) = std::fs::read_to_string(f) {
             let p = rel(root, f);
-            for a in mentions(&t) {
+            for a in read_mentions(&t) {
                 if let Some(k) = resolve(idx, a, None) {
                     c.docs.entry(k).or_default().insert(p.clone());
                 }
@@ -452,12 +608,15 @@ fn first_of(s: Option<&BTreeSet<String>>) -> Option<String> {
     Some(if s.len() > 1 { format!("{f} +{}", s.len() - 1) } else { f.clone() })
 }
 
-/// The status and evidence the tree gives a row: verified (a test) over ported (`/// orig`) over a hand-set
-/// `not-needed` over read (a doc) over unread.
+/// The status and evidence the tree gives a row: verified (an oracle test) over tested (a hand-written test) over
+/// ported (`/// orig`) over a hand-set `not-needed` over read (a doc) over unread.
 pub fn derive(row: &Row, c: &Cites) -> (String, String) {
     let k = row.key();
+    if let Some(e) = first_of(c.oracle.get(&k)) {
+        return ("verified".into(), format!("oracle {e}"));
+    }
     if let Some(e) = first_of(c.tests.get(&k)) {
-        return ("verified".into(), format!("test {e}"));
+        return ("tested".into(), format!("test {e}"));
     }
     if let Some(e) = first_of(c.orig.get(&k)) {
         return ("ported".into(), format!("orig {e}"));
@@ -529,11 +688,15 @@ pub fn check(sheet: &Sheet, systems_sheet: Option<&Sheet>, cites: Option<&Cites>
         }
         if let Some(c) = cites {
             let k = r.key();
-            if r.status == "ported" && !c.orig.contains_key(&k) && !c.tests.contains_key(&k) {
+            let tested = c.tests.contains_key(&k);
+            if r.status == "ported" && !c.orig.contains_key(&k) && !tested && !c.oracle.contains_key(&k) {
                 errs.push(format!("{at}: ported, but no `/// orig` line names it (run `kh2 ledger scan`)"));
             }
-            if r.status == "verified" && !c.tests.contains_key(&k) {
-                errs.push(format!("{at}: verified, but no test names it (run `kh2 ledger scan`)"));
+            if r.status == "tested" && !tested && !c.oracle.contains_key(&k) {
+                errs.push(format!("{at}: tested, but no test names it (run `kh2 ledger scan`)"));
+            }
+            if r.status == "verified" && !c.oracle.contains_key(&k) {
+                errs.push(format!("{at}: verified, but no oracle test names it (run `kh2 ledger scan`)"));
             }
         }
     }
@@ -561,11 +724,13 @@ pub fn summary(sheet: &Sheet) -> String {
     let (rows, _) = rows(sheet);
     let total: u64 = rows.iter().map(|r| r.size as u64).sum();
     let done: u64 = rows.iter().filter(|r| r.done()).map(|r| r.size as u64).sum();
+    let tested: u64 = rows.iter().filter(|r| r.status == "tested").map(|r| r.size as u64).sum();
     format!(
-        "ledger: {} functions, {:.1}% of {} KB verified or not needed",
+        "ledger: {} functions, {:.1}% of {} KB verified or not needed ({:.1}% more tested)",
         rows.len(),
         if total > 0 { done as f64 * 100.0 / total as f64 } else { 0.0 },
-        total / 1024
+        total / 1024,
+        if total > 0 { tested as f64 * 100.0 / total as f64 } else { 0.0 }
     )
 }
 
@@ -647,8 +812,73 @@ mod tests {
         let e = check(&s, None, Some(&c));
         assert_eq!(e.len(), 2, "{e:?}");
         c.orig.entry(rows[0].key()).or_default().insert("a.rs".into());
+        // A hand-written test does not make a row verified.
         c.tests.entry(rows[1].key()).or_default().insert("t.rs::t".into());
+        let e = check(&s, None, Some(&c));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("verified, but no oracle test"));
+        c.oracle.entry(rows[1].key()).or_default().insert("t.rs::t".into());
         assert!(check(&s, None, Some(&c)).is_empty());
+        // A tested row needs a test of either kind.
+        let s = sheet(&[["0x100100", "main", "16", "core", "tested", "", ""]], "");
+        let mut c = Cites::default();
+        assert_eq!(check(&s, None, Some(&c)).len(), 1);
+        c.tests.entry((0, 0x100100)).or_default().insert("t.rs::t".into());
+        assert!(check(&s, None, Some(&c)).is_empty());
+    }
+
+    fn plain(addr: u32, status: &str) -> Row {
+        Row { addr, image: 0, size: 8, system: "core".into(), status: status.into(), evidence: String::new(), note: String::new() }
+    }
+
+    #[test]
+    fn a_hand_written_test_is_tested_and_an_oracle_test_is_verified() {
+        let rows = vec![plain(0x127b98, "unread"), plain(0x148550, "unread"), plain(0x239468, "unread"), plain(0x103b18, "unread")];
+        let idx = index(&rows);
+        let mut c = Cites::default();
+        let src = "use kh2_ee::Ee;\n\
+                   fn open() -> Option<Ee> { None }\n\
+                   fn wrapped() -> i32 { let _e = open(); 0 }\n\
+                   fn plain_helper() -> i32 { 1 }\n\
+                   #[test]\nfn orig_127b98_hand() { assert_eq!(plain_helper(), 1); }\n\
+                   #[test]\nfn orig_148550_direct() { let mut e = Ee::new(); e.run(); }\n\
+                   #[test]\nfn orig_239468_helper() { let _ = wrapped(); }\n\
+                   /// Checks FUN_00103b18 with the factory harness.\n#[test]\nfn stores_word() {\n    // Ee in a comment only\n    let Some(st) = fuzz(&SPEC, 1000, |c| c) else { return };\n}\n";
+        scan_rust("crates/x/tests/t.rs", src, &idx, &mut c);
+        let tested: Vec<_> = c.tests.keys().copied().collect();
+        let oracle: Vec<_> = c.oracle.keys().copied().collect();
+        assert_eq!(tested, vec![(0, 0x127b98)]);
+        assert_eq!(oracle, vec![(0, 0x103b18), (0, 0x148550), (0, 0x239468)]);
+        assert_eq!(derive(&rows[0], &c).0, "tested");
+        assert_eq!(derive(&rows[1], &c).0, "verified");
+        assert_eq!(derive(&rows[3], &c).0, "verified");
+        // Both orders: a row with a hand-written and an oracle test is verified, whichever test comes first.
+        for src in [
+            "#[test]\nfn orig_127b98_hand() {}\n#[test]\nfn orig_127b98_oracle() { let _e = Ee::new(); }\n",
+            "#[test]\nfn orig_127b98_oracle() { let _e = Ee::new(); }\n#[test]\nfn orig_127b98_hand() {}\n",
+        ] {
+            let mut c = Cites::default();
+            scan_rust("crates/x/tests/t.rs", src, &idx, &mut c);
+            assert_eq!(derive(&rows[0], &c).0, "verified", "{src}");
+        }
+        // A test and a port: tested beats ported.
+        let mut c = Cites::default();
+        scan_rust("crates/x/src/lib.rs", "/// orig 0x127b98\nfn a() {}\n#[cfg(test)]\nmod t {\n#[test]\nfn orig_127b98_hand() {}\n}\n", &idx, &mut c);
+        assert_eq!(derive(&rows[0], &c).0, "tested");
+    }
+
+    #[test]
+    fn docs_lines_that_say_not_read_do_not_count_as_read() {
+        let doc = "Read FUN_001a0180 fully.\n\
+                   FUN_001a0190 was not read (searched the callers).\n\
+                   [GAP] 0x001a_01a0 unknown\n\
+                   Gaps: 0x1a01b0 searched without result\n\
+                   Still UNREAD: 0x1a01c0\n\
+                   0x1a01d0 not decompiled\n\
+                   ## Gaps\n- 0x1a01e0 never reached\n### Detail\n- 0x1a01f0 deeper\n## Next\n0x1a0200 read again\n";
+        assert_eq!(read_mentions(doc), vec![0x1a0180, 0x1a0200]);
+        assert!(not_read_line("The function was NOT READ."));
+        assert!(!not_read_line("FUN_001a0180 reads the table"));
     }
 
     #[test]
@@ -681,7 +911,7 @@ mod tests {
         c.docs.insert((0, 0x239468), docs);
         let st: Vec<(String, String)> = rows.iter().map(|r| derive(r, &c)).collect();
         assert_eq!(st[0], ("ported".into(), "orig crates/x/src/lib.rs".into()));
-        assert_eq!(st[1], ("verified".into(), "test crates/x/src/lib.rs::orig_148550_matches_the_game".into()));
+        assert_eq!(st[1], ("tested".into(), "test crates/x/src/lib.rs::orig_148550_matches_the_game".into()));
         assert_eq!(st[2], ("not-needed:hw".into(), "doc docs/a.md".into()));
         assert_eq!(st[3].0, "ported", "code after the test module is library code again");
         // A file under tests/ is test code throughout: a doc comment on a test verifies, an orig line does not port.

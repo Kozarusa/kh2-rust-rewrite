@@ -256,10 +256,7 @@ impl Env for TestEnv {
 }
 
 fn open_disc() -> Option<(kh2_archive::Archive, Vec<u8>)> {
-    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
-    if !std::path::Path::new(&path).exists() {
-        return None;
-    }
+    let path = kh2_factory::disc_path("oracle")?;
     let mut a = kh2_archive::Archive::open(&path).ok()?;
     // File names (OpenKH's list, fetched by `kh2 fetch-names`) let the test find scripts inside archives.
     if let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") {

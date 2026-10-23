@@ -11,6 +11,7 @@ kh2-ps2.workspace = true
 glam = "0.32"
 
 [dev-dependencies]
+kh2-factory.workspace = true
 kh2-archive.workspace = true
 kh2-ee.workspace = true
 

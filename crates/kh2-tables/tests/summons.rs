@@ -2,26 +2,13 @@
 //! objects and summon limits, read from the user's own disc ($KH2_ISO or local/iso.txt). Each test
 //! skips, with a note, when the disc is not available. Run with `--nocapture` to print the rows.
 
-use std::path::{Path, PathBuf};
 
 use kh2_archive::Archive;
 use kh2_tables::player::{self, execute, item_type};
 use kh2_tables::tables;
 
-fn iso() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("KH2_ISO") {
-        return Some(p.into());
-    }
-    let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
-    std::fs::read_to_string(f).ok().map(|s| PathBuf::from(s.trim()))
-}
-
 fn open() -> Option<Archive> {
-    let p = iso().filter(|p| p.exists());
-    if p.is_none() {
-        eprintln!("skipped: no disc image (set KH2_ISO)");
-    }
-    Archive::open(p?).ok()
+    kh2_factory::disc("summons")
 }
 
 macro_rules! rows {

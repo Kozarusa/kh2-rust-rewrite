@@ -107,7 +107,7 @@ impl Report {
 
     pub fn passed(&self) -> bool {
         let (p, n) = self.counted();
-        p == n
+        n > 0 && p == n
     }
 
     /// `scenario,k,name,original,port,diff,tol,status` rows.
@@ -195,6 +195,24 @@ informational = true
         assert!(text.contains("first failing k per value: menu.page@2 sora.pos@2"), "{text}");
         assert!(text.ends_with("RIG t FAIL 2/4\n"), "{text}");
         assert!(r.csv().contains("t,2,sora.pos,100;0;50,103;0;50,3,2,FAIL\n"));
+    }
+
+    #[test]
+    fn a_report_with_nothing_counted_does_not_pass() {
+        let sc = scenario();
+        let empty = compare(&sc, &Trace::default(), &Trace::default());
+        assert_eq!(empty.counted().1, 4, "the checks are there, every row is missing on both sides");
+        assert!(!empty.passed());
+        let none = Scenario::parse("[scenario]
+name = \"n\"
+state = \"06\"
+frames = 3
+", Path::new(".")).unwrap();
+        let r = compare(&none, &Trace::default(), &Trace::default());
+        assert_eq!(r.counted(), (0, 0));
+        assert!(!r.passed(), "zero counted checks is not a pass");
+        assert!(r.text().ends_with("RIG n FAIL 0/0
+"));
     }
 
     #[test]

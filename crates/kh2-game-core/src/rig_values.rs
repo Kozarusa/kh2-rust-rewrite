@@ -9,6 +9,9 @@
 //! * `cam.look`: the camera's look-at point is private to the camera system (`camera::CamState`), not exposed.
 //! * `menu.word_354f70`: 0 at every stop of the original's menu runs (RIG-4); not a menu value, kept for the old traces.
 //!
+//! `menu.scene` (7 while a menu is up, -1 otherwise) and `menu.next_page` (-1) are constants the port derives from its phase [inferred]:
+//! the port has no scene request or page leave animation, so the scenarios show them but never count them.
+//!
 //! The menu and motion names are answered from three places `Ctx` carries: the shared `MenuPhase` and `RigMenu` (the menu crate writes
 //! the page and the list cursor into the mirror), and Sora's body animator (`motion`: the motion set slot divided by four, the slot being
 //! `id * 4 + variant`, and the animator's frame). The port has one phase for the whole camp, so the page's own phase (the original's

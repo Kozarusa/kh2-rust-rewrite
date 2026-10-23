@@ -65,10 +65,10 @@ $stateFile = (& $rigExe port-state $file $stateJson | Select-Object -Last 1)
 if ($LASTEXITCODE -ne 0 -or -not $stateFile) { Fail 'kh2-rig port-state failed (is the state file there?)' }
 
 # --- the original -----------------------------------------------------------------------------------------------------------
+$parts = @($file, $plan.pad, (Join-Path $KhRoot 'scenarios\values.toml'), $stateFile) | Where-Object { $_ }
+$key = ($parts | ForEach-Object { (Get-FileHash -Algorithm SHA1 -LiteralPath $_).Hash }) -join ''
+$keyFile = Join-Path $out 'orig.key'
 if (-not $PortOnly) {
-    $parts = @($file, $plan.pad, (Join-Path $KhRoot 'scenarios\values.toml'), $stateFile) | Where-Object { $_ }
-    $key = ($parts | ForEach-Object { (Get-FileHash -Algorithm SHA1 -LiteralPath $_).Hash }) -join ''
-    $keyFile = Join-Path $out 'orig.key'
     $current = (Test-Path $origCsv) -and (Test-Path $keyFile) -and ((Get-Content $keyFile -Raw).Trim() -eq $key)
     if ($current -and -not $Fresh) {
         Write-Host "rig: the original's trace is current, reused ($origCsv)"
@@ -85,9 +85,6 @@ if (-not $PortOnly) {
 } elseif (-not (Test-Path $origCsv)) {
     Fail "-PortOnly: no original trace at $origCsv (run once without -PortOnly)"
 } else {
-    $parts = @($file, $plan.pad, (Join-Path $KhRoot 'scenariosalues.toml'), $stateFile) | Where-Object { $_ }
-    $key = ($parts | ForEach-Object { (Get-FileHash -Algorithm SHA1 -LiteralPath $_).Hash }) -join ''
-    $keyFile = Join-Path $out 'orig.key'
     if (-not (Test-Path $keyFile) -or (Get-Content $keyFile -Raw).Trim() -ne $key) {
         Write-Host 'rig: warning: the cached original trace is not from this scenario, pad script, values.toml and state (rows may be missing); run without -PortOnly'
     }

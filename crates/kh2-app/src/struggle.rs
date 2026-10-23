@@ -33,7 +33,7 @@ use crate::world::World;
 use crate::SCALE;
 
 use crate::shared::struggle::exe_bytes;
-pub use crate::shared::struggle::{exe_word, mission_command, parse_header, Active, Clock, Counter, EV_CLOCK_END, EV_COUNTER_EMPTY, EV_COUNTER_FULL, EV_PLAYER_KO, EV_PLAYER_LOST, EV_PLAYER_WON, Element, Finish, GameOverExits, GameOverRequest, GlobalEvent, Layout, Mission, MissionStart, ORB_POOL_TYPE, Orb, Trig};
+pub use crate::shared::struggle::{exe_word, parse_header, Active, Clock, Counter, EV_CLOCK_END, EV_COUNTER_EMPTY, EV_COUNTER_FULL, EV_PLAYER_KO, EV_PLAYER_LOST, EV_PLAYER_WON, Element, Finish, GameOverExits, GameOverRequest, GlobalEvent, Layout, Mission, MissionStart, Orb};
 
 /// The orb kinds of the pool (table 0x37c238, 16 bytes each, read by `FUN_001cad50`).
 const ORB_KINDS: u32 = 0x37c238;
@@ -867,6 +867,7 @@ fn run_orbs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::struggle::Trig;
     use crate::shared::struggle::{Play, LAYOUT_AFTER, LAYOUT_END, LAYOUT_FAIL, LAYOUT_START};
 
     fn disc() -> Option<Disc> {

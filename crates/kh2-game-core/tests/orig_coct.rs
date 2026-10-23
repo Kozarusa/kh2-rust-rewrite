@@ -165,7 +165,7 @@ fn random_poly(r: &mut Rng, span: f32) -> Poly {
     let (a, u, w): ([f32; 3], [f32; 3], [f32; 3]) = match kind {
         0..=2 => ([cx, y0, cz], [sz, 0.0, 0.0], [0.0, 0.0, sz * urange(r, 0.4, 1.2)]),
         3..=6 => {
-            let ang = urange(r, 0.0, 6.2832);
+            let ang = urange(r, 0.0, std::f32::consts::TAU);
             let h = urange(r, 120.0, 320.0);
             ([cx, y0, cz], [ang.cos() * sz, 0.0, ang.sin() * sz], [0.0, -h, 0.0])
         }
@@ -196,7 +196,7 @@ fn dense_wall(r: &mut Rng, k: usize) -> Poly {
     // The first dozen are parallel and a few units apart, so one sphere pushed out of each in turn counts a dozen
     // contacts; the rest face every way.
     let stack = k < 12;
-    let ang = if stack { 0.4 } else { urange(r, 0.0, 6.2832) };
+    let ang = if stack { 0.4 } else { urange(r, 0.0, std::f32::consts::TAU) };
     let (c, s) = (ang.cos(), ang.sin());
     let off = if stack { [c * (k as f32 * 3.0 - 18.0), s * (k as f32 * 3.0 - 18.0)] } else { [urange(r, -50.0, 50.0), urange(r, -50.0, 50.0)] };
     let half = if stack { 140.0 } else { urange(r, 50.0, 130.0) };
@@ -226,7 +226,7 @@ fn merge(a: FBox, b: FBox) -> FBox {
 }
 
 fn pad(mut v: Vec<u8>) -> Vec<u8> {
-    while v.len() % 16 != 0 {
+    while !v.len().is_multiple_of(16) {
         v.push(0);
     }
     v
@@ -396,7 +396,7 @@ impl Rig {
             [near[0] + urange(r, -200.0, 200.0), urange(r, -150.0, 40.0), near[2] + urange(r, -200.0, 200.0), 1.0]
         };
         let len = pick(r, &[0.0, 0.0, 10.0, 40.0, 150.0, 400.0]) * urange(r, 0.2, 1.0);
-        let ang = urange(r, 0.0, 6.2832);
+        let ang = urange(r, 0.0, std::f32::consts::TAU);
         let dy = if r.below(3) == 0 { urange(r, -60.0, 60.0) } else { 0.0 };
         let delta = [ang.cos() * len, dy, ang.sin() * len, 1.0];
         let radius = urange(r, 20.0, 120.0);
@@ -722,8 +722,8 @@ fn rand_verts(r: &mut Rng) -> Verts {
     for k in 0..4 {
         v[k] = pts[k];
         if jitter != 0.0 {
-            for l in 0..3 {
-                v[k][l] += urange(r, -jitter, jitter);
+            for lane in v[k].iter_mut().take(3) {
+                *lane += urange(r, -jitter, jitter);
             }
         }
     }
@@ -1155,7 +1155,7 @@ fn orig_143840_matches_the_game_on_real_maps() {
                 // The game's space: y down, z flipped.
                 let feet = [at[0], -at[1] - if r.below(4) == 0 { urange(&mut r, 0.0, 60.0) } else { 0.0 }, -at[2], 1.0];
                 let mut c = Collider::default();
-                let ang = urange(&mut r, 0.0, 6.2832);
+                let ang = urange(&mut r, 0.0, std::f32::consts::TAU);
                 let len = pick(&mut r, &[0.0, 8.0, 20.0, 60.0, 150.0]);
                 c.set_v4(coll::START, feet);
                 c.set_v4(coll::DELTA, [ang.cos() * len, if r.below(4) == 0 { urange(&mut r, -30.0, 30.0) } else { 0.0 }, ang.sin() * len, 1.0]);

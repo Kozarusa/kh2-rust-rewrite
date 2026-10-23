@@ -576,10 +576,7 @@ impl Oct {
             left -= 1;
         }
         let flags = c.flags();
-        let final_y;
-        if flags & 0x78 == 0x30 {
-            final_y = c.f32_at(coll::END + 4);
-        } else {
+        if flags & 0x78 != 0x30 {
             let e = c.v4(coll::END);
             if start[0] != e[0] || start[1] != e[1] || start[2] != e[2] {
                 let mut p0 = c.v4(coll::START);
@@ -590,8 +587,8 @@ impl Oct {
                     return 0;
                 }
             }
-            final_y = c.f32_at(coll::END + 4);
         }
+        let final_y = c.f32_at(coll::END + 4);
         c.set_f32(coll::END + 4, final_y + lift);
         flags >> 34 & 1
     }
@@ -805,7 +802,7 @@ pub fn hit_callback(c: &mut Collider, attr: u32, poly: u16, contact: V4) {
 /// orig 0x1625e0: the sphere's signed gap to the plane when the centre is in front of it and within the radius.
 pub fn plane_gap(centre: V4, plane: V4, radius: f32) -> Option<f32> {
     let d = dot3(centre, plane) + plane[3];
-    (d <= radius && 0.0 <= d).then_some(d)
+    (0.0..=radius).contains(&d).then_some(d)
 }
 
 /// orig 0x162678: the centre projected onto the plane, and whether that point lies inside the polygon.
@@ -817,9 +814,8 @@ pub fn face_contact(centre: V4, verts: &Verts, plane: V4, gap: f32) -> (bool, V4
 /// orig 0x162028: is `p` on the inner side of every edge of the polygon (the edge cross product against the
 /// plane normal not above 0.01)?
 pub fn inside_edges(verts: &Verts, p: V4, normal: V4) -> bool {
-    let next = next_table(verts.n);
-    for i in 0..verts.n {
-        let e = sub(verts.v[next[i]], verts.v[i]);
+    for (i, &nx) in next_table(verts.n).iter().enumerate().take(verts.n) {
+        let e = sub(verts.v[nx], verts.v[i]);
         let q = sub(p, verts.v[i]);
         let cr = cross_qe(q, e);
         if INSIDE_EPS < dot3(cr, normal) {
@@ -831,9 +827,8 @@ pub fn inside_edges(verts: &Verts, p: V4, normal: V4) -> bool {
 
 /// orig 0x161ed0: is `p` inside the polygon seen from above (every edge's cross product has a non-negative y)?
 pub fn inside_xz(verts: &Verts, p: V4) -> bool {
-    let next = next_table(verts.n);
-    for i in 0..verts.n {
-        let e = sub(verts.v[next[i]], verts.v[i]);
+    for (i, &nx) in next_table(verts.n).iter().enumerate().take(verts.n) {
+        let e = sub(verts.v[nx], verts.v[i]);
         let q = sub(p, verts.v[i]);
         if cross_qe(q, e)[1] < 0.0 {
             return false;
@@ -849,7 +844,7 @@ pub fn ray_triangle(origin: V4, dir: V4, verts: &Verts, plane: V4) -> (bool, Opt
     let den = dot3(plane, dir);
     if den < 0.0 {
         let t = (dot3(plane, verts.v[0]) - dot3(plane, origin)) / den;
-        if t <= ONE && 0.0 <= t {
+        if (0.0..=ONE).contains(&t) {
             let mut hit = add(scale(dir, t), origin);
             hit[3] = ONE;
             return (inside_edges(verts, hit, plane), Some(hit));
@@ -863,14 +858,13 @@ pub fn ray_triangle(origin: V4, dir: V4, verts: &Verts, plane: V4) -> (bool, Opt
 /// nearest corner within the radius. The nearest of several wins. Returns the contact and the output record as
 /// the original leaves it (a failed search leaves the last edge's foot there).
 pub fn edge_contact_out(s: &Sphere, verts: &Verts) -> (Option<V4>, V4) {
-    let next = next_table(verts.n);
     let r2 = s.r * s.r;
     let eps = [EDGE_EPS, EDGE_EPS, EDGE_EPS, ONE];
     let mut found: Vec<V4> = Vec::new();
     let mut scratch = [0.0; 4];
-    for i in 0..verts.n {
+    for (i, &nx) in next_table(verts.n).iter().enumerate().take(verts.n) {
         let a = verts.v[i];
-        let b = verts.v[next[i]];
+        let b = verts.v[nx];
         let d = sub(b, a);
         let d = [d[0], d[1], d[2], ONE];
         let a1 = [a[0], a[1], a[2], ONE];

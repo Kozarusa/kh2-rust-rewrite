@@ -35,7 +35,7 @@ screenshots: give EXACT commands (env vars included) and paths for every claim; 
    or conservative. Never guess; label inferences `[inferred]`.
 8. Ledger convention (C2): `/// orig 0x1a0180` in a doc comment of non-test code marks that address `ported` (one line per address); a
    test `orig_<addr>_matches_the_game` marks it `verified`; other mentions are evidence for `read`. Never hand-edit `read/ported/verified`
-   in `sheets/functions.json` (only `kh2 ledger scan` sets them; TODO(orchestrator: remove when WP-P0C is merged): planned in WP-P0C).
+   in `sheets/functions.json` (only `kh2 ledger scan` sets them).
 9. Factory merge rule (C7): a package merges without a reviewer only when (a) its diff touches only its cluster's port files, the
    cluster's test file and ledger rows; (b) every new test came from `factory gen` and keeps the harness invariants (generated header,
    `fuzz(&SPEC, n)` with n >= 1,000, no extra early return, every stub listed in the brief); (c) the tests ran green with the disc

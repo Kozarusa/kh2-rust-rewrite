@@ -15,11 +15,10 @@ DEVIATIONS, README, sheets. Keep context lean: read verdicts and report blocks, 
 
 ## 2. The loop (never idle while usage allows)
 1. Work only inside the open ladder step (C1, PLAN section 5) plus one spec lane for the next step; user requests and P0 reports first.
-   The step closes only through its exit gate G1-G5. Progress is the ledger (C2): TODO(remove when WP-P0C is merged) `kh2 ledger report`
+   The step closes only through its exit gate G1-G5. Progress is the ledger (C2): `kh2 ledger report`
    gives verified-or-not-needed bytes per system; HANDOFF's first screen carries it, the host table count, rig passes and open DEVIATIONS.
 2. Before each spawn: usage (`get_usage`) and free disk on C; spawn count B5; at 90% of the 5-hour window go to section 5.
-3. Next WP: from HANDOFF's queue, dependencies merged, files disjoint from running WPs. Briefs are generated: TODO(remove when WP-P0C is
-   merged) `kh2 ledger brief <system> [cluster]` gives the function list, callers, citations and ownership globs; you add goal, gate and
+3. Next WP: from HANDOFF's queue, dependencies merged, files disjoint from running WPs. Briefs are generated: `kh2 ledger brief <system> [cluster]` gives the function list, callers, citations and ownership globs; you add goal, gate and
    model (B2) from `agents/briefs/brief-template.md`. A brief stays under about 4 KB. A missing spec becomes a spec WP (Opus).
 4. Spawn (O1); on a report: review (O2), merge (O3), bookkeeping (O5), cleanup (O6); log each step in PROGRESS.
 5. Every second merge: `tools\accept.ps1 -SkipAudio -Only idle-hud,combat-ground,combat-air,tt04-dusk,magic-fire,reaction-34-forced` plus
@@ -34,7 +33,7 @@ DEVIATIONS, README, sheets. Keep context lean: read verdicts and report blocks, 
   You are <model>. Report once as _common.md says.` Log `spawn` with the model.
 - O2 report: ignore duplicates. `tools\review.ps1 -Branch wp/<id> -Own '<brief globs>' -Tests '<claimed tests>'`; READ the `REVIEW: PASS`
   line, never chain the merge after it with `;`. Code WPs: reviewer (Sonnet, no isolation, prompt in `agents/briefs/reviewer.md`) unless
-  the package passes the factory merge rule (WORKER 2.9, C7; TODO(remove when WP-P0C is merged) `kh2 ledger merge-check`). Docs-only WPs
+  the package passes the factory merge rule (WORKER 2.9, C7; `kh2 ledger merge-check`). Docs-only WPs
   skip it (B8). Spot-check one claim yourself and LOOK at one cited screenshot. MERGE or MERGE WITH FOLLOW-UP -> O3 (PARTIAL items become
   brief `<id>b`, front of the queue); DO NOT MERGE -> SendMessage the failing items; after the fix a fresh reviewer reviews again.
 - O3 merge: `tools\merge.ps1 -Branch wp/<id> -ExpectTests <old + new, at most the worker's count> -Message 'Merge wp/<id>: <line>'`

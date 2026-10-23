@@ -28,8 +28,8 @@
   handles), named for what it does, not a MIPS transliteration; `factory gen <addr> <rust::path> <file>` into
   `crates/<crate>/tests/orig_<cluster>.rs` (one file per cluster); fix only what the brief marks (`Range`, `nulls: false`, globals, stubs);
   `cargo test -p <crate> --test orig_<cluster>`; never relax a comparison or the case count; after three failed fix rounds mark the
-  function `blocked` with the failing case and go on; cap 90 minutes. TODO(orchestrator: remove when WP-P0C is merged): `kh2-factory`
-  and `kh2 ledger brief <system> [cluster]` are planned in WP-P0C.
+  function `blocked` with the failing case and go on; cap 90 minutes. Tools: `kh2-factory` (crates/kh2-factory)
+  and `kh2 ledger brief <system> [cluster]`.
 
 ## R3. BDX host calls and enemies
 - Host calls: the `match` in `crates/kh2-app/src/enemy_host.rs`; each arm is `imp` (exact), `approx(.., "why")`, `stub(.., "why")` or

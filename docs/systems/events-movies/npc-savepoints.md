@@ -20,7 +20,7 @@
   hold them with type-15 entities (e.g. tt02 `a72_`, ids 0xf3..0x2ff). Which entity follows which path: the
   script asks for it by id through host 1.177 (below, WP-E2); `rtn_default` asks for -1, the group's first path.
 
-**The class-5 runtime and the walk (WP-E2)** [V unless marked]. Read for the port in `crates/kh2-app/src/npc.rs`:
+**The class-5 runtime and the walk (WP-E2)** [V unless marked]. Read for the port in `crates/kh2-event/src/npc.rs`:
 
 - *Where the townspeople come from.* Any loaded group's type-15 entity (`FUN_00181728` makes every entity of a
   group). In tt02 the `map` program 0 loads none: the kind-6 groups `a72_`, `b72_`, `c72_` (one `N_EX5x0_RTN`

@@ -115,3 +115,55 @@ pub enum Phase {
     /// The leave animations play and the dim returns over `CLOSE_FRAMES`.
     Closing,
 }
+
+/// The menu's phase (`Menu::phase`) as the fixed-step gates of the lower crates read it (the limit and reaction-command
+/// gates). The menu crate copies it in `RunFixedMainLoopSystems::BeforeFixedMainLoop`: the menu changes its phase
+/// only in `PreUpdate` and `Update`, so every fixed step reads the same value it read from `Menu` itself.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuPhase(pub Phase);
+
+impl Default for MenuPhase {
+    fn default() -> MenuPhase {
+        MenuPhase(Phase::Closed)
+    }
+}
+
+/// The systems of the lower crates that run only while the menu is closed; the menu crate gives the set the
+/// condition `menu::is_closed`.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WhileMenuClosed;
+
+/// A request of the camp's party-switch notice page (page 0x15): the notice and the camp's argument
+/// (`FUN_0024f300` 's first parameter, 0 or 2). `party_switch` re-exports it as `Request`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitchRequest {
+    pub notice: crate::party_rules::Notice,
+    pub arg: u32,
+}
+
+/// The party-switch request the last jump record made (`party::jump_party` sets it); the page takes it when no
+/// menu is up. Moved out of `PartySwitch` so the party crate can write it.
+#[derive(Resource, Default, Debug)]
+pub struct PartySwitchRequest(pub Option<SwitchRequest>);
+
+/// A save point's request of the save menu (menu kind 1, `FUN_0024f0b8(1, mode)` from `FUN_001784b8`), for the event
+/// crate's `savepoint::point_use`. `open` mirrors whether `SaveMenu::request_point` would take a request (the menu is
+/// loaded, closed and holds no request): the menu crate writes it in `RunFixedMainLoopSystems::BeforeFixedMainLoop`
+/// (the save menu changes only in `Startup`, `PreUpdate` and `Update`) and moves `mode` into the save menu in
+/// `AfterFixedMainLoop`, before any `Update` system reads it.
+#[derive(Resource, Default, Debug)]
+pub struct SavePointRequest {
+    pub mode: Option<i32>,
+    pub open: bool,
+}
+
+impl SavePointRequest {
+    /// `SaveMenu::request_point` from the fixed step: false when the menu cannot open (no `save.2ld`, or a menu is up).
+    pub fn request(&mut self, mode: i32) -> bool {
+        if !self.open || self.mode.is_some() {
+            return false;
+        }
+        self.mode = Some(mode);
+        true
+    }
+}

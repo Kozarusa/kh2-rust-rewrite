@@ -1,6 +1,6 @@
 # Magic: contract
 
-Ladder step L4. Ledger system name `magic`. Crates: `kh2-app` (`magic.rs`, `magic_rules.rs`, the menu and HUD command lists in `items.rs`),
+Ladder step L4. Ledger system name `magic`. Crates: `kh2-player` (`magic.rs`), `kh2-game-core` (`magic_rules.rs`), `kh2-party` (the menu and HUD command lists in `items.rs`),
 `kh2-tables` (`magc`, `magi` readers), `kh2-bdx` (the spell scripts run as BDX). Sheet ids: `game.sora.magic`. Scenarios: `scenarios/magic/` (none yet).
 
 Status: Fire, Blizzard, Thunder and Cure (levels 1 to 3), Magnet, Reflect, the drive-form variants, the magic turn, MP charge and the lock-on

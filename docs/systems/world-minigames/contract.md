@@ -1,6 +1,6 @@
 # World mechanics and minigames: contract
 
-Ladder step L11. Ledger system name `world-minigames`. Crates: `kh2-app` (`struggle.rs`, `hud_mission.rs`, `menu_struggle.rs`, `intro.rs`).
+Ladder step L11. Ledger system name `world-minigames`. Crates: `kh2-event` (`struggle.rs`, `intro.rs`), `kh2-hud` (`hud_mission.rs`), `kh2-menu` (`menu_struggle.rs`).
 Sheet ids: `game.struggle`. Scenarios: `scenarios/world-minigames/` (none yet).
 
 Status: only the Struggle (the Twilight Town mission manager for groups b_50, b_51, b_52) is documented and ported: rules, end by counter or time,

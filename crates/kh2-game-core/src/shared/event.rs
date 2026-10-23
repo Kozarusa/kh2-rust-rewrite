@@ -186,3 +186,8 @@ pub fn follow(from: Shot, to: Shot, start: i32, end: i32, f: f32) -> Shot {
     let w = tau * tau * (3.0 - 2.0 * tau);
     Shot { pos: from.pos.lerp(to.pos, w), look: from.look.lerp(to.look, w), roll: from.roll + (to.roll - from.roll) * w, fov: from.fov + (to.fov - from.fov) * w }
 }
+
+/// Whether an event is playing (`EventPlayer::playing`, `DAT_0035e3a4` set) for the lower crates' gates. The event
+/// player writes it right after its own `start` and `step` (the only systems that change it), in the same chain.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventRunning(pub bool);

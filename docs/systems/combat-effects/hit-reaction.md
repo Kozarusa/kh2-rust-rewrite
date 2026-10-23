@@ -2,7 +2,7 @@
 
 Findings from reading the game's main executable (decompilation plus disassembly of functions the
 decompiler skipped). Addresses are function addresses in `SLUS_210.05` (USA). Nothing here is
-copied code; the typed rules are in `crates/kh2-app/src/reaction_rules.rs` and their numbers come
+copied code; the typed rules are in `crates/kh2-game-core/src/reaction_rules.rs` and their numbers come
 from the user's disc at run time. `atkp` field names follow OpenKH `docs/kh2/file/type/00battle.md`.
 
 Status words: **verified** = read directly in the code; **inferred** = follows from the code but a

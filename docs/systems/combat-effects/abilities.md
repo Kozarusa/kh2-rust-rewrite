@@ -1,6 +1,6 @@
 # Abilities (work package 2D)
 
-What the game does with abilities, what `crates/kh2-app/src/abilities.rs` implements, the hook points
+What the game does with abilities, what `crates/kh2-player/src/abilities.rs` implements, the hook points
 for `sora.rs` and `drive.rs`, and the gaps. Marked **[V]** verified (read in the game's own code or
 checked against the disc data), **[I]** inferred, **[GAP]** not found. Function names are addresses in
 `SLUS_210.05`. No game values are in the repository; the numbers are read from the disc at run time.

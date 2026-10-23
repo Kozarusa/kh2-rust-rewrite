@@ -7,7 +7,7 @@
 | file | function / item | change |
 |---|---|---|
 | `kh2-ard` (done) | `Area`, `Group`, `parse_trigger`, `parse_event`, `progress` | readers used below |
-| new `area.rs` (kh2-app) | `AreaRecord` resource (world, area, entrance, programs) and `AreaPrograms` (the 0xc0-byte table per world from the save block) | E1, E5 |
+| new `area.rs` (kh2-game-core) | `AreaRecord` resource (world, area, entrance, programs) and `AreaPrograms` (the 0xc0-byte table per world from the save block) | E1, E5 |
 | new `area_script.rs` | port of `FUN_00181148` / `FUN_00180b48`: run `map`, `btl`, `evt` programs, spawn groups, record triggers, music, map visibility | E1 |
 | `assets.rs` | `load_area`: take the player placement from spawn kind 1 entities of the entrance; load by the area record | E1 |
 | `enemy.rs` | `area_groups` / waves: read the btl program from the area record instead of taking turns | E5; done in EN1 (docs/systems/script-host/enemies-core.md "Waves") |
@@ -33,7 +33,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   `FUN_001d8a70`. Accept: `KH2_AREALOG=1` logs `area tt04 entrance 1 programs (..)`, a scenario walking from tt04
   out of the m_10 exit logs `exit -> tt03 entrance 1`; screenshot after the jump looked at (Sora in tt03).
   **Status (WP-E1 / E1b):** done for Twilight Town. `kh2_ard::run` is the interpreter (`run_area`,
-  `player_start`, `Group::exit`, `Activator::contains`, oracle-checked); `kh2-app/src/area.rs` holds
+  `player_start`, `Group::exit`, `Activator::contains`, oracle-checked); `crates/kh2-game-core/src/area.rs` holds
   the `AreaRecord` (world 2, area from `CurrentArea`, entrance from a jump or `KH2_ENTRANCE`,
   programs (0, 0, 0) until E5) and runs the scripts when an area loads, placing Sora at the
   entrance's player entity after a jump; `area_jump.rs` tests the option-0 volumes of the loaded
@@ -48,7 +48,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   hosts for the walk path (+0x508), walk path ids. Accept: tt02 log of spawned `N_EX5xx_RTN` with no `missing`
   host calls in `KH2_BDXLOG`; screenshot with townspeople looked at.
   **Status (WP-E2):** done for the walk and the fixed idle (section 3, "The class-5 runtime and the walk").
-  `kh2-app/src/npc.rs` spawns every type-15 entity of the loaded groups (any script: tt02's townspeople come
+  `crates/kh2-event/src/npc.rs` spawns every type-15 entity of the loaded groups (any script: tt02's townspeople come
   from `evt` programs, `KH2_PROGRAMS=0,0,10`), runs `rtn_default` through `NpcHost` (group 5, the path hosts
   1.177 / 1.178, 0.21, 1.13 / 1.161 / 1.170 / 1.222 / 1.145 / 1.172..1.176 on the object) over the enemy host,
   follows the walk path's segments with the game's look-ahead rule and applies the walk motions' root motion.
@@ -166,7 +166,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   (0x24 + `.anb`), message lines (0x15, 0x2d), the camera cut table (opcode 6) into `CamEvent`; skip later. Start
   with a tt01 event of under 600 bytes (`100`, `200`, `400`, `600`). Accept: log of commands at their frames; a
   screenshot with a subtitle line looked at.
-  **Status (WP-E6):** `kh2-app/src/event_player.rs` (a submodule of `intro.rs`, plugin added by `IntroPlugin`).
+  **Status (WP-E6):** `crates/kh2-event/src/event_player.rs` (a submodule of `intro.rs`, plugin added by `IntroPlugin`).
   `Event::parse` sorts the commands (opcode 0 name, 8 end, 1 actors, 0x24 motion loads, 2 placements, 0x2c
   motions, 0x15 subtitle lines, 0x2d windows, 0x44 movies, the camera through `intro::Track`); `due` is the
   timeline cursor; the frame is game ticks times 0.5. Actors are made at their first 0x2c from the objentry

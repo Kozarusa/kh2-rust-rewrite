@@ -193,3 +193,8 @@ pub struct Label {
     pub style: Style,
     pub offset: [f32; 2],
 }
+
+/// The set that holds only `hud_menu::mirror_reaction` (the HUD capsule's copy of the player's reaction offer), so
+/// the lower crates order against it (`npc` shows its offer before it and hides it after it).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MirrorReaction;

@@ -479,7 +479,7 @@ const AREA_FX_ID_BASE: usize = 1000;
 
 /// A footstep dust request, what `FUN_001b1c90(actor, kind)` is asked for: by a motion's trigger 19
 /// (the kind is its first parameter) and by the ground mover `FUN_0017af10` (kinds 8 and 9 with the
-/// stop step, 10 and 11 when movement starts). `crates/kh2-app/src/audio.rs` sends them from the same
+/// stop step, 10 and 11 when movement starts). `crates/kh2-sound/src/audio.rs` sends them from the same
 /// place that plays the footstep sounds.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct FootDust {

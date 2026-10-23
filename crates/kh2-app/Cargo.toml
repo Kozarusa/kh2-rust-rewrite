@@ -15,6 +15,14 @@ path = "src/main.rs"
 
 [dependencies]
 kh2-game-core.workspace = true
+kh2-sound.workspace = true
+kh2-enemy.workspace = true
+kh2-player.workspace = true
+kh2-party.workspace = true
+kh2-event.workspace = true
+kh2-hud.workspace = true
+kh2-menu.workspace = true
+kh2-worldmap.workspace = true
 kh2-archive.workspace = true
 kh2-model.workspace = true
 kh2-anim.workspace = true

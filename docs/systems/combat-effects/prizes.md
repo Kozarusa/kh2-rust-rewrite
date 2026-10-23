@@ -1,6 +1,6 @@
 # Prizes: HP, MP and drive orbs and munny (WP-7B)
 
-Module `crates/kh2-app/src/prize.rs`. Status words: **verified** = read in the decompilation or the
+Module `crates/kh2-player/src/prize.rs`. Status words: **verified** = read in the decompilation or the
 disassembly of the user's `SLUS_210.05`, or checked against the game's own code in `kh2-ee`;
 **inferred** = follows from what was read; **gap** = not found or not ported. Every number the port
 uses is read from the executable at start (`prize::Consts::from_exe`); the code's own immediates

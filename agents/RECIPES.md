@@ -35,12 +35,12 @@
   address marks it `tested`; only an oracle test (kh2-ee or the factory harness runs the original) marks it `verified`.
 
 ## R3. BDX host calls and enemies
-- Host calls: the `match` in `crates/kh2-app/src/enemy_host.rs`; each arm is `imp` (exact), `approx(.., "why")`, `stub(.., "why")` or
+- Host calls: the `match` in `crates/kh2-enemy/src/enemy_host.rs`; each arm is `imp` (exact), `approx(.., "why")`, `stub(.., "why")` or
   `missing(.., "why")`; `KH2_BDXLOG=1` prints the per-run table. Names and signatures: `docs/systems/script-host/bdx-host-functions.md` "Named host functions". Object
   fields go in `Obj` (`enemy_obj.rs`), one per game field, doc comment with offset and writer. Test with `kh2_bdx::MockHost`
   (`crates/kh2-bdx/tests/disc.rs`) and the oracle (`cargo test -p kh2-bdx --test oracle -- --nocapture` ends "0 failures"). Update
   `docs/systems/script-host/enemy-ai-host-calls.md` "Host call mapping".
-- New enemy: pick from data (`cargo test -p kh2-ard --test disc -- --nocapture`); add `enemy::Kind` to `enemy::KINDS`; its `enmp` constant
+- New enemy: pick from data (`cargo test -p kh2-ard --test disc -- --nocapture`); add a new file under `crates/kh2-enemy/src/kinds/`; its `enmp` constant
   (host 2.9) from `cargo run -p kh2 -- bdx <model>`; run `KH2_BDXLOG=1 KH2_WAVE_GROUP=<group> target\debug\kh2-game.exe tt04` and
   implement each `missing` call; add it to the oracle list and a mode-cycle test like `dusk_runs_its_mode_cycle`; screenshot and LOOK.
 
@@ -48,7 +48,7 @@
 - `target\debug\kh2-game.exe <area>` (tt00 arena, tt02, tt04 town). `KH2_SCREENSHOT=<png>` + `KH2_SHOT_AT=<s>` (nothing before ~6 s),
   `KH2_KEYS=t:key[:hold],...` (keys J K Q Space F3 F4 F6 W A S D E C Left Right Up Down T G B; other names are ignored silently),
   `KH2_NO_SOUND=1 KH2_NO_MUSIC=1`, `KH2_NO_ENEMIES=1`, `KH2_WAVE_GROUP=b_44`, `KH2_YAW` (normal play only), `KH2_DIST`. Full list:
-  `grep -rhoE "KH2_[A-Z0-9_]+" crates/kh2-app/src | sort -u`.
+  `grep -rhoE "KH2_[A-Z0-9_]+" crates/kh2-*/src | sort -u`.
 - Accept scenarios (`tools\accept.ps1`, orchestrator-owned) are lines `@{ Name; Area; Env; Keys; ShotAt; Expect; Soft; Look }`; propose
   yours with exact log substrings for `Expect`. TODO(orchestrator: remove when R15 lands): `KH2_TURBO=1`, `KH2_SHOT_TICKS` and
   `accept.ps1 -Turbo -Jobs 8` (parallel turbo sweep) are planned.

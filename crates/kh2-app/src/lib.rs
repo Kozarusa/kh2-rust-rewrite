@@ -11,55 +11,18 @@
 //! in `schedule`.
 
 pub use kh2_game_core::*;
+pub use kh2_sound::*;
+pub use kh2_enemy::*;
+pub use kh2_player::*;
+pub use kh2_party::*;
+pub use kh2_event::*;
+pub use kh2_hud::*;
+pub use kh2_menu::*;
+pub use kh2_worldmap::*;
 
-pub mod abilities;
 mod plugins;
-mod area_jump;
 mod asset_viewer;
-mod audio;
-mod audio_bgm;
-mod clash;
-mod drive;
-mod enemy;
-mod enemy_ai;
-mod enemy_host;
-mod enemy_obj;
-mod friend_ai;
-mod friend_host;
-mod hud;
-mod intro;
-mod items;
-mod limit;
-mod limit_camera;
-mod limit_script;
-mod limit_visual;
-mod magic;
-mod menu;
-mod menu_abilities;
-mod menu_ending;
-mod menu_gfx;
-mod menu_journal;
-mod menu_pages;
-mod menu_shop;
-mod menu_status;
-mod menu_gameover;
-mod mickey;
-mod menu_struggle;
-mod menu_text;
-mod npc;
-mod party;
-mod party_battle;
-mod party_switch;
-mod player_reaction;
-mod prize;
-mod reaction_cmd;
-mod savepoint;
-mod sora;
 mod sound_test;
-mod struggle;
-mod summon;
-mod worldmap;
-mod worldmap_ui;
 
 use bevy::prelude::*;
 

@@ -399,7 +399,7 @@ pub fn voice_bank(disc: &Disc, cache: &SeCache, v: &PlayVoice) -> Option<Arc<Vsb
 /// The voice bank of `file` (a `.vsb`, or with `in_bar` the [`VOICE_BAR_ENTRY`] entry of the BAR),
 /// through the same cache the voice requests use. The sound viewer (`sound_test.rs`) reads banks
 /// through it.
-pub(crate) fn voice_bank_file(disc: &Disc, cache: &SeCache, file: &str, in_bar: bool) -> Option<Arc<Vsb>> {
+pub fn voice_bank_file(disc: &Disc, cache: &SeCache, file: &str, in_bar: bool) -> Option<Arc<Vsb>> {
     let key = if in_bar { format!("{file}#{VOICE_BAR_ENTRY:#x}") } else { file.to_string() };
     cache
         .voices
@@ -938,7 +938,7 @@ pub fn enemy_footsteps(
 }
 
 /// World codes in the game's world order (OpenKH `docs/kh2/worlds.md`).
-pub(crate) const WORLDS: [&str; 19] = ["zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh"];
+pub const WORLDS: [&str; 19] = ["zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh"];
 
 /// Field and battle music of an area from `03system.bin`'s `arif` table (BGM set 0): a header
 /// (version, world count, per world: u16 area count, u16 offset) and 0x40-byte area records with

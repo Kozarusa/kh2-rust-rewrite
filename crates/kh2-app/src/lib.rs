@@ -11,13 +11,12 @@
 //! in `schedule`.
 
 pub use kh2_game_core::*;
+pub use kh2_sound::*;
 
 pub mod abilities;
 mod plugins;
 mod area_jump;
 mod asset_viewer;
-mod audio;
-mod audio_bgm;
 mod clash;
 mod drive;
 mod enemy;

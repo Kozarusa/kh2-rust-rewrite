@@ -129,7 +129,10 @@ fn lt(c: &Case, strict: bool) -> Out {
 #[test]
 fn harness_accepts_a_matching_float_compare() {
     let mut ee = ee_float_less();
-    fuzz_with(&mut ee, &FLOATS, 2000, 3, |c| lt(c, true));
+    // fuzz_with panics on the first difference, so a returned Stats means all 2000 cases agreed.
+    let stats = fuzz_with(&mut ee, &FLOATS, 2000, 3, |c| lt(c, true));
+    assert_eq!(stats.cases, 2000, "every generated case ran and matched");
+    assert!(stats.steps > 0, "the original code actually executed");
 }
 
 #[test]

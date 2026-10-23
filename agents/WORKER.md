@@ -61,7 +61,7 @@ Every test you add asserts something (an eprintln-only test is not a test).
 | a test that is not yours fails | do not fix it; find the commit (`git log -p -- <file>`), report it |
 | clippy count rises | fix your own warnings; never `#[allow]` someone else's; `too_many_arguments` on your own new fn is fine |
 | the same decomp trace fails twice | stop and report "stuck: <the trace>" (the orchestrator retries on opus) |
-| context or usage runs low | stop new work, commit (say whether it compiles), report done / not done / exact next step |
+| context runs low | stop new work, commit (say whether it compiles), report done / not done / exact next step |
 
 ## 5. Gate, then report ONCE
 From your worktree root, on a committed tree: `$env:CARGO_INCREMENTAL='0'; powershell -NoProfile -ExecutionPolicy Bypass -File

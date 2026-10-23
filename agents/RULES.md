@@ -90,8 +90,10 @@ Phase 0 (WP-P0A, 2026-10-22).
   same model (not a failure).
 - B3. First step of a new orchestrator session: spawn a Plan agent on `opus` (medium or high effort) with `agents/RULES.md`,
   `local/HANDOFF.md`, `agents/ORCHESTRATOR.md`, `agents/DEVIATIONS.md`, `docs/ROADMAP.md` and the files HANDOFF names, and follow its plan.
-- B4. Usage: ignore the weekly limit. At 90% used of the 5-hour window do WRAP UP (stop dispatching, let workers commit and report,
-  review and merge what passes, bookkeeping, handoff) and do not resume by yourself.
+- B4. Usage: there is no usage rule (user, 2026-10-23: "ignore the usage rule, infact, completely remove it"). Neither the weekly limit
+  nor the 5-hour window triggers a wrap-up, and nobody checks usage before a spawn. WRAP UP (stop dispatching, let workers commit and
+  report, review and merge what passes, bookkeeping, handoff) happens only when the user says `WRAP UP` or the work is genuinely
+  blocked; never stop on your own while the queue has work.
 - B5. Worker count (2026-10-19, user): up to floor(free GB on drive C / 22) workers running at once. Reviewers do not count.
   Workers must still edit disjoint files; fewer suitable WPs means fewer workers.
 - B6. Worktrees: pre-made worktrees (`git worktree add .claude/worktrees/wp-<id> -b wp/<id> integration`), agents spawned with no

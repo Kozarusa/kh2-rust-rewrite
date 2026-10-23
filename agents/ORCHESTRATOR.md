@@ -10,14 +10,14 @@ DEVIATIONS, README, sheets. Keep context lean: read verdicts and report blocks, 
 0. Plan agent (B3), then from the main checkout: `git status --short; git log --oneline -3; git worktree list`, `tools\verify.ps1`
    (baseline from `local\gate.json`), `cargo build -p kh2-app --bin kh2-game`, `tools\state.ps1 -NoVerify`.
 1. Clean the leftovers HANDOFF lists (worktrees, `.claude\worktrees\*`, stray target dirs).
-2. Move `local\PROGRESS.md`'s body to `local\archive\progress-<date>.md`; write the `start` line (hash, tests, clippy, usage, free disk).
+2. Move `local\PROGRESS.md`'s body to `local\archive\progress-<date>.md`; write the `start` line (hash, tests, clippy, free disk).
 3. `tools\accept.ps1 -SkipAudio` if the last sweep is older than the last merges; LOOK at the PNGs.
 
-## 2. The loop (never idle while usage allows)
+## 2. The loop (never idle while the queue has work; RULES B4: no usage rule)
 1. Work only inside the open ladder step (C1, PLAN section 5) plus one spec lane for the next step; user requests and P0 reports first.
    The step closes only through its exit gate G1-G5. Progress is the ledger (C2): `kh2 ledger report`
    gives verified-or-not-needed bytes per system; HANDOFF's first screen carries it, the host table count, rig passes and open DEVIATIONS.
-2. Before each spawn: usage (`get_usage`) and free disk on C; spawn count B5; at 90% of the 5-hour window go to section 5.
+2. Before each spawn: free disk on C and spawn count B5 (no usage check, B4).
 3. Next WP: from HANDOFF's queue, dependencies merged, files disjoint from running WPs. Briefs are generated: `kh2 ledger brief <system> [cluster]` gives the function list, callers, citations and ownership globs; you add goal, gate and
    model (B2) from `agents/briefs/brief-template.md`. A brief stays under about 4 KB. A missing spec becomes a spec WP (Opus).
 4. Spawn (O1); on a report: review (O2), merge (O3), bookkeeping (O5), cleanup (O6); log each step in PROGRESS.
@@ -64,7 +64,7 @@ DEVIATIONS, README, sheets. Keep context lean: read verdicts and report blocks, 
 | permission prompt blocks a step | skip it, note it in HANDOFF, next WP |
 | disk on C below the spawn threshold | no new spawn; clean merged worktrees and leftovers first |
 
-## 5. Wrap-up (90% of the 5-hour window, a stopping point, or the user says `WRAP UP`)
+## 5. Wrap-up (only when the user says `WRAP UP` or the work is blocked; never for usage, B4)
 1. Stop dispatching; SendMessage running workers: "Commit what compiles and stop now; report done / not done / last commit." Merge what passes.
 2. Full `tools\accept.ps1 -Out local\accept\<shift>-final`; LOOK at idle-hud, combat-ground, tt04-dusk, magic-fire and every new scenario.
 3. Hygiene (empty except the known `docs/systems/player-camera/camera.md` hits, if any): `git status --short`;

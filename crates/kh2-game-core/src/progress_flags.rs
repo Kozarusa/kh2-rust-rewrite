@@ -10,8 +10,11 @@
 //! original's small routines around that setter. `set_flag` of the [`StoryEnv`] is the full setter `FUN_0017ff60`, which this file
 //! does not port.
 
-/// Where the original keeps the flag pages (0x20 bytes per world).
+/// Where the original keeps the flag pages (0x20 bytes per world, so 256 flags each; the word index of an id runs to 31, so ids above
+/// 255 of a page read into the next pages, and the largest id 0xffff addresses up to `FLAGS_LEN`).
 pub const FLAGS_ADDR: u32 = 0x33f6b0;
+/// Bytes of memory every id 0..=0xffff can address from `FLAGS_ADDR`.
+pub const FLAGS_LEN: usize = 0x860;
 /// Where the original keeps the save-flag bits (`FUN_001a7780` and `FUN_001a77b8` index words from here).
 pub const SAVE_FLAGS_ADDR: u32 = 0x33fe20;
 /// Entries of the Re:COM-style table and the size of one entry in bytes.
@@ -176,7 +179,7 @@ pub fn second_part_flags(env: &mut impl StoryEnv) {
 /// `table` is the executable's 0xa8 bytes at 0x37a6f8 (fourteen entries of three words: flag, group, bit); `set_bit` is
 /// `FUN_0019d7e0`, which sets bit `bit` of the words at `0x33fd18 + 8 * group`.
 pub fn record_bits_for_flag(table: &[u8], id: i32, mut set_bit: impl FnMut(i32, i32)) {
-    for e in table.chunks_exact(12).take(14) {
+    for e in table.as_chunks::<12>().0.iter().take(14) {
         let w = |k: usize| u32::from_le_bytes([e[4 * k], e[4 * k + 1], e[4 * k + 2], e[4 * k + 3]]) as i32;
         if w(0) == id {
             set_bit(w(1), w(2));
@@ -288,7 +291,7 @@ mod tests {
 
     impl Env {
         fn new() -> Env {
-            Env { flags: vec![0; 0x800], ..Env::default() }
+            Env { flags: vec![0; 0x860], ..Env::default() }
         }
         fn with(mut self, ids: &[i32]) -> Env {
             for &i in ids {
@@ -323,7 +326,7 @@ mod tests {
 
     #[test]
     fn flags_are_pages_of_words_and_ffff_is_always_clear() {
-        let mut f = vec![0u8; 0x800];
+        let mut f = vec![0u8; 0x860];
         assert!(!check_flag(&f, 0x879));
         let (o, m) = flag_slot(0x879).unwrap();
         // Page 2 (0x879 >> 10), word (0x79 >> 5) = 3, bit 25.
@@ -332,7 +335,7 @@ mod tests {
         assert!(check_flag(&f, 0x879));
         clear_flag(&mut f, 0x879);
         assert!(!check_flag(&f, 0x879));
-        put32(&mut f, 0x7fc, u32::MAX);
+        put32(&mut f, 0x85c, u32::MAX);
         assert!(!check_flag(&f, 0xffff));
         assert!(check_flag(&f, 0xfffe));
         assert!(!check_flag(&f, -1) && !check_flag(&f, 0x10000));

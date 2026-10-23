@@ -81,7 +81,7 @@ impl StoryEnv for Sim {
 }
 
 // Global indexes of the environment specs: flags, log, items, gauge bytes, then a table.
-const ENV_GLOBALS: [(u32, u32, bool); 4] = [(FLAGS, 0x800, true), (LOG, 0x100, false), (ITEMS, 0x100, true), (GAUGE, 0x20, true)];
+const ENV_GLOBALS: [(u32, u32, bool); 4] = [(FLAGS, FLAGS_LEN as u32, true), (LOG, 0x100, false), (ITEMS, 0x100, true), (GAUGE, 0x20, true)];
 
 fn sim(c: &mut Case) -> Sim {
     Sim { flags: c.global(0).to_vec(), items: c.global(2).to_vec(), gauge: c.global(3)[0x12], log: Vec::new() }
@@ -97,13 +97,13 @@ fn write_log(c: &mut Case, at: usize, log: &[u32]) {
 
 macro_rules! flag_spec {
     ($addr:expr, $args:expr, $ret:expr) => {
-        Spec { addr: $addr, args: $args, floats: 0, ret: $ret, globals: &[(FLAGS, 0x800, true)], stubs: &[], nulls: false }
+        Spec { addr: $addr, args: $args, floats: 0, ret: $ret, globals: &[(FLAGS, FLAGS_LEN as u32, true)], stubs: &[], nulls: false }
     };
 }
 
 #[test]
 fn orig_1802e0_matches_the_game() {
-    // Every id the pages hold (0..=0xffff, page 63 ends at 0x7ff), then the ids around 0xffff, the one id the original skips.
+    // Every id 0..=0xffff (the highest reaches word 31 of page 63, byte 0x85c), then the ids around 0xffff, the one id the original skips.
     static ALL: [Arg; 1] = [Arg::Range(0, 0xffff)];
     static EDGE: [Arg; 1] = [Arg::Range(0xfff0, 0xffff)];
     for args in [&ALL, &EDGE] {

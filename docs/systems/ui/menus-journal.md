@@ -75,7 +75,7 @@ world id, 0x10 the locked world.
   `jm_top_<world>.2ld` through `FUN_002a45b0`); a row leads to page 6, 3, 4, 7, 8, 9, 10 or 0xb (the message at 0x382b88 +
   2 * row goes to the help line); **-2 goes back to page 0**, -4 closes.
 
-### 20.4 What the port does (`crates/kh2-app/src/menu_journal.rs`)
+### 20.4 What the port does (`crates/kh2-menu/src/menu_journal.rs`)
 
 A confirm on camp entry 5 or 6 sets the mode (1 / 2), takes `menu.page` (0x300, not a camp page) and opens the scene on the
 next frame: it loads `jmemo.2ld`, `jm_world.2ld` and `jiminy.bar` once, hides every node the camp had (restored on the way

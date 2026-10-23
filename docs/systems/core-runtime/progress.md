@@ -1,6 +1,6 @@
 # Progress: the player's saved game state
 
-Work package 7S. `crates/kh2-app/src/progress.rs` holds one Bevy resource, `progress::Progress`: what the
+Work package 7S. `crates/kh2-game-core/src/progress.rs` holds one Bevy resource, `progress::Progress`: what the
 original keeps in its save block for the player's party. Later work packages (items, prizes, magic, summons)
 read and change it. Function names are addresses in the main executable (`SLUS_210.05`). No values from the
 game are in the repository: the tables come from the user's disc at run time, and the routine constants
@@ -115,7 +115,7 @@ bits (`FUN_001b6870`), not part of `Progress`.
 [I] This boot-time state is the new game: it is the only writer of the whole block, and the title menu's New
 Game path was not traced (it may run more story setup).
 
-**Oracle** (`progress::tests::new_game_block_matches_the_game`, `cargo test -p kh2-app progress -- --nocapture`):
+**Oracle** (`progress::tests::new_game_block_matches_the_game`, `cargo test -p kh2-game-core progress -- --nocapture`):
 kh2-ee loads the user's executable, the `item`, `plrp`, `cmd` and `magc` tables from the disc at their pointers
 (`DAT_01c95588`, `DAT_01d5df5c`, `DAT_01d5d798`, `DAT_01c95520`), clears the save block, runs `FUN_00187b38` and
 `FUN_001c0cb0(0)` and compares the 0x1998 bytes with `Progress::new_game`. It then compares

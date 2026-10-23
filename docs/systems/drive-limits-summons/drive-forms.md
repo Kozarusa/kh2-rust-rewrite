@@ -1,6 +1,6 @@
 # Drive forms (work package 2B)
 
-What the drive-form system does in the game, what `crates/kh2-app/src/drive.rs` implements of it, and
+What the drive-form system does in the game, what `crates/kh2-player/src/drive.rs` implements of it, and
 what is still open. It builds on `docs/systems/combat-effects/player-data.md` (read that first for the table layouts). Each
 statement is marked **[V]** verified (read in the game's own code or checked against the disc data),
 **[I]** inferred (fits code and data, no line states it) or **[GAP]** not found. Function names are

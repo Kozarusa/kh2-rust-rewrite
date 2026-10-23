@@ -2,12 +2,12 @@
 
 [Contract](contract.md) | [Index](../../README.md)
 
-**Files (since WP-7R; the code was one file, `enemy_ai.rs`, before).** `crates/kh2-app/src/enemy_obj.rs` holds the object as the script sees it:
+**Files (since WP-7R; the code was one file, `enemy_ai.rs`, before).** `crates/kh2-enemy/src/enemy_obj.rs` holds the object as the script sees it:
 `Obj` with its fields and small methods, the handle and size constants (`PLAYER`, `TARGET`, `GAUGES`, `VOLUME`, `OBJ_SIZE`, ...) and the
-game-space conversions (`to_game`, `from_game`, `yaw_of`). `crates/kh2-app/src/enemy_host.rs` holds the host-call dispatch: `BevyHost` and
+game-space conversions (`to_game`, `from_game`, `yaw_of`). `crates/kh2-enemy/src/enemy_host.rs` holds the host-call dispatch: `BevyHost` and
 `Env`, the answer helpers (`imp`, `approx`, `stub`, `missing`), `call_id`, and the arms of every host call split by group into `group0`,
 `group1`, `group2` and `other` (new arms go into the function of their group; inside a function the order of the arms matters, the first
-match wins), plus the pure helpers the arms use (`game_wrap_angle`, the prize table and `compute_drop`). `crates/kh2-app/src/enemy_ai.rs` keeps
+match wins), plus the pure helpers the arms use (`game_wrap_angle`, the prize table and `compute_drop`). `crates/kh2-enemy/src/enemy_ai.rs` keeps
 the plugin and the systems (`load_programs`, `ai_attach`, `ai_update`, `ai_fade`), `AiBrain`, the `Mailbox` and the `AiTrace` log.
 Where this document says "`enemy_ai.rs`" for a host call or the object, read the file named here.
 
@@ -16,7 +16,7 @@ The kinds are `enemy::KINDS`; `load_programs` reads every kind's script.)
 
 Work package 2E. The Heartless of `enemy.rs` used to run a small state machine written for the app. Shadow (`obj/M_EX020.mdlx`) and
 Soldier (`obj/M_EX010.mdlx`) now run the game's own scripts (the BDX entry of each object file, see `docs/systems/script-host/contract.md`) through
-`kh2_bdx::Runtime`. The code is `crates/kh2-app/src/enemy_ai.rs`; `enemy.rs` keeps only the hit reactions (WP-I1 removed the placeholder state machine and `KH2_NO_BDX`; an enemy whose script did not load only stands and reacts to hits).
+`kh2_bdx::Runtime`. The code is `crates/kh2-enemy/src/enemy_ai.rs`; `enemy.rs` keeps only the hit reactions (WP-I1 removed the placeholder state machine and `KH2_NO_BDX`; an enemy whose script did not load only stands and reacts to hits).
 
 Nothing from the disc is stored in the repository: the scripts, the motion sets and the `objentry` row are read at start-up.
 

@@ -1,6 +1,6 @@
 # The Struggle (WP-7E)
 
-Modules: `crates/kh2-app/src/struggle.rs` (the rules), `crates/kh2-app/src/hud_mission.rs` (the counters and the
+Modules: `crates/kh2-event/src/struggle.rs` (the rules), `crates/kh2-hud/src/hud_mission.rs` (the counters and the
 clock on screen). Everything comes from the user's disc and executable at run time: the mission files
 (`msn/us/<name>.bar`), the orb effect file (`obj/PRIZE_TT.mdlx`), the orb kinds, digit tables and the hundredths
 factor (read from `SLUS_210.05`). Status words: **verified** = read in the decompilation or the disassembly;

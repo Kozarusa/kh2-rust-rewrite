@@ -28,7 +28,7 @@ column). The sheets list `kh2-msg` as the crate of `ui.msg` but no such crate ex
 |---|---|---|
 | table layouts and statuses | `sheets/tables.json`, `sheets/systems.json` (structure and status, never game values) | `kh2-sheets` preflight in `kh2-tables/build.rs` |
 | tables the game finds at boot | `FUN_00193610` opens `03system.bin` and `00battle.bin`, looks tags up by `FUN_00168510` (strings `0x37aee0..0x37afc0`) | `kh2-tables` loaders; unfinished layouts in `tables-unfinished.md` |
-| texture footer animations | `FUN_00132238` family (TEXA, UVSC objects) | `kh2-model`, `texanim.rs` in `kh2-app` |
+| texture footer animations | `FUN_00132238` family (TEXA, UVSC objects) | `kh2-model`, `texanim.rs` in `kh2-game-core` |
 
 ## Entry points in the original
 | address | what |

@@ -18,7 +18,7 @@ Work package SV2, 2026-10-19. Written from run logs only; no game data (counts a
 
 ## Fix made
 
-`crates/kh2-app/src/world.rs`: `World::push` put every triangle into a 400-unit cell grid, one entry per covered cell. `eh22` and `eh29` contain a floor millions of units wide (render bounds about 1.44 million either way), which needed over 2 GB of grid entries. A triangle that covers more than 1024 cells now goes to a `big` list that every `near` query tests directly. Ordinary maps are unchanged. Test: `a_floor_wider_than_the_grid_limit_is_found_without_grid_entries`. After the fix both areas load and exit 0 (21 s each).
+`crates/kh2-game-core/src/world.rs`: `World::push` put every triangle into a 400-unit cell grid, one entry per covered cell. `eh22` and `eh29` contain a floor millions of units wide (render bounds about 1.44 million either way), which needed over 2 GB of grid entries. A triangle that covers more than 1024 cells now goes to a `big` list that every `near` query tests directly. Ordinary maps are unchanged. Test: `a_floor_wider_than_the_grid_limit_is_found_without_grid_entries`. After the fix both areas load and exit 0 (21 s each).
 
 ## Collision groups (WP-IW1)
 

@@ -3,7 +3,7 @@
 [Contract](contract.md) | [Index](../../README.md)
 
 How Sora casts a spell in the PS2 USA release (`SLUS_210.05`), read from the decompiled executable and the
-disassembled spell scripts (`kh2 bdx magic/FIRE_1.mag`), and what `crates/kh2-app/src/magic.rs` and
+disassembled spell scripts (`kh2 bdx magic/FIRE_1.mag`), and what `crates/kh2-player/src/magic.rs` and
 `magic_rules.rs` do with it. Addresses are functions of the executable (`FUN_xxxxxxxx`). Marks: **[V]**
 read in the code or the data, **[I]** inferred, **[GAP]** not found. No game values are written here or
 in the code; they come from the user's disc.

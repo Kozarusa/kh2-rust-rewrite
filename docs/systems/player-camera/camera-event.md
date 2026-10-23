@@ -184,7 +184,7 @@ Scripted scenes with the harness (`KH2_KEYS`, `KH2_CAM_LOG=1` logs the camera tw
 - Sora's movement keys stay relative to the camera yaw (`OrbitCamera.yaw`, read by `sora::read_pad`).
 - Look-around (`KH2_SCREENSHOT=x.png KH2_SHOT_AT=13 KH2_CAM_LOG=1 KH2_KEYS=5:V,8:Up:1.5,11:V`, `kh2-game tt00`): `mode Look` with the camera 150 up at Sora's eye ([115,150,-36]) and the look-at 350 ahead ([115,150,314]), `fade` 0.03 then 0.00 (fading out), with Up held the pitch reaches 1.22 (70 degrees) and the look-at point rises to y 474, the second V returns `mode Follow` with `fade` rising 0.17 -> 1.00 and the camera back behind him at [144,251,-454].
 - Area types: `KH2_CAM_TYPE=1 ... tt00`: `mode Overhead`, position = look-at + (600, 500 up, 0) -> [715,651,-35] over [115,151,-35], fov 1.05; V switches to the fixed view [51,1492,0] over [256,1777,0]. `KH2_CAM_TYPE=2 ... tt02`: row 2, radius 600, fov 1.05 (the collision squeezes the camera to 88 behind). `KH2_CAM_TYPE=3 ... tt04`: `mode Behind`, row 3.
-- Attribute 5: the `tt02` camera collision has 12 triangles with flags word 0x5 and `tt04` has 2 (`cargo test -p kh2-app twilight -- --nocapture`); `tt00` has none.
+- Attribute 5: the `tt02` camera collision has 12 triangles with flags word 0x5 and `tt04` has 2 (`cargo test -p kh2-game-core twilight -- --nocapture`); `tt00` has none.
 
 ## Controls in the app
 

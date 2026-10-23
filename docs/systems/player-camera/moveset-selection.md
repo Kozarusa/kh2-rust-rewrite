@@ -3,7 +3,7 @@
 Work package WP-2G. Everything below was read from the main executable's own code (function
 addresses in SLUS_210.05, file offset = VA - 0xff000) and from the `ptya` table of `00battle.bin`
 as it sits on the user's disc. Code: `crates/kh2-anim/src/moveset.rs` (pure rules, unit tests) and
-`crates/kh2-app/src/sora.rs` (the controller that feeds it). Set `KH2_MOVELOG=1` to log one block
+`crates/kh2-player/src/sora.rs` (the controller that feeds it). Set `KH2_MOVELOG=1` to log one block
 per attack press: the press result, every record of the table with the reason it was or was not
 flagged, and the chosen motion.
 
@@ -221,7 +221,7 @@ gravity, 16 to 100); effect 35 is billboard quads only (no model), so it cannot 
 
 ## Checks
 
-Unit tests (`cargo test -p kh2-app sora`): the pure rules against real rows of the user's `ptya`
+Unit tests (`cargo test -p kh2-player sora`): the pure rules against real rows of the user's `ptya`
 (skipped without `KH2_ISO`): ground hits 1 to 3, A301 vs A302, A303 vs A304, air chain, A333 vs
 A332, the gated records and the explicit actions, the ledge probe on synthetic floors (no ISO
 needed), and the press counters. `cargo test -p kh2-anim`: the blown press (jump / Square).

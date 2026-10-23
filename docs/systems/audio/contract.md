@@ -1,7 +1,7 @@
 # Audio: contract
 
 Ladder step L9. Ledger system name `audio`. Crates: `kh2-audio` (`bgm.rs`, `wd.rs`, `vsb.rs`, `ssl.rs`, `adpcm.rs`, `synth.rs`, `positional.rs`,
-`footstep.rs`, `voice.rs`), `kh2-app` (`audio.rs`, `audio_bgm.rs`, `sound_test.rs`).
+`footstep.rs`, `voice.rs`), `kh2-sound` (`audio.rs`, `audio_bgm.rs`), `kh2-app` (`sound_test.rs`).
 Sheet ids: `audio`, `dev.sound`. Scenarios: `scenarios/audio/` (none yet).
 
 Status: music, instruments, sound effects and voices decode and play; positional volume and pan, the battle music handover, footsteps, enemy voices,

@@ -10,7 +10,7 @@ Each stage ends with a test that does not need the next one. File names are the 
 (43 x 8), `70landing.bar` (`land` 53 x 4, pictures), `msg/us/wm.bar` ids, `00worldpoint.bin` if not yet a reader. Disc tests with counts and layouts
 (skip without `KH2_ISO`). Risk: low; bound every count (WP-KM1 lesson, no unbounded allocation).
 
-**W2. World records and flag hooks.** `crates/kh2-app/src/progress.rs`: add the 4-byte world records (0x341858), the world-flag bits (0x3418a4), the
+**W2. World records and flag hooks.** `crates/kh2-game-core/src/progress.rs`: add the 4-byte world records (0x341858), the world-flag bits (0x3418a4), the
 episode bits (0x3419e4 / 0x3419f4), the queue (0x3418c4), `FUN_001b6da0`/`FUN_001b68f8`/`FUN_001b6a90` and flag op 0xd. Proof: extend
 `story_flag_setter_matches_the_game` (kh2-ee oracle of `FUN_0017ff60`, which already runs the whole setter) to compare these regions for all 19 worlds' flags.
 Risk: medium; the setter's list runs `FUN_001803b0`.. and the `link` hook (`FUN_001d39d0`) whose effects are [GAP]; the oracle will show them. Also the save
@@ -45,7 +45,7 @@ file (`Progress::story_json`) must carry the new regions.
   compare reproduces the oracle), the `link` hook `FUN_001d39d0` (no effect on the compared regions, effects elsewhere unread), the `wmky` and `ws_i` meanings,
   and the value of address 1 that `FUN_001b68f8` would read for a key the table lacks (taken as 0 [inferred]; the story hook only passes indexes the table holds; the other callers `FUN_001b6ec0`, `FUN_001d3820`, `FUN_0016d788`, `FUN_001b6870` were not read).
 
-**W3. Entering from the save point and from type 4.** `crates/kh2-app/src/menu_save.rs` (page 0x10 question, page 0x14 fade wait, scene mode word) and
+**W3. Entering from the save point and from type 4.** `crates/kh2-menu/src/menu_save.rs` (page 0x10 question, page 0x14 fade wait, scene mode word) and
 `area_jump.rs` (the mode-1 entry `FUN_00103b38` -> `FUN_00149df0(-1, 0x80000000)`, `Outcome` for the map). Needs W5 for the arrival. Until then
 the log line stays but names the exact next step. Risk: low.
 
@@ -76,7 +76,7 @@ BOB prop formats (`BOB` pairs, type 30 empty entries), hiding the party (class o
   a dark blue sea with ripple rings and coloured ring shapes with the green and blue sky pieces left and right, Sora in front of the follow camera; the symbols,
   the cursor and the clouds of the real screen are objects or not drawn here.
 
-**W5. Objects.** New `crates/kh2-app/src/worldmap.rs` plugin (add to a bundle in `plugins.rs`): spawn the 12 symbols with their state-driven look (section 3),
+**W5. Objects.** New `crates/kh2-worldmap/src/worldmap.rs` plugin (add to a bundle in `plugins.rs`): spawn the 12 symbols with their state-driven look (section 3),
 the cursor at its entrance record, the nine route markers; the `FUN_001981a0` entrance filter is already in `area.rs`. The cursor needs the world-map input
 state (stick movement, near-object test `FUN_0019a3f8`/`FUN_002cca98`) which is [GAP]: stage a first version that moves the cursor like Sora's stick walk
 and read the real states under the oracle. Risk: high; unknowns are movement, camera type 4 and the model set (`WM_CURSOR` mset).

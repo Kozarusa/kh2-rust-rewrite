@@ -2,7 +2,7 @@
 
 [Contract](contract.md) | [Index](../../README.md)
 
-What the USA build's camera does and how `crates/kh2-app/src/camera.rs` (Bevy side) and `camera_rules.rs` (pure math, unit tested) reproduce it. Everything was read from a local decompilation and disassembly of the user's executable; nothing is copied. Function addresses are USA addresses (`SLUS_210.05`, file offset = address - 0xff000). Each claim is marked **verified** (read directly in the code, checked against the data) or **inferred** (follows from the code but depends on an assumption named next to it).
+What the USA build's camera does and how `crates/kh2-game-core/src/camera.rs` (Bevy side) and `camera_rules.rs` (pure math, unit tested) reproduce it. Everything was read from a local decompilation and disassembly of the user's executable; nothing is copied. Function addresses are USA addresses (`SLUS_210.05`, file offset = address - 0xff000). Each claim is marked **verified** (read directly in the code, checked against the data) or **inferred** (follows from the code but depends on an assumption named next to it).
 
 Coordinates. The game keeps Y pointing down; the app uses map-model space, Y up (a rotation of 180 degrees about X, so handedness is the same). Below, heights are written Y up. All lengths are game units (cm). The logic rate is 60 Hz and every per-tick rule below is applied once per tick; the app runs the camera in `FixedUpdate` right after the simulation (`Sim::EffectTick`).
 

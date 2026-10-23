@@ -1,6 +1,6 @@
 # The field command menu and the item command (WP-7C)
 
-Module `crates/kh2-app/src/items.rs`. Function names are addresses in the main executable (`SLUS_210.05`).
+Module `crates/kh2-party/src/items.rs`. Function names are addresses in the main executable (`SLUS_210.05`).
 Marks: **[V]** read in the code (or checked by the oracle), **[I]** inferred, **[GAP]** not found.
 
 ## 1. The command manager [V]
@@ -146,7 +146,7 @@ shortcut list is ported but not reachable. Port: `CommandLists::input`, `select_
    `gain * sstm[0x7c]` (12.0 on this disc) instead, and a charge brought to 0 ends and refills MP (`FUN_001a0180`,
    `FUN_001a0540`, `FUN_001a05a8`).
 
-**Oracle** (`items::tests::item_effect_matches_the_game`, `cargo test -p kh2-app item_effect_matches -- --nocapture`):
+**Oracle** (`items::tests::item_effect_matches_the_game`, `cargo test -p kh2-party item_effect_matches -- --nocapture`):
 kh2-ee runs the game's `FUN_001a12a0` on the user's executable with the `item` table at its pointer and a stub for
 `FUN_0019fe48` that returns a status record in free memory, for every item below 0x114, four HP/MP/charge/drive
 states and Item Boost 0, 25 and 50 %: `oracle: FUN_001a12a0 equal for 2688 cases`. The take and refill

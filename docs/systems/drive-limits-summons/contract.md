@@ -1,8 +1,7 @@
 # Drive forms, limits, reaction commands, summons: contract
 
 Ladder step L5 (the reaction commands, the limit scenes and the summons are shared with party, L6). Ledger system name `drive-limits-summons`.
-Crates: `kh2-app` (`drive.rs`, `limit.rs`, `limit_script.rs`, `limit_camera.rs`, `limit_visual.rs`, `summon.rs`, `reaction_cmd.rs`,
-`reaction_parts.rs`, `revive_fade.rs`, `mickey.rs`), `kh2-bdx` (`reaction.rs`, the scripts of limits and summons), `kh2-tables` (`fmlv`,
+Crates: `kh2-player` (`drive.rs`), `kh2-party` (`limit.rs`, `limit_script.rs`, `limit_camera.rs`, `limit_visual.rs`, `summon.rs`, `reaction_cmd.rs`, `revive_fade.rs`, `mickey.rs`), `kh2-game-core` (`reaction_parts.rs`), `kh2-bdx` (`reaction.rs`, the scripts of limits and summons), `kh2-tables` (`fmlv`,
 `limt`, `sumn`, `cmd`). Sheet ids: `game.summons` (the row `game.sora.abilities` covers drive forms, limits, summons and reaction commands too
 and sits in `combat-effects`). Scenarios: `scenarios/drive-limits-summons/` (none yet).
 

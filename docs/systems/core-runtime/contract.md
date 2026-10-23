@@ -1,7 +1,7 @@
 # Core runtime: contract
 
 Ladder step L1 (PLAN section 5). Ledger system name `core-runtime`. Crates: `kh2-ard` (area files, area scripts, story-flag lists), `kh2-map`
-(COCT collision), `kh2-app` (`progress.rs`, `area.rs`, `area_jump.rs`, `world.rs`, `schedule.rs`, `savepoint.rs`, `harness.rs`).
+(COCT collision), `kh2-game-core` (`progress.rs`, `area.rs`, `world.rs`, `schedule.rs`, `harness.rs`), `kh2-event` (`area_jump.rs`, `savepoint.rs`).
 Sheet ids: `world.collision`, `world.event`, `game.progress`, `game.story`, `game.jump`. Scenarios: `scenarios/core-runtime/` (none yet).
 
 Status: the saved-state, story-flag, area-script, area-load and walking-collision parts are documented and mostly ported. The rest of L1

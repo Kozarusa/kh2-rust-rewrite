@@ -111,7 +111,7 @@ footstep logic is concerned (not verified in the descriptor itself).
 - `kh2-audio::footstep`: `WorldSoundInfo`/`SoundInfoRecord` parse an entry of `12soundinfo.bar`
   and pick the bank by NeoStatus; `footstep_number` is FUN_0016baa0 (material 0 and missing bank
   are silent, the counter rules above).
-- `kh2-app` (`audio.rs`, `footsteps` system in `Sim::Sounds`, and `World`'s `Ground::material`):
+- `kh2-sound` (`audio.rs`), `kh2-app` (`footsteps` system in `Sim::Sounds`, and `World`'s `Ground::material`):
   for Sora's body, every trigger 2 crossed in a tick resolves to an SE number and goes out as a
   `PlaySe`. Sora's material is the material of the floor polygon in `motor.ground` (0 in the air).
   `KH2_SOUNDLOG=1` prints one `footstep` line per step with the kind, material, NeoStatus, SE

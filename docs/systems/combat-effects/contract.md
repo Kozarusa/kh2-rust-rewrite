@@ -1,8 +1,7 @@
 # Combat and effects: contract
 
 Ladder step L3. Ledger system name `combat-effects`. Crates: `kh2-fx` (PAX/DPX effect programs, `prog_more.rs`), `kh2-tables` (`player.rs`
-typed views), `kh2-app` (`combat.rs`, `fx.rs`, `fx_lens.rs`, `reaction_rules.rs`, `player_reaction.rs`, `clash.rs`, `prize.rs`,
-`abilities.rs`, `party_battle.rs`).
+typed views), `kh2-game-core` (`combat.rs`, `fx.rs`, `fx_lens.rs`, `reaction_rules.rs`), `kh2-player` (`player_reaction.rs`, `clash.rs`, `prize.rs`, `abilities.rs`), `kh2-party` (`party_battle.rs`).
 Sheet ids: `game.combat`, `fx.effects`, `fx.lens`, `game.prizes`, `game.sora.abilities` (that row also names drive forms, limits, summons and
 reaction commands: those are in `drive-limits-summons`). Scenarios: `scenarios/combat-effects/` (none yet).
 

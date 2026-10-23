@@ -25,7 +25,7 @@ screenshots: give EXACT commands (env vars included) and paths for every claim; 
    Never amend, force, touch other branches, or commit `*.png *.wav *.bin`, disc data, decomp text, machine paths or `local/`.
 4. Nobody watches video or listens unless the brief says so. Claim only what a test, a log line, or a screenshot you LOOKED at (Read tool)
    shows, and describe only what is visible.
-5. Keep base behaviours working: ground combo and air chain (`cargo test -p kh2-app sora`), enemy AI, HUD, camera, magic, forms.
+5. Keep base behaviours working: ground combo and air chain (`cargo test -p kh2-player sora`), enemy AI, HUD, camera, magic, forms.
 6. Never `Stop-Process` kh2-game (A10). A running game locks `target\debug\kh2-game.exe`: use `cargo check`/`cargo test` and say so.
 7. Evidence (A4): read the function the brief names first (`$env:KH2_DECOMP\decomp_typed\<image>\<addr>.c`, RECIPES R1), then its
    callees. Repo text keeps addresses only ("FUN_00180758" or "0x180758"): never a decompiler variable name (`iVar<n>`, `param_<n>`), an FM or
@@ -40,10 +40,10 @@ screenshots: give EXACT commands (env vars included) and paths for every claim; 
    cluster's test file and ledger rows; (b) every new test came from `factory gen` and keeps the harness invariants (generated header,
    `fuzz(&SPEC, n)` with n >= 1,000, no extra early return, every stub listed in the brief); (c) the tests ran green with the disc
    present (`KH2_REQUIRE_DISC=1`); (d) no wiring change (systems, plugins, schedule). Anything else goes through the reviewer.
-10. CRLF files: `crates/kh2-app/src/main.rs`, `lib.rs`, `plugins.rs`, `enemy.rs`, `CREDITS.md`, `README.md`; `fx.rs` is CRLF except its
+10. CRLF files: `crates/kh2-app/src/main.rs`, `lib.rs`, `plugins.rs`, `crates/kh2-enemy/src/enemy.rs`, `CREDITS.md`, `README.md`; `fx.rs` is CRLF except its
    test module. Edit Rust with Edit/Write; Python patches use `open(p, newline='', encoding='utf-8')`; check `git diff --stat` after each.
-11. Every `mod` line lives in `crates/kh2-app/src/lib.rs` (`main.rs` only calls `kh2_app::run()`). Each new plugin goes into its domain
-   bundle in `crates/kh2-app/src/plugins.rs` (a `PluginGroup`); keep the registration order.
+11. Every `mod` line lives in the lib.rs of its game crate (`crates/kh2-<crate>/src/lib.rs`; `crates/kh2-app/src/main.rs` only calls `kh2_app::run()`). Each new plugin goes into its domain
+   bundle in `crates/kh2-app/src/plugins.rs` (plugins stay in kh2-app; a `PluginGroup`); keep the registration order.
 12. PCSX2: one instance at a time. Before starting one, create `$env:KH2_REPO\local\pcsx2.lock` holding your id (a lock younger than
    2 hours: wait); delete it when you close PCSX2. Stop only an instance you started.
 

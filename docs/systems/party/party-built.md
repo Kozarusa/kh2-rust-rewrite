@@ -4,7 +4,7 @@
 
 ## 11. Status: stage 1 in the app (WP-7P1)
 
-Files: `crates/kh2-app/src/party_rules.rs` (pure rules, constants read from the executable at run time),
+Files: `crates/kh2-game-core/src/party_rules.rs` (pure rules, constants read from the executable at run time),
 `party.rs` (spawn and tick), `friend_ai.rs` (the members' scripts). Log `KH2_PARTYLOG=1`; harness
 `KH2_NO_PARTY=1`, `KH2_PARTY_WARP=<s>` (the forced warp of FUN_00110e08), `KH2_PARTY_AT_RECORD=1` (Sora starts at
 the player's row of the friends' map group: the app otherwise starts him at its own spawn point, outside the
@@ -46,7 +46,7 @@ refusals during a form or a summon (stage 6); battle (the members follow in batt
 
 ## 12. Status: stage 2 in the app (WP-7P2)
 
-Files: `crates/kh2-app/src/party_battle.rs` (pure rules of the battle AI), `party.rs` (the battle branch of the
+Files: `crates/kh2-party/src/party_battle.rs` (pure rules of the battle AI), `party.rs` (the battle branch of the
 tick, weapons, push-apart), `friend_host.rs` (the members' script host: group 10 and the motion remap),
 `friend_ai.rs` (runs the scripts through it). Log `KH2_PARTYLOG=1`: "battle flag set", "target", "chose record",
 "attack motion", "actions in the last second", "hit". Harness `KH2_PARTY_WARP_ONSCREEN=1` (with

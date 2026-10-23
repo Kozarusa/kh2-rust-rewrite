@@ -2,7 +2,7 @@
 
 [Contract](contract.md) | [Index](../../README.md)
 
-What the game does for reaction commands and limits, what `crates/kh2-app/src/reaction_cmd.rs` and
+What the game does for reaction commands and limits, what `crates/kh2-party/src/reaction_cmd.rs` and
 `limit.rs` implement, and what is open. It builds on `docs/systems/combat-effects/player-data.md`. **[V]** verified (read in the
 game's code or checked against the disc), **[I]** inferred, **[GAP]** not found or not ported. Function names
 are addresses in `SLUS_210.05`. No game values are stored in the repository; the rows below are read from the

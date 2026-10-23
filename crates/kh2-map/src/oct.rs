@@ -215,6 +215,8 @@ pub struct Oct {
     on: Vec<bool>,
     /// `oct +0xd2`: some attribute has nibble 5 (`FUN_00141720`).
     has_five: bool,
+    /// The group word the enabled bytes stand for (bit `g` set: the meshes of group `g` are on).
+    word: u64,
 }
 
 fn rd32(b: &[u8], o: usize) -> u32 {
@@ -245,6 +247,7 @@ impl Oct {
             n_meshes: n_meshes.max(0) as usize,
             on: Vec::new(),
             has_five: false,
+            word: 0,
         };
         o.on = vec![false; o.n_meshes];
         o.set_groups(groups);
@@ -254,6 +257,7 @@ impl Oct {
 
     /// orig 0x141768: clears every mesh, then enables the meshes of each set bit of the group word.
     pub fn set_groups(&mut self, groups: u64) {
+        self.word = 0;
         self.on.iter_mut().for_each(|b| *b = false);
         for g in 0..64u32 {
             if groups >> g & 1 != 0 {
@@ -266,11 +270,19 @@ impl Oct {
     ///
     /// orig 0x141800: disables every mesh of one group.
     pub fn set_group(&mut self, group: u8, on: bool) {
+        if group < 64 {
+            self.word = if on { self.word | 1 << group } else { self.word & !(1 << group) };
+        }
         for m in 0..self.n_meshes {
             if self.file[self.meshes + 0x14 * m + 0x11] == group {
                 self.on[m] = on;
             }
         }
+    }
+
+    /// The group word the meshes' enabled bytes stand for.
+    pub fn groups(&self) -> u64 {
+        self.word
     }
 
     fn u16_at(&self, o: usize) -> u16 {
@@ -913,4 +925,123 @@ pub fn edge_contact_out(s: &Sphere, verts: &Verts) -> (Option<V4>, V4) {
 
 fn edge_contact(s: &Sphere, verts: &Verts) -> Option<V4> {
     edge_contact_out(s, verts).0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build::{BuildPoly, coct_file};
+    use crate::flags::PARTY_COLLIDE;
+
+    /// A floor the party stands on: PARTY_STAND and the party-collide bit the kind-0 handler needs (a floor without
+    /// bit 0x10 is invisible to the party's sweep and floor ray).
+    const FLOOR: u32 = 1 | PARTY_COLLIDE;
+
+    /// Sora's collider: radius 90, lift 115, height 90 (`actor +0x5b0`, `+0x5fc`, `+0x5b4`), kind 0.
+    fn sora(feet: [f32; 3], delta: [f32; 3]) -> Collider {
+        let mut c = Collider::default();
+        c.set_v4(coll::START, [feet[0], feet[1], feet[2], 1.0]);
+        c.set_v4(coll::DELTA, [delta[0], delta[1], delta[2], 1.0]);
+        c.set_v4(coll::END, [feet[0] + delta[0], feet[1] + delta[1], feet[2] + delta[2], 1.0]);
+        c.set_f32(coll::RADIUS, 90.0);
+        c.set_f32(coll::HEIGHT, 90.0);
+        c.set_f32(coll::LIFT, 115.0);
+        c
+    }
+
+    fn floor(y: f32, attr: u32) -> BuildPoly {
+        BuildPoly::new(&[[-2000.0, y, -2000.0], [2000.0, y, -2000.0], [2000.0, y, 2000.0], [-2000.0, y, 2000.0]], attr)
+    }
+
+    /// A wall on the plane x = 300 whose front faces -x (the walkable side).
+    fn wall(attr: u32) -> BuildPoly {
+        BuildPoly::new(&[[300.0, 0.0, -800.0], [300.0, -400.0, -800.0], [300.0, -400.0, 800.0], [300.0, 0.0, 800.0]], attr)
+    }
+
+    #[test]
+    fn the_sphere_stops_one_radius_from_a_wall() {
+        let oct = Oct::new(&coct_file(&[floor(0.0, FLOOR), wall(PARTY_COLLIDE)]), u64::MAX).unwrap();
+        let mut c = sora([0.0, 0.0, 0.0], [400.0, 0.0, 0.0]);
+        let hit = oct.sweep(&mut c);
+        assert_eq!(hit, 1, "a contact");
+        let end = c.v4(coll::END);
+        // The centre stops 90 + 0.008 short of the plane; the foot is 115 below the centre.
+        assert!((end[0] - (300.0 - 90.0 - 0.008)).abs() < 1e-3, "{end:?}");
+        assert!(end[1].abs() < 1e-3, "{end:?}");
+        // A wall the party does not collide with (attribute without bit 0x10) lets it through.
+        let oct = Oct::new(&coct_file(&[floor(0.0, FLOOR), wall(0x20)]), u64::MAX).unwrap();
+        let mut c = sora([0.0, 0.0, 0.0], [400.0, 0.0, 0.0]);
+        assert_eq!(oct.sweep(&mut c), 0);
+        assert!((c.v4(coll::END)[0] - 400.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_wall_of_a_switched_off_group_is_not_visited() {
+        let file = coct_file(&[floor(0.0, FLOOR).in_group(0), wall(PARTY_COLLIDE).in_group(3)]);
+        let mut oct = Oct::new(&file, 1 << 3).unwrap();
+        let mut c = sora([0.0, 0.0, 0.0], [400.0, 0.0, 0.0]);
+        assert_eq!(oct.sweep(&mut c), 1);
+        oct.set_group(3, false);
+        let mut c = sora([0.0, 0.0, 0.0], [400.0, 0.0, 0.0]);
+        assert_eq!(oct.sweep(&mut c), 0, "FUN_00141800 turns the group's meshes off");
+        oct.set_groups(1 << 3);
+        let mut c = sora([0.0, 0.0, 0.0], [400.0, 0.0, 0.0]);
+        assert_eq!(oct.sweep(&mut c), 1, "FUN_00141768 sets them from the word again");
+    }
+
+    #[test]
+    fn the_floor_ray_snaps_the_foot_to_the_floor_and_a_deep_drop_does_not_snap() {
+        let oct = Oct::new(&coct_file(&[floor(0.0, FLOOR)]), u64::MAX).unwrap();
+        // The foot 5 above the floor: within the step, so the end snaps and bit 32 stays clear.
+        let mut c = sora([100.0, -5.0, 50.0], [0.0, 0.0, 0.0]);
+        assert!(oct.floor_ray(&mut c));
+        assert!(c.v4(coll::END)[1].abs() < 1e-4 && c.f32_at(coll::FLOOR_Y).abs() < 1e-4);
+        assert_eq!(c.flags() & (FLAG_NO_FLOOR_AHEAD | FLAG_NO_FLOOR_POLY), 0);
+        assert_eq!(c.u16_at(coll::FLOOR_POLY), 0);
+        // 60 above: the floor is found but too far below the foot (lift - height - 1 = 24): bit 32 set, no snap.
+        let mut c = sora([100.0, -60.0, 50.0], [0.0, 0.0, 0.0]);
+        assert!(oct.floor_ray(&mut c));
+        assert_eq!(c.flags() & FLAG_NO_FLOOR_AHEAD, FLAG_NO_FLOOR_AHEAD);
+        assert!((c.v4(coll::END)[1] - -60.0).abs() < 1e-4);
+        // Off the floor's edge: no polygon, the sentinel height and bits 32 and 33.
+        let mut c = sora([5000.0, -5.0, 50.0], [0.0, 0.0, 0.0]);
+        assert!(!oct.floor_ray(&mut c));
+        assert_eq!(c.f32_at(coll::FLOOR_Y), 320_000.0);
+        assert_eq!(c.flags() & (FLAG_NO_FLOOR_AHEAD | FLAG_NO_FLOOR_POLY), FLAG_NO_FLOOR_AHEAD | FLAG_NO_FLOOR_POLY);
+        assert_eq!(c.u16_at(coll::FLOOR_POLY), 0xffff);
+    }
+
+    /// WP-L1-P10 item "ceiling": the clusters have no ceiling probe; a roof stops a rising body because the sphere
+    /// sweep pushes the sphere out of any polygon the kind-0 handler accepts, whichever way it faces. The head
+    /// (the sphere's top, one radius above its centre, which is one lift above the foot) stops at the roof.
+    #[test]
+    fn a_roof_stops_a_jump_through_the_sphere_sweep() {
+        // The roof on y = -300 (3 m up in the Y-down space), its front facing down into the room.
+        let roof = |attr| BuildPoly::new(&[[-2000.0, -300.0, -2000.0], [-2000.0, -300.0, 2000.0], [2000.0, -300.0, 2000.0], [2000.0, -300.0, -2000.0]], attr);
+        let oct = Oct::new(&coct_file(&[floor(0.0, FLOOR), roof(PARTY_COLLIDE)]), u64::MAX).unwrap();
+        let mut c = sora([0.0, 0.0, 0.0], [0.0, -250.0, 0.0]);
+        assert_eq!(oct.sweep(&mut c), 1);
+        let foot = c.v4(coll::END)[1];
+        // centre.y = -300 + 90 + 0.008, foot = centre + 115: the head touches the roof.
+        assert!((foot - (-300.0 + 90.0 + 0.008 + 115.0)).abs() < 1e-3, "{foot}");
+        // A roof without the party-collide bit does not stop the jump.
+        let oct = Oct::new(&coct_file(&[floor(0.0, FLOOR), roof(0x20)]), u64::MAX).unwrap();
+        let mut c = sora([0.0, 0.0, 0.0], [0.0, -250.0, 0.0]);
+        assert_eq!(oct.sweep(&mut c), 0);
+        assert!((c.v4(coll::END)[1] - -250.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn floor_info_reports_the_floor_the_ray_found() {
+        let oct = Oct::new(&coct_file(&[floor(0.0, FLOOR | 1 << 16)]), u64::MAX).unwrap();
+        let mut c = sora([100.0, -5.0, 50.0], [0.0, 0.0, 0.0]);
+        oct.floor_ray(&mut c);
+        let info = oct.floor_info(&c, None, None);
+        assert_eq!((info.poly, info.flag, info.kind), (0, 1, 0));
+        assert_eq!(info.normal, [0.0, -1.0, 0.0, 1.0], "straight up in the Y-down space");
+        let mut off = sora([5000.0, -5.0, 50.0], [0.0, 0.0, 0.0]);
+        oct.floor_ray(&mut off);
+        let info = oct.floor_info(&off, None, None);
+        assert_eq!((info.poly, info.normal), (0xffff, [0.0, -1.0, 0.0, 1.0]));
+    }
 }

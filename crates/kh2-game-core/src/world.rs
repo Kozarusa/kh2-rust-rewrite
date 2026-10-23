@@ -49,6 +49,10 @@ pub struct World {
     /// The area word has been written into `enabled_groups` (once per loaded world: after that only host
     /// calls 1.36 / 1.37 change a bit, `FUN_0015e6c0` copies the word to the live mask a single time).
     area_word_applied: bool,
+    /// The game's own collision object over the area's COCT file (`kh2_map::oct`): the exact walking step, floor
+    /// ray and floor query of the original. The legacy queries above do not use it yet (WP-L1-P10 leaves the
+    /// mover unwired); `enabled_groups` is copied into it before every use.
+    oct: Option<std::sync::Mutex<kh2_map::oct::Oct>>,
 }
 
 /// Group value of a triangle that has no COCT mesh.
@@ -116,7 +120,52 @@ impl World {
                 w.push_in(v, p.flags, p.material, p.mesh, c.group_of(p));
             }
         }
+        if !c.raw.is_empty() {
+            w.oct = kh2_map::oct::Oct::new(&c.raw, w.enabled_groups).map(std::sync::Mutex::new);
+        }
         w
+    }
+
+    /// The game's collision object, with its mesh groups brought up to `enabled_groups`. `None` for a world that
+    /// did not come from a COCT file.
+    fn with_oct<R>(&self, f: impl FnOnce(&kh2_map::oct::Oct) -> R) -> Option<R> {
+        let mut oct = self.oct.as_ref()?.lock().ok()?;
+        if oct.groups() != self.enabled_groups {
+            oct.set_groups(self.enabled_groups);
+        }
+        Some(f(&oct))
+    }
+
+    /// Whether the exact queries below are available (the world was built from a COCT file).
+    pub fn has_exact(&self) -> bool {
+        self.oct.is_some()
+    }
+
+    /// A point in the game's collision space (Y down, Z flipped, w = 1) from the app's map space.
+    pub fn to_game(p: Vec3) -> [f32; 4] {
+        [p.x, -p.y, -p.z, 1.0]
+    }
+
+    /// The app's map-space point of a game-space vector.
+    pub fn from_game(v: [f32; 4]) -> Vec3 {
+        Vec3::new(v[0], -v[1], -v[2])
+    }
+
+    /// The original's walking step on this world's collision (`FUN_00143840`, map path; moving collision objects
+    /// are not ported): the sphere sweep of the collider, then the floor ray. The record is in the game's space
+    /// (`to_game`). `None` when the world has no COCT file.
+    pub fn walk_step(&self, c: &mut kh2_map::oct::Collider) -> Option<u64> {
+        self.with_oct(|o| o.walk_step(c))
+    }
+
+    /// The original's floor ray alone (`FUN_001423d8`): whether it hit a floor polygon.
+    pub fn floor_ray(&self, c: &mut kh2_map::oct::Collider) -> Option<bool> {
+        self.with_oct(|o| o.floor_ray(c))
+    }
+
+    /// The original's floor query (`FUN_00143560`) over the floor polygon the last floor ray left in the record.
+    pub fn floor_info(&self, c: &kh2_map::oct::Collider) -> Option<kh2_map::oct::FloorInfo> {
+        self.with_oct(|o| o.floor_info(c, None, None))
     }
 
     /// The COCT mesh index of triangle `i` (0 when it has none).
@@ -471,6 +520,43 @@ pub struct CameraWorld(pub World);
 
 #[cfg(test)]
 mod tests {
+
+    /// WP-L1-P10: the exact queries run over the area's own COCT bytes, follow `enabled_groups` however it is set,
+    /// and speak the game's space (Y down, Z flipped).
+    #[test]
+    fn the_exact_walking_step_follows_the_group_word_and_the_game_space() {
+        use kh2_map::build::{BuildPoly, coct_file};
+        use kh2_map::oct::{Collider, coll};
+        let solid = kh2_map::flags::PARTY_COLLIDE;
+        let file = coct_file(&[
+            BuildPoly::new(&[[-2000.0, 0.0, -2000.0], [2000.0, 0.0, -2000.0], [2000.0, 0.0, 2000.0], [-2000.0, 0.0, 2000.0]], 1 | solid),
+            BuildPoly::new(&[[300.0, 0.0, -800.0], [300.0, -400.0, -800.0], [300.0, -400.0, 800.0], [300.0, 0.0, 800.0]], solid).in_group(3),
+        ]);
+        let mut w = World::from_coct(&kh2_map::Coct::parse(&file).expect("parse"));
+        assert!(w.has_exact());
+        let run = |w: &World| {
+            let mut c = Collider::default();
+            let start = World::to_game(Vec3::ZERO);
+            c.set_v4(coll::START, start);
+            c.set_v4(coll::DELTA, [400.0, 0.0, 0.0, 1.0]);
+            c.set_v4(coll::END, [400.0, 0.0, 0.0, 1.0]);
+            c.set_f32(coll::RADIUS, 90.0);
+            c.set_f32(coll::HEIGHT, 90.0);
+            c.set_f32(coll::LIFT, 115.0);
+            let hit = w.walk_step(&mut c).expect("exact world");
+            (hit, World::from_game(c.v4(coll::END)))
+        };
+        w.enabled_groups = 1 << 3;
+        let (hit, end) = run(&w);
+        assert_eq!(hit, 1);
+        assert!((end.x - (300.0 - 90.0 - 0.008)).abs() < 1e-3 && end.y.abs() < 1e-3, "{end:?}");
+        // The wall's group goes off by a plain field write, as the area script and the BDX host calls do.
+        w.enabled_groups = 0;
+        let (hit, end) = run(&w);
+        assert_eq!(hit, 0);
+        assert!((end.x - 400.0).abs() < 1e-3, "{end:?}");
+        assert!(World::empty().walk_step(&mut Collider::default()).is_none());
+    }
     use super::*;
 
     /// A floor millions of units wide (map eh22) stays out of the cell grid, so building the world is

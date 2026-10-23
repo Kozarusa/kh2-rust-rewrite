@@ -1276,3 +1276,45 @@ fn orig_1443a8_matches_the_game() {
     }) else { return };
     eprintln!("{} cases equal, {} interpreter steps in {:.3} s", st.cases, st.steps, st.secs);
 }
+
+/// The roof question of WP-L1-P10: the original has no ceiling probe in its collision clusters, and a body that
+/// jumps under a roof is stopped by the same sphere sweep that stops it at a wall. Here the game's own walking step
+/// runs on a floor with a roof 300 above it (Sora's collider, rising 250): the sphere's top stops at the roof, one
+/// radius plus 0.008 under it, and the port agrees. A roof polygon the party handler rejects (no bit 0x10) does not
+/// stop the rise.
+#[test]
+fn a_roof_stops_a_jump_in_the_game_through_the_sweep() {
+    use kh2_map::build::{BuildPoly, coct_file};
+    let Some(elf) = kh2_factory::exe_or_skip("roof") else { return };
+    let solid = kh2_map::flags::PARTY_COLLIDE;
+    for (roof_attr, stops) in [(solid, true), (0x20u32, false)] {
+        let file = coct_file(&[
+            BuildPoly::new(&[[-2000.0, 0.0, -2000.0], [2000.0, 0.0, -2000.0], [2000.0, 0.0, 2000.0], [-2000.0, 0.0, 2000.0]], 1 | solid),
+            BuildPoly::new(&[[-2000.0, -300.0, -2000.0], [-2000.0, -300.0, 2000.0], [2000.0, -300.0, 2000.0], [2000.0, -300.0, -2000.0]], roof_attr),
+        ]);
+        let mut rig = Rig::from_file(&elf, &file, 1, vec![[0.0; 3]]);
+        let mut c = Collider::default();
+        c.set_v4(coll::START, [0.0, 0.0, 0.0, 1.0]);
+        c.set_v4(coll::DELTA, [0.0, -250.0, 0.0, 1.0]);
+        c.set_v4(coll::END, [0.0, -250.0, 0.0, 1.0]);
+        c.set_f32(coll::RADIUS, 90.0);
+        c.set_f32(coll::HEIGHT, 90.0);
+        c.set_f32(coll::LIFT, 115.0);
+        // Airborne: bit 0 of the flag word (FUN_00182690 sets it for a body that is not walking), which makes the
+        // floor ray report instead of snapping the end back down to the floor.
+        c.set_flags(1);
+        rig.put(&c);
+        rig.ee.call(0x143840, &[COLL_AT as u64], &[], STACK).unwrap();
+        let game = rig.get();
+        let mut mine = c.clone();
+        rig.oct.walk_step(&mut mine);
+        assert_eq!(coll_diff(&game, &mine), None);
+        let foot = game.v4(coll::END)[1];
+        if stops {
+            assert!((foot - (-300.0 + 90.0 + 0.008 + 115.0)).abs() < 1e-3, "the head stops at the roof: foot y {foot}");
+            assert_eq!(game.flags() >> 34 & 1, 1, "a contact");
+        } else {
+            assert!((foot - -250.0).abs() < 1e-3, "no stop: foot y {foot}");
+        }
+    }
+}

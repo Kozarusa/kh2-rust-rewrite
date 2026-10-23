@@ -192,6 +192,16 @@ unread before this package. Coordinates are the game's (Y down); the app flips Y
 `docs/systems/player-camera/moveset-selection.md`), `oct +0x..` is a built collision object (0xe0 bytes, built by
 `FUN_00141500`, section 8), `cull +0x..` the map draw-cull object of 9.6.
 
+**Status (WP-L1-P10):** ported in `crates/kh2-map/src/oct.rs` and `geom.rs` and checked against the original in kh2-ee by
+`crates/kh2-game-core/tests/orig_coct.rs` (random COCT files built by the game's own `FUN_00141500`, plus ten real areas): the
+box leaves, the polygon walker with its handler table, the ray cast, the floor ray with the snap rule, the vertical probe, the
+closest floor, the floor kind probe, the floor query `FUN_00143560` (without the lighting colour words), the sphere sweep with
+its solver, and `FUN_00143840` for a map with no moving collision objects. Not ported: the moving-object pool and its two
+passes (`FUN_00165430`, `FUN_001654f8`), the placement matrix of a moved object (`FUN_00142858`) and the branches that
+depend on it, the other rays (`FUN_00143960`, `FUN_00143ce8`, `FUN_00143b80`, `FUN_00143c28`), the draw-cull half of 9.6. The
+app's mover does not call any of this yet (it is the mover's package, L2); `World::walk_step`, `floor_ray` and `floor_info`
+expose it in the game's space.
+
 ### 9.1 The collision slots and their accessors
 The five collision objects of section 8 and the draw-cull object live in globals; the wrappers in 0x143100..0x143e90 only
 pick a slot and forward.
@@ -258,6 +268,12 @@ pick a slot and forward.
   probe point (`coll +0x30`, y raised by the lift) on its front or on it, and whose outline contains the point in XZ (`FUN_00161ed0`),
   the height on the plane `y = (-d - (n.z * z + n.x * x)) / n.y`; keeps the one nearest the raised probe y, closer than
   `DAT_00378f6c`; returns its index (0xffff none) and writes `out_y`.
+* **Status (WP-L1-P10): the roof stop is found.** The sweep itself stops a rising body: the sphere (radius `coll +0x20`, centre
+  one lift above the foot) is pushed out of every polygon the kind-0 handler accepts (attribute bit 0x10), whichever way the polygon
+  faces, so a roof stops the head one radius plus 0.008 under it (`a_roof_stops_a_jump_in_the_game_through_the_sweep`, game and
+  port agree; a roof without bit 0x10 does not stop the rise). An airborne body has bit 0 of `coll +0x70` set (`FUN_00182690`),
+  which makes the floor ray report instead of snapping the end down. `World::ceiling` (every downward triangle, attribute
+  ignored) has no counterpart in the original and should go when the mover is rewired.
 * Ceiling: no ceiling probe exists in these clusters. Head contact is the sphere sweep itself (its start is lowered by the lift,
   so the sphere rides at body height) [inferred: no function in 0x141898..0x149ae8 or 0x163f98..0x1657d8 casts upward or looks for
   a downward-facing polygon; the vertical probe box above reaches only `DAT_00378f70` over the foot]. The app's `World::ceiling`
@@ -373,6 +389,12 @@ GS scissor writes]:
 | geometry helpers 9.6 | glam boxes inside `world.rs` | port the box and quantized-box leaves into `kh2-map` for exactness |
 
 ### 9.8 The rig deviation "Sora stops at x -215" (tt-run-06)
+**Status (WP-L1-P10): `coll +0x20` is the body radius.** The collider is the record at `actor +0x590` (`coll +0x20` = `actor +0x5b0`,
+`+0x24` = `+0x5b4`, `+0x6c` = `+0x5fc`, `+0x70` = `+0x600`, `+0x30` = `+0x5c0`). The only instruction in the executable that stores
+`+0x5b0` is the one in `FUN_00169af0` (0x169b44, the body shape's halfword +0x10); `FUN_00183eb0` overrides `coll +0x20` only on its
+own local copy (the push-out loop of `move_to_space`). So the sweep radius is 90 for Sora (the value read from the model in
+`moveset-selection.md`), not the port's 35: walls would stop the body 55 units earlier once the mover calls the sweep. PCSX2 was not run
+(the single writer settles it).
 Read from `local/rig/tt-run-06` (report, traces and the port log): the area is tt21 (Mansion: Computer Room, `map/us/tt21.map`,
 one type-6 entry, word 0xe7). The port's Sora reaches z = 400 (game) around k150 and slides along it, then stops at x = -214.99 by
 k200 and stays. `kh2 coct-walls tt21` lists a party wall (0x172, mesh 107, group 0, enabled) on the plane x = -250 from z 150 to 500
@@ -415,3 +437,4 @@ stick delta as tt-run-06 at k150.
   `FUN_00148440`, `FUN_00165990`, `FUN_00163248` and `FUN_00161ed0` were not re-read in this package (cited from sections 5 and 8 or
   from their callers); the constants `DAT_00378f6c`, `DAT_00378f70`, `DAT_0037953c`, `DAT_00379544`, `DAT_00379548`, `DAT_0037955c`
   were not read (the oracle reads them from the executable); the roof stop of a jump (9.3) and `coll +0x20` for Sora (9.8) are open.
+**Status (WP-L1-P10):** read and ported: `FUN_00141f08`, `FUN_00141d90`, `FUN_001623a0`, `FUN_00163f98`, `FUN_001632b8`, `FUN_00163248`, `FUN_00161ed0`, `FUN_00162028`, `FUN_00162678`, `FUN_001625e0`, `FUN_001626f0`, `FUN_00330c80`, `FUN_00141720`, `FUN_00141768`, `FUN_00143560`, `FUN_001434b8`; the data constants (0x378f50..0x378ff8, 0x379500..0x37955c, the level tables 0x355e60 and 0x355e70) are small rule values now in `oct.rs` and `geom.rs`. Still open: the pool functions of the moving objects, `FUN_00165910`'s non-empty path, `FUN_00142858`'s inverse, `FUN_00153540` (floor lighting colour), and what the vector lanes the VU ops leave alone hold (the w lanes of the collider's vectors are not compared and nothing reads them).

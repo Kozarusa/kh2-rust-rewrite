@@ -23,6 +23,7 @@ pub mod reaction_rules;
 pub mod rig;
 pub mod rig_values;
 pub mod rng;
+pub mod save_block;
 pub mod schedule;
 pub mod task;
 pub mod shared;

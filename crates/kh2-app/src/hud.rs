@@ -10,6 +10,7 @@ use crate::enemy::Enemy;
 use crate::schedule::Frame;
 use crate::skel::Animator;
 use crate::sora::{Sora, State};
+pub use crate::shared::hud::{DamagePopup, DebugHud};
 
 // The HUD's own files sit beside this one; they are submodules so `main.rs` stays untouched.
 #[path = "hud_gauge.rs"]
@@ -39,6 +40,8 @@ use hud_gfx::HudGfxPlugin;
 pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode, SeqFile};
 /// The render layer of the keyhole wipe, above the HUD, the ring panels and the menus.
 pub(crate) use hud_gfx::WIPE_LAYER;
+/// The asset path of the HUD quad shader (`menu_gfx`, `revive_fade`).
+pub(crate) use hud_gfx::HUD_QUAD_SHADER;
 /// A node's text, for the event player's subtitle lines (`event_player::subtitles`).
 pub(crate) use hud_text::Label;
 use hud_banner::{BannerNodes, ExperiencePopups, HudBanner, NumberStrips, StripNodes};
@@ -85,8 +88,8 @@ impl Plugin for HudPlugin {
                     toggle_debug,
                     (
                         hud_gauge::feed_drive,
-                        hud_gauge::update,
-                        hud_party::update,
+                        hud_gauge::update.in_set(Frame::HudGauges),
+                        hud_party::update.in_set(Frame::HudGauges),
                         hud_target::update,
                         hud_menu::mirror_reaction,
                         hud_menu::update,
@@ -107,10 +110,6 @@ impl Plugin for HudPlugin {
     }
 }
 
-/// Developer overlay switch.
-#[derive(Resource)]
-pub struct DebugHud(pub bool);
-
 fn debug_on(d: Res<DebugHud>) -> bool {
     d.0
 }
@@ -122,12 +121,6 @@ fn toggle_debug(keys: Res<ButtonInput<KeyCode>>, mut d: ResMut<DebugHud>, mut te
     if let Ok(mut v) = text.single_mut() {
         *v = if d.0 { Visibility::Inherited } else { Visibility::Hidden };
     }
-}
-
-#[derive(Message, Clone, Copy)]
-pub struct DamagePopup {
-    pub at: Vec3,
-    pub amount: i32,
 }
 
 #[derive(Component)]

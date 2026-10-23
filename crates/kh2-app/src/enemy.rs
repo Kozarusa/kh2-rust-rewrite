@@ -1818,7 +1818,7 @@ pub fn receive_hits(
     sora: Query<&Sora>,
     mut q: Query<(&mut Enemy, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
-    mut popups: MessageWriter<crate::hud::DamagePopup>,
+    mut popups: MessageWriter<crate::shared::hud::DamagePopup>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut ineffective: MessageWriter<IneffectiveHit>,
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
@@ -1893,7 +1893,7 @@ pub fn receive_hits(
             // `dead` mode); a second request for the same victim is ignored by `fx`.
             game.write(crate::fx::GameEffect::Death { victim: h.target });
         }
-        popups.write(crate::hud::DamagePopup { at: h.point, amount: dmg });
+        popups.write(crate::shared::hud::DamagePopup { at: h.point, amount: dmg });
         if useless {
             ineffective.write(IneffectiveHit { attacker: h.attacker, target: h.target, atkp: h.atkp, point: h.point });
         }

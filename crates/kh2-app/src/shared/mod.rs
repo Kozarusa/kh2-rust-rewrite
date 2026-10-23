@@ -16,3 +16,4 @@ pub mod party;
 pub mod event;
 pub mod ui;
 pub mod sound;
+pub mod hud;

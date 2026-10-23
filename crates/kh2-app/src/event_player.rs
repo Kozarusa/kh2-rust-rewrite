@@ -768,7 +768,7 @@ fn step(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    mut msg: Option<ResMut<crate::hud::hud_msgwin::ScriptWindow>>,
+    mut msg: Option<ResMut<crate::shared::hud::ScriptWindow>>,
     children: Query<&Children>,
     mesh_q: Query<(), With<Mesh3d>>,
 ) {

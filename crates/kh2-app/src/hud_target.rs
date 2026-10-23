@@ -15,6 +15,7 @@ use crate::skel::Animator;
 use super::hud_gfx::{viewport_to_hud, HudScene, Node};
 use super::hud_gauge::GAUG;
 use crate::sora::Sora;
+pub use crate::shared::hud::{marker_group, MagicMarker};
 
 /// The field file is the first pair of the world's `.2dd`.
 const FIEL: usize = 0;
@@ -62,31 +63,6 @@ pub fn lock_group() -> usize {
 /// The icon is then projected by 0x13e968. `centre` is the shape centre when the body has one (Bevy metres).
 pub fn lock_point(position: Vec3, centre: Option<Vec3>) -> Vec3 {
     centre.unwrap_or(position)
-}
-
-/// Magic lock-on marker groups (0x19bbc0 hands them to 0x13e528): mode 1 uses 5 when the target record's
-/// shape byte is 0 and 1 otherwise, mode 2 uses 0x1b and 0x17.
-pub fn marker_group(mode: u8, shape: u8) -> Option<usize> {
-    match (mode, shape != 0) {
-        (1, false) => Some(5),
-        (1, true) => Some(1),
-        (2, false) => Some(0x1b),
-        (2, true) => Some(0x17),
-        _ => None,
-    }
-}
-
-/// Game-state input of the magic lock-on marker: the lock-on controller (player +0xb40) is in `mode` 1 or 2 on a
-/// target record whose shape byte is `shape`, at world point `at` (the record's target point, FUN_0018efa0). The magic module inserts it
-/// while the controller holds a record and removes it when the controller is released (FUN_0019b580);
-/// `KH2_HUDMARKER=<mode>:<shape>` draws one at the free-aim point.
-#[derive(Resource, Clone, Copy)]
-pub struct MagicMarker {
-    pub mode: u8,
-    pub shape: u8,
-    pub at: Vec3,
-    /// The bubble flag of 0x19bbc0 (same rule as `TargetBubble`).
-    pub alert: bool,
 }
 
 /// Game-state input of the lock-on bubble: true while the locked target shows its alert bubble (the game

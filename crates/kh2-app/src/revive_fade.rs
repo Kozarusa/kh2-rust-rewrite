@@ -69,7 +69,7 @@ pub struct ReviveFadeMaterial {
 impl Material2d for ReviveFadeMaterial {
     fn fragment_shader() -> ShaderRef {
         // The HUD's textured, vertex-coloured shader (embedded by `hud_gfx`).
-        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/hud_quad.wgsl").into())
+        ShaderRef::Path(crate::hud::HUD_QUAD_SHADER.into())
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {

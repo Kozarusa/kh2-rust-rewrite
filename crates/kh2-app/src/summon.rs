@@ -2243,7 +2243,7 @@ struct Harness {
 
 /// What the HUD's drive gauge showed before mode 3 (put back when the mode leaves 3).
 #[derive(Resource, Default)]
-struct HudSaved(Option<crate::hud::hud_gauge::DriveGauge>);
+struct HudSaved(Option<crate::shared::hud::DriveGauge>);
 
 /// What `tick` asks the systems with world access to do this tick, in order.
 #[derive(Clone, Debug, PartialEq)]
@@ -3232,11 +3232,11 @@ impl Plugin for SummonPlugin {
             .init_resource::<SharedBlocks>()
             .init_resource::<PlayerSide>()
             .init_resource::<crate::magic_rules::GlobalFlags>()
-            .init_resource::<crate::hud::hud_party::SummonFace>()
+            .init_resource::<crate::shared::hud::SummonFace>()
             .add_plugins(revive_fade::ReviveFadePlugin)
             .add_systems(Startup, spawn_revive_fade)
             .add_systems(Update, paint_revive_fade)
-            .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update), face_feed.before(crate::hud::hud_party::update)))
+            .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::schedule::Frame::HudGauges), face_feed.before(crate::schedule::Frame::HudGauges)))
             .add_systems(FixedUpdate, (track_player_hits, tick, act, objects, revive_effects, companions).chain().in_set(Sim::Sounds))
             .add_systems(FixedUpdate, publish_gflags.after(objects).in_set(Sim::Sounds))
             .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect).run_if(crate::schedule::sim_running));
@@ -3255,7 +3255,7 @@ fn publish_gflags(objects: Query<&SummonObject>, mut flags: ResMut<crate::magic_
 /// The summon face panel's request (`hud_party::SummonFace`): while the gauge is in mode 3 and a summon object holds party
 /// slot 0 the panel shows its face (FUN_00156ca8 waits for the object, FUN_00156fe8 starts group 0x9a / 0x9b); when the gauge
 /// leaves mode 3 the panel plays group 0x9c (FUN_00156c78 -> FUN_00157020).
-fn face_feed(drive: Res<DriveState>, objects: Query<&SummonObject>, mut face: ResMut<crate::hud::hud_party::SummonFace>) {
+fn face_feed(drive: Res<DriveState>, objects: Query<&SummonObject>, mut face: ResMut<crate::shared::hud::SummonFace>) {
     let want = (drive.gauge_mode == GaugeMode::Summon).then(|| objects.iter().find(|o| o.slot == 0).map(|o| o.model.clone())).flatten();
     if face.model != want {
         face.model = want;
@@ -5152,8 +5152,8 @@ fn stops(
 
 /// Mode 3 on the HUD's drive gauge (`FUN_00155bf0`: the digit of the segment and the fill inside it;
 /// the art set of mode 3, `DriveMode::FormB`). Outside mode 3 the gauge is left as it was.
-fn hud_feed(drive: Option<Res<DriveState>>, mut gauge: ResMut<crate::hud::hud_gauge::DriveGauge>, mut saved: ResMut<HudSaved>) {
-    use crate::hud::hud_gauge::{DriveGauge, DriveMode};
+fn hud_feed(drive: Option<Res<DriveState>>, mut gauge: ResMut<crate::shared::hud::DriveGauge>, mut saved: ResMut<HudSaved>) {
+    use crate::shared::hud::{DriveGauge, DriveMode};
     let Some(st) = drive else { return };
     if st.gauge_mode == GaugeMode::Summon {
         if saved.0.is_none() {

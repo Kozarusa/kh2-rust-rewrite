@@ -28,7 +28,7 @@ use kh2_tables::tables::{self as t, Cmd};
 
 use crate::assets::Disc;
 use crate::fx::{self, Bind, Placement};
-use crate::hud::hud_menu::{CommandMenu, MenuEntry, MenuPage};
+use crate::shared::hud::{CommandMenu, MenuEntry, MenuPage};
 use crate::magic::{MagicData, MagicState};
 use crate::magic_rules as mrules;
 use crate::progress::{Progress, SORA};

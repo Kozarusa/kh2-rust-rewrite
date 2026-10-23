@@ -72,7 +72,7 @@ impl From<&MenuMaterial> for MenuKey {
 
 impl Material2d for MenuMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/hud_quad.wgsl").into())
+        ShaderRef::Path(crate::hud::HUD_QUAD_SHADER.into())
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {

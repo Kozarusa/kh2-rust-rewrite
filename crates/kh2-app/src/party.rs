@@ -2843,7 +2843,7 @@ fn party_forced_hits(
 /// The party panels' inputs (docs/systems/party/party-friend-ai.md section 7): per party slot the member's status block as the
 /// panel reads it (HP +0 over +4, MP +0x180 over +0x184; FUN_0013dcd8 registers slot + 1 at creation,
 /// summons get none). The harness fill `KH2_HUDPARTY` keeps precedence.
-fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party::PartyMembers>>, mut filled: Local<bool>) {
+fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::shared::hud::PartyMembers>>, mut filled: Local<bool>) {
     let Some(mut panels) = panels else { return };
     if std::env::var_os("KH2_HUDPARTY").is_some() {
         return;
@@ -2858,8 +2858,8 @@ fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party
     }
     members.sort_by_key(|m| m.slot);
     let face = |s: usize| panels.0.get(s).and_then(|p| p.face);
-    let want: Vec<crate::hud::hud_party::PartyMember> =
-        members.iter().enumerate().map(|(s, m)| crate::hud::hud_party::PartyMember { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, face: face(s) }).collect();
+    let want: Vec<crate::shared::hud::HudPartyMember> =
+        members.iter().enumerate().map(|(s, m)| crate::shared::hud::HudPartyMember { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, face: face(s) }).collect();
     if panels.0 != want {
         panels.0 = want;
     }

@@ -31,6 +31,9 @@ pub const RING_LAYER: usize = 6;
 /// and the menus draw, as the wipe covers the whole frame in the original (reference video 8.mp4: the command deck and the
 /// HP ring are gone outside the hole). The fader (`area_jump::spawn_fader`, task priority 330000 `FUN_0014aa90`) comes after it.
 pub const WIPE_LAYER: usize = 5;
+/// The asset path of `hud_quad.wgsl`, which this module embeds (`embedded://<crate>/hud_quad.wgsl`): the menus and the
+/// revive fade draw with it from other modules, so they name it through this constant.
+pub const HUD_QUAD_SHADER: &str = concat!("embedded://", env!("CARGO_CRATE_NAME"), "/hud_quad.wgsl");
 /// The game's screen, in HUD units.
 pub const SCREEN: [f32; 2] = [512.0, 448.0];
 /// The HUD draw code places everything at GS y = 0x7300 + 16 * y while the screen origin is 0x7200
@@ -77,7 +80,7 @@ impl From<&HudMaterial> for HudKey {
 
 impl Material2d for HudMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/hud_quad.wgsl").into())
+        ShaderRef::Path(HUD_QUAD_SHADER.into())
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {

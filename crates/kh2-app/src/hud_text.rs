@@ -10,6 +10,7 @@ use kh2_image::text::{self, ColorTable, GlyphQuad, Kind, Messages, Places, Style
 
 use super::hud_gfx::SeqFile;
 use crate::assets::Disc;
+pub use crate::shared::hud::Label;
 
 /// Fonts, messages and colours, and the scene files that hold the atlas textures.
 pub struct TextSys {
@@ -30,14 +31,6 @@ pub struct TextSys {
     /// `md_m` image of the world's message file (0x190b70 loads it into the window texture
     /// 0x1c95710 when the world's file is bound, 0x168ba8). `None` when the world file has no image.
     pub frame_file: Option<usize>,
-}
-
-/// A text drawn by a node: the message, how to lay it out, and where it sits from the node's origin.
-#[derive(Clone)]
-pub struct Label {
-    pub tokens: Vec<Token>,
-    pub style: Style,
-    pub offset: [f32; 2],
 }
 
 fn atlas_key(a: Atlas) -> u8 {

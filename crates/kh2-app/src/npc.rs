@@ -58,7 +58,7 @@ impl Plugin for NpcPlugin {
         app.init_resource::<NpcAssets>()
             .init_resource::<NpcSpawned>()
             .init_resource::<Talk>()
-            .init_resource::<crate::hud::hud_msgwin::ScriptWindow>()
+            .init_resource::<crate::shared::hud::ScriptWindow>()
             .add_plugins(crate::savepoint::SavePointPlugin)
             .add_systems(FixedUpdate, (npc_spawn, npc_update).chain().in_set(Sim::Enemy).after(crate::enemy::spawn_waves))
             // After the reaction manager's own offer and accept (`reaction_cmd`, `Sim::Effects`).
@@ -851,7 +851,7 @@ fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd:
 pub(crate) fn talk_step(
     mut talk: ResMut<Talk>,
     rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
-    mut win: ResMut<crate::hud::hud_msgwin::ScriptWindow>,
+    mut win: ResMut<crate::shared::hud::ScriptWindow>,
     mut sora: Query<(&mut Transform, &mut Sora), Without<Npc>>,
     mut npcs: Query<(&mut Transform, &mut Npc, &mut NpcBrain), Without<Sora>>,
     mut anims: Query<&mut Animator>,
@@ -2954,7 +2954,7 @@ mod tests {
     /// not at a 0x10 inside a command's arguments (0x190fa8).
     #[test]
     fn a_message_splits_into_pages_at_command_0x10() {
-        use crate::hud::hud_msgwin::pages;
+        use crate::shared::hud::pages;
         // 'A' page end 'B' end.
         let p = pages(&[0x21, 0x10, 0x22, 0x00]);
         assert_eq!(p.len(), 2);
@@ -2984,7 +2984,7 @@ mod tests {
                     let ops: Vec<_> = prog.iter().map(|c| c.kind()).collect();
                     let [kh2_ard::libretto::Op::Message(id)] = ops[..] else { panic!("{tag}: {ops:?}") };
                     let b = msgs.bytes(id).expect("message");
-                    let pages = crate::hud::hud_msgwin::pages(b);
+                    let pages = crate::shared::hud::pages(b);
                     eprintln!("{tag} {} talk {:#x}: message {id:#x}, {} page(s): {:?}", o.model_name, e.talk_id(), pages.len(), pages.iter().map(|p| kh2_image::text::to_text(p).len()).collect::<Vec<_>>());
                     assert!(!pages.is_empty());
                     let mset = disc.read(&format!("obj/{}.mset", o.model_name)).and_then(|d| kh2_anim::Mset::parse(&d)).expect("mset");

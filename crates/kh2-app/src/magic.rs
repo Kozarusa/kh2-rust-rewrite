@@ -38,7 +38,7 @@ use kh2_tables::tables::{self as t, Cmd, Magc};
 use crate::assets::Disc;
 use crate::combat::{self, Fighter, Hit, HurtSpheroid, Team, Volume};
 use crate::data::GameData;
-use crate::hud::hud_target::MagicMarker;
+use crate::shared::hud::MagicMarker;
 use crate::fx::{self, Bind, LoadedPax, Placement, RunningEffect};
 use crate::magic_rules::{self as rules, Charge, HitMemory, MagiRow, Paid, Status};
 use crate::schedule::Sim;
@@ -526,7 +526,7 @@ fn run(
     gts: Query<&GlobalTransform>,
     mut running: Running,
     (mut hits, mut spell_hits, mut voices, mut clash_out): (MessageWriter<Hit>, MessageWriter<fx::SpellHit>, MessageWriter<crate::audio::SoraVoice>, MessageWriter<crate::enemy::EnemyClash>),
-    (enemies, mut recharge, pad, mut gflags): (Query<&crate::enemy::Enemy>, ResMut<crate::hud::hud_gauge::MpRecharge>, Res<crate::sora::Pad>, ResMut<rules::GlobalFlags>),
+    (enemies, mut recharge, pad, mut gflags): (Query<&crate::enemy::Enemy>, ResMut<crate::shared::hud::MpRecharge>, Res<crate::sora::Pad>, ResMut<rules::GlobalFlags>),
 ) {
     published.hits.clear();
     let Some(data) = data else { return };
@@ -769,7 +769,7 @@ fn run(
     match marker {
         Some(m) => {
             if mr.marker_log != Some((m.mode, m.shape)) {
-                mlog!("magic: marker mode {} shape byte {} group {:?} at {:?}", m.mode, m.shape, crate::hud::hud_target::marker_group(m.mode, m.shape), m.at);
+                mlog!("magic: marker mode {} shape byte {} group {:?} at {:?}", m.mode, m.shape, crate::shared::hud::marker_group(m.mode, m.shape), m.at);
                 mr.marker_log = Some((m.mode, m.shape));
             }
             commands.insert_resource(m);

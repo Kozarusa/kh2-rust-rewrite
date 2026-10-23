@@ -48,6 +48,9 @@ pub mod addr {
 /// Byte offsets in the party block (the constants live with the layout object in `save_block::party`).
 pub mod off {
     pub use crate::save_block::party::*;
+    /// Length of the party block as `FUN_00187b38` touches it (the same as `save_block::party::LEN`; spelled out because the rig's
+    /// constants test reads this file for it).
+    pub const LEN: usize = 0x1998;
 }
 
 /// Offsets in a party member record.

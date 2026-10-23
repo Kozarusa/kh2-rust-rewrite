@@ -101,9 +101,11 @@ pub fn keys_for(pad: &PadState) -> BTreeSet<KeyCode> {
     BUTTON_KEYS.iter().filter(|(name, _)| pad.pressed(name)).flat_map(|(_, keys)| keys.iter().copied()).collect()
 }
 
-/// The original's stick conversion (`FUN_00167198`): per axis the byte minus the centre (`DAT_0037968c`), the dead zone
-/// (`DAT_00522168`) taken off toward zero, divided by `centre - dead zone`; the vector's length is capped at `DAT_00379690`.
-/// The constants are read from the executable at start; without it the fallback has no dead zone and a cap of 1.
+/// The original's stick conversion (`FUN_00167198`): per axis the byte minus the centre (`DAT_0037968c`), the dead zone taken off
+/// toward zero, divided by `centre - dead zone`; the vector's length is capped at `DAT_00379690`. The dead zone is `DAT_00522168`,
+/// which is BSS: `FUN_00166fd0` fills it at start through `FUN_00167058(DAT_00379680, ..)`, so it is read from `DAT_00379680` in the
+/// executable image. Each constant is read on its own; one that cannot be read falls back alone (centre 127, dead zone 0, cap 1) and
+/// [`StickScale::from_exe`] names it.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct StickScale {
     pub centre: f32,
@@ -118,9 +120,19 @@ impl Default for StickScale {
 }
 
 impl StickScale {
-    pub fn from_exe(exe: &[u8]) -> Option<StickScale> {
+    /// The constants from the executable image, and the names of the ones that fell back to the default.
+    pub fn from_exe(exe: &[u8]) -> (StickScale, Vec<&'static str>) {
         let f = |va: u32| crate::reaction_rules::exe_f32(exe, va);
-        Some(StickScale { centre: f(0x37968c)?, dead_zone: f(0x522168)?, cap: f(0x379690)? })
+        let d = StickScale::default();
+        let mut missing = Vec::new();
+        let mut pick = |name: &'static str, v: Option<f32>, default: f32| {
+            v.unwrap_or_else(|| {
+                missing.push(name);
+                default
+            })
+        };
+        let s = StickScale { centre: pick("centre 0x37968c", f(0x37968c), d.centre), dead_zone: pick("dead zone 0x379680", f(0x379680), d.dead_zone), cap: pick("cap 0x379690", f(0x379690), d.cap) };
+        (s, missing)
     }
 }
 
@@ -338,10 +350,16 @@ pub struct RigPlugin;
 impl Plugin for RigPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PadState>().init_resource::<RigClock>().init_resource::<StickScale>();
-        if let Some(scale) = app.world().get_resource::<Disc>().and_then(|d| d.read_root("SLUS_210.05")).and_then(|e| StickScale::from_exe(&e)) {
-            app.insert_resource(scale);
-        } else {
-            warn!("rig: the stick constants are not readable from SLUS_210.05; the stick has no dead zone and a cap of 1");
+        match app.world().get_resource::<Disc>().and_then(|d| d.read_root("SLUS_210.05")) {
+            Some(exe) => {
+                let (scale, missing) = StickScale::from_exe(&exe);
+                if !missing.is_empty() {
+                    error!("rig: stick constants not readable from SLUS_210.05, defaults used for: {missing:?}; scripted sticks will differ from the original");
+                }
+                info!("rig: stick scale centre {} dead zone {} cap {}", scale.centre, scale.dead_zone, scale.cap);
+                app.insert_resource(scale);
+            }
+            None => error!("rig: SLUS_210.05 not readable; the stick has the default scale (centre 127, no dead zone, cap 1) and differs from the original"),
         }
         app.add_systems(Update, place_sora.after(crate::area::run_area_script).before(crate::schedule::Frame::Pad));
         let script = std::env::var("KH2_PAD").ok().filter(|p| !p.is_empty());
@@ -464,5 +482,15 @@ mod tests {
         app.world_mut().resource_mut::<RigClock>().placed = true;
         app.update();
         assert!(!app.world().resource::<RigClock>().started, "placed but the area has not run");
+        // The area has run its scripts and Sora stands: the next tick is k 0, and every tick after counts.
+        app.insert_resource(AreaRecord { world: 2, area: 21, entrance: 0, programs: [0; 3], programs_override: None, dest_programs: [0xff; 3], place_on_load: false, run: Some(std::sync::Arc::new(crate::area::AreaRun { name: "tt21".into(), ard: Default::default(), script: Default::default() })), placed: None });
+        app.world_mut().spawn(Sora::for_test(80, 80));
+        app.update();
+        let c = *app.world().resource::<RigClock>();
+        assert!(c.started && c.ticks == 0 && c.next_k() == 1, "{c:?}");
+        for _ in 0..5 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<RigClock>().ticks, 5, "five ticks after k 0");
     }
 }

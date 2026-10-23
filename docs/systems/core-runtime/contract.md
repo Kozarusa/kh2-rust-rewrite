@@ -5,8 +5,8 @@ Ladder step L1 (PLAN section 5). Ledger system name `core-runtime`. Crates: `kh2
 Sheet ids: `world.collision`, `world.event`, `game.progress`, `game.story`, `game.jump`. Scenarios: `scenarios/core-runtime/` (none yet).
 
 Status: the saved-state, story-flag, area-script, area-load and walking-collision parts are documented and mostly ported. The task
-system, frame step and RNG are documented in [runtime.md](runtime.md) (WP-L1-S1). Still without a doc: the memory-card format, COCT
-ceiling and raycasts (the geometry unit), the file unit.
+system, frame step and RNG are documented in [runtime.md](runtime.md) (WP-L1-S1). The COCT queries, moving collision objects and the
+geometry unit are in [collision.md section 9](collision.md) (WP-L1-S3). Still without a doc: the memory-card format, the file unit.
 
 ## Clusters (ledger notes `L1:<cluster>`, WP-L1-S1)
 The ledger's first seeding put most of the core runtime under other systems (audio, enemy, event.player, player.sora, ui.menu). L1-S1

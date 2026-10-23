@@ -1171,7 +1171,7 @@ impl Plugin for EnemyPlugin {
 }
 
 /// The assets and the area a wave is made from.
-type WaveSource<'a> = (Res<'a, Disc>, Res<'a, CurrentArea>, ResMut<'a, AreaWaves>, Res<'a, EnemyRigs>, Res<'a, crate::area::AreaRecord>, ResMut<'a, BattleGroups>, Res<'a, crate::area_jump::JumpTask>);
+type WaveSource<'a> = (Res<'a, Disc>, Res<'a, CurrentArea>, ResMut<'a, AreaWaves>, Res<'a, EnemyRigs>, Res<'a, crate::area::AreaRecord>, ResMut<'a, BattleGroups>, Res<'a, crate::shared::area_jump::JumpTask>);
 
 /// What a spawn record gives an enemy: spawn kind, spawn parameters, `00objentry` id, (group id, serial).
 type SpawnRecord = (i32, Option<[i32; 2]>, u32, Option<(u16, u16)>);
@@ -1215,7 +1215,7 @@ fn spawn_enemy(
             object_id,
             serial,
         },
-        crate::area_jump::AreaActor,
+        crate::shared::area_jump::AreaActor,
         Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
     ));
     root
@@ -1337,7 +1337,7 @@ pub fn spawn_waves(
     if area_on && !area_waves.groups.is_empty() {
         // The area's unload (`area_jump::unload_area_actors`) removes the groups with their enemies; the next run
         // of the scripts sets them up again, also when a jump re-enters the loaded area.
-        if matches!(*task, crate::area_jump::JumpTask::Loading { .. }) {
+        if matches!(*task, crate::shared::area_jump::JumpTask::Loading { .. }) {
             battle.run = 0;
             battle.live.clear();
             battle.events.clear();

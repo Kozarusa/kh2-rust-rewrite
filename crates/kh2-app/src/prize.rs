@@ -732,7 +732,7 @@ type PrizeOrItem = Or<(With<PrizeObj>, With<ItemObj>)>;
 /// pickup); only its message (`FUN_001a1f40(item, -1)`, sent when the draw-in ends) is still owed, so the unload sends
 /// it before the object goes [inferred: the message queue outlives the area; the unload's own order was not read].
 fn unload_prizes(
-    task: Option<Res<crate::area_jump::JumpTask>>,
+    task: Option<Res<crate::shared::area_jump::JumpTask>>,
     mut done: Local<bool>,
     objects: Query<(Entity, Option<&ItemObj>), PrizeOrItem>,
     lib: Option<Res<ItemLib>>,
@@ -740,7 +740,7 @@ fn unload_prizes(
     mut pool: ResMut<PrizePool>,
     mut commands: Commands,
 ) {
-    let loading = task.is_some_and(|t| matches!(*t, crate::area_jump::JumpTask::Loading { .. }));
+    let loading = task.is_some_and(|t| matches!(*t, crate::shared::area_jump::JumpTask::Loading { .. }));
     if !loading {
         *done = false;
         return;
@@ -2212,7 +2212,7 @@ mod tests {
     /// the pool count; other entities stay; a task that never loads removes nothing.
     #[test]
     fn a_jump_clears_prizes_and_items() {
-        use crate::area_jump::{Dest, JumpTask};
+        use crate::shared::area_jump::{Dest, JumpTask};
         use bevy::ecs::system::RunSystemOnce;
         let mut w = bevy::ecs::world::World::new();
         w.insert_resource(PrizePool { live: 3 });

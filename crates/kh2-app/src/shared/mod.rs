@@ -9,3 +9,4 @@ pub mod magic;
 pub mod enemy;
 pub mod enemy_obj;
 pub mod struggle;
+pub mod area_jump;

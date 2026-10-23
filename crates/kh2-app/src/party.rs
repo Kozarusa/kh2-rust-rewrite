@@ -1043,7 +1043,7 @@ fn can_build(area_loaded: bool, no_party: bool, have_memt: bool, have_consts: bo
 /// notice; word 6 then asks for the camp's notice page 0x15 (`party_switch`), which lists who came in and went out.
 /// A world the app has not entered starts from the default preset, as `spawn_party` does.
 fn jump_party(
-    mut menus: ResMut<crate::area_jump::JumpMenus>,
+    mut menus: ResMut<crate::shared::area_jump::JumpMenus>,
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
     mut switch: ResMut<crate::party_switch::PartySwitch>,
@@ -1149,7 +1149,7 @@ fn auto_heal_pass(progress: &mut crate::progress::Progress, bytes: [u8; 4], merg
 /// has no revive path here].
 #[allow(clippy::too_many_arguments)]
 fn jump_reset(
-    mut menus: ResMut<crate::area_jump::JumpMenus>,
+    mut menus: ResMut<crate::shared::area_jump::JumpMenus>,
     game: Option<Res<crate::data::GameData>>,
     drive: Option<Res<crate::drive::DriveState>>,
     mut queue: Option<ResMut<crate::drive::DriveQueue>>,

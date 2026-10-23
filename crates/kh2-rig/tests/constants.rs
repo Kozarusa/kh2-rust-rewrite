@@ -10,10 +10,13 @@ fn app_src() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kh2-app/src")
 }
 
-/// The game crates' source folders: the app and its core crate (with the core's `shared` types).
-fn game_srcs() -> [PathBuf; 3] {
-    let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kh2-game-core/src");
-    [app_src(), core.join("shared"), core]
+/// The game crates' source folders: the app, its core crate (with the core's `shared` types) and the domain crates.
+fn game_srcs() -> Vec<PathBuf> {
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let core = crates.join("kh2-game-core/src");
+    let mut dirs = vec![app_src(), core.join("shared"), core];
+    dirs.extend(["sound", "enemy", "player", "party", "event", "hud", "menu", "worldmap"].map(|d| crates.join(format!("kh2-{d}/src"))));
+    dirs
 }
 
 fn progress_source() -> String {

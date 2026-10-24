@@ -7,6 +7,7 @@
 //! Checked with `kh2 coct-check`: COCT floors coincide with the render mesh only this way.
 
 pub mod build;
+pub mod draw_tree;
 pub mod geom;
 pub mod mapcoll;
 pub mod mapobj;

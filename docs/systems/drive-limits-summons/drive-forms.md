@@ -49,7 +49,7 @@ otherwise 0 as in a new game), `KH2_DRIVE_LEVEL` (form level, capped by the numb
 `KH2_DRIVE_WORLD=<id|wi|nm|tr>` (default 2), `KH2_DRIVE_OUTFIT=<0..3>` (the base body's outfit index,
 default 0), `KH2_DRIVE_INVENTORY=<item ids>` (spare keyblades the forms take; default one Kingdom Key per
 owned dual-wielding form, empty for the new-game state). Keys: F5 chooses the form, F7 enters, F8 reverts,
-F10 adds a point, F11 fills the gauge. Entering Anti (`KH2_DRIVE=5`) skips the roll; the game only reaches
+F10 adds a point, Delete fills the gauge. Entering Anti (`KH2_DRIVE=5`) skips the roll; the game only reaches
 Anti through it.
 
 ## Verified facts

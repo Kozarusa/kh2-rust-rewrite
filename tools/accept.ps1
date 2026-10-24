@@ -224,6 +224,7 @@ function Start-Scenario($s, [bool]$turboRun) {
     $env:KH2_ISO = $iso
     $env:KH2_SCREENSHOT = $png
     $env:KH2_SHOT_AT = [string]$s.ShotAt
+    $env:KH2_FIELD_HZ = '30'   # the scenarios were authored at the original's field cadence, whatever the play default is
     if ($turboRun) { $env:KH2_TURBO = '1' }
     if (-not $s.Audio) { $env:KH2_NO_SOUND = '1'; $env:KH2_NO_MUSIC = '1' }
     if ($s.Keys) { $env:KH2_KEYS = $s.Keys }

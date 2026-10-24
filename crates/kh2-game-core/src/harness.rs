@@ -194,7 +194,7 @@ fn auto_screenshot(
                 "Select" | "Tab" => KeyCode::Tab,
                 "[" => KeyCode::BracketLeft,
                 "]" => KeyCode::BracketRight,
-                // The sound viewer (F10) and the asset viewer (F11) and their paging keys.
+                // The sound viewer (F10) and the drive-gauge fill (Delete); the asset viewer (F12) has no key name here yet. F11 is the window's fullscreen toggle.
                 "F10" => KeyCode::F10,
                 "F11" => KeyCode::F11,
                 "PageUp" => KeyCode::PageUp,

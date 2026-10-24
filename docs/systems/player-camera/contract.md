@@ -6,6 +6,8 @@ Sheet ids: `game.player`, `game.sora`, `game.sora.dodge`, `game.intro`. Scenario
 
 Status: Sora's ground combo, air chain, air swing momentum, Square actions, Quick Run and the follow, look-around and lock-on cameras are ported;
 the event and talk cameras are partly ported. The Roxas player class, camera type 4 (world map cursor) and several camera modes are open.
+L2 spec (WP-L2-S1, 2026-10-24): `controller.md`; package list `local/specs/L2.md`. No L2 function is oracle-verified yet. Known
+deviations: the stick is mapped by the orbit yaw instead of the drawn view, and the camera ignores the pad's sticks under the rig.
 
 ## What the system does
 - Sora's controller: walking and running, jump and fall, the party command executor (`FUN_001778e8` ticks a pending command, `FUN_00174cf8` runs
@@ -38,6 +40,10 @@ the event and talk cameras are partly ported. The Roxas player class, camera typ
 | `FUN_00176050`, `FUN_0017b278`, `FUN_0017b6a0` | attack start (leap or no velocity write), jump set-up, jump mover tick |
 | `FUN_00181e00`, `FUN_00182370` | per-tick displacement and root motion, real displacement at `+0x860` |
 | `FUN_0017e220` .. `FUN_0017e6c0` | motion request, blend set-up, cut test, blend step |
+| `FUN_001772f8`, `FUN_001774d8`, `FUN_00177360` | stick reader by mover, stick to move vector +0x10 through the drawn view matrix |
+| `FUN_00174bd8`, `FUN_0016a948`, `FUN_0016a2f0`, `FUN_0017bc30` | wanted yaw +0x66c from +0x10, facing +0x55c turned at +0x11c x frame step |
+| `FUN_0017af10`, `FUN_0017b040`, `FUN_00179880` | ground mover: motion class, displacement along +0x10; mover table |
+| `FUN_001778e8`, `FUN_001ceda8` | controller tick (base, Sora) |
 
 ## Layouts (C7, WP-FAC-8)
 - Actor header (first 0x9c0 bytes, `FUN_00168d30`): +0 vtable, +4 self, +8 objentry, +0xc current mover, +0x10 direction, +0x20
@@ -62,7 +68,8 @@ the event and talk cameras are partly ported. The Roxas player class, camera typ
   (`moveset-selection.md` "Not ported or not resolved").
 - Camera: collision has one unresolved case, the event camera is only partly ported, the world map camera (type 4) behaviour and the camera at
   Sora's head after the last kill are not reproduced (`camera.md` "Gaps", `camera-event.md`).
-- The Roxas player class, look-at of the head and Quick Run camera speed (L2 scope) have no doc yet.
+- The Roxas player class is not identified among the six derived player classes (`controller.md` "Player classes"); the head look-at
+  (0x1ae9e8..0x1aee90) is located, not read; Quick Run camera speed: `camera.md` "The drawn view and the player".
 
 ## Where the details are
 Section numbers in references ("section 5", "20.14") are the old chapter numbers that still stand in the headings of the files below.
@@ -71,6 +78,7 @@ Section numbers in references ("section 5", "20.14") are the old chapter numbers
 |---|---|---|
 | [camera-event.md](camera-event.md) | 34 | Event camera; Talk camera; What does not change the camera -- verifie; Gaps; Checked in the app; Controls in the app; +2 more |
 | [camera.md](camera.md) | 25 | The camera object; Per-tick order; Parameters and where they come from -- ver; Field of view -- verified; Follow camera; Smoothing; +4 more |
+| [controller.md](controller.md) | 9 | Player classes; The stick vector; Heading and facing; Ground mover; The controller tick; Square actions; Head look-at; What the port does today; Gaps |
 | [movement.md](movement.md) | 43 | sections 1, 2, 3, 4, 6, 6 |
 | [moveset-selection.md](moveset-selection.md) | 27 | Where the table comes from; The attack press; The table selection; What this gives for Sora's table; Not ported or not resolved; The keyblade at A343 frame 18; +2 more |
 

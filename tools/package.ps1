@@ -51,8 +51,13 @@ Settings (disc path, window size, fullscreen): %APPDATA%\kh2-rs\config.toml
 Log of the last two runs:                      %APPDATA%\kh2-rs\kh2-rs.log and kh2-rs.1.log
 If the game closes unexpectedly it names the log file; that file is what to send when reporting a problem.
 
+kh2idx.txt is a list of file names (made by `kh2 fetch-names` from OpenKH's public name list) that the game uses to find maps.
+Keep it next to kh2-game.exe or in %APPDATA%\kh2-rs. Without it some maps will not load; the game then shows a message.
+
 Licence: MIT or Apache-2.0. Kingdom Hearts is a trademark of its owners; this project is not affiliated with them.
 '@
+$names = Join-Path $root 'local\kh2idx.txt'
+if (Test-Path $names) { Copy-Item $names (Join-Path $out 'kh2idx.txt') } else { Write-Host 'warning: local\kh2idx.txt is missing; run kh2 fetch-names first' }
 Set-Content -Path (Join-Path $out 'README.txt') -Value $readme -Encoding ASCII
 Set-Content -Path (Join-Path $out 'Play kh2-rs.bat') -Value "@start `"`" `"%~dp0kh2-game.exe`" %*" -Encoding ASCII
 Get-ChildItem $out | Select-Object Name, Length | Format-Table | Out-String | Write-Host

@@ -7,6 +7,8 @@ Sheet ids: `world.collision`, `world.event`, `game.progress`, `game.story`, `gam
 Status: the saved-state, story-flag, area-script, area-load and walking-collision parts are documented and mostly ported. The task
 system, frame step and RNG are documented in [runtime.md](runtime.md) (WP-L1-S1), the memory-card unit in [memcard.md](memcard.md) (WP-L1-S2), the COCT
 queries, moving collision objects and the geometry unit in [collision.md section 9](collision.md) (WP-L1-S3). Still without a doc: the file unit.
+WP-L1-S4 gave every unread or read L1 row one `L1-S4` note in `sheets/functions.json` (port package, relabel, not-needed reason or keep read);
+the render.model split is in [render-model.md](render-model.md).
 
 ## Clusters (ledger notes `L1:<cluster>`, WP-L1-S1)
 The ledger's first seeding put most of the core runtime under other systems (audio, enemy, event.player, player.sora, ui.menu). L1-S1
@@ -106,5 +108,6 @@ Section numbers in references ("section 5", "20.14") are the old chapter numbers
 | [story-flags.md](story-flags.md) | 3 | section 5 |
 | [runtime.md](runtime.md) | 7 | boot, task system, frame step, RNG |
 | [memcard.md](memcard.md) | 16 | card driver, save file layer, CRC, .ps2 image, oracle plan |
+| [render-model.md](render-model.md) | 10 | render.model split (hw plumbing, kh2-model rules, what is drawn, gaps) and the rig frame checks (WP-L1-S4) |
 
 Index of all systems: [../../README.md](../../README.md).

@@ -327,7 +327,7 @@ fn tick(
     // runs on the frame's last tick only (the springs take no step: two springs per frame would pull the camera in twice as fast).
     let step = frame_clock.as_deref().map_or(1.0, |c| c.step()).max(1.0);
     local.1 += 1;
-    if local.1 % (step.round() as u32).max(1) != 0 {
+    if !local.1.is_multiple_of((step.round() as u32).max(1)) {
         return;
     }
     let options = options.map(|o| *o).unwrap_or_default();

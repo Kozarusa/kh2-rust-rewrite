@@ -258,20 +258,7 @@ impl SaveBlock {
     /// The part of `FUN_00105638` before the call of `FUN_00187d20`.
     pub fn head(&mut self, env: &BootEnv) {
         clear_all(&mut self.0);
-        clear_story_tables(&mut self.0[at::STORY_TABLES..]);
-        init_party(&mut self.0[at::PARTY..]);
-        clear_world_records(&mut self.0[at::WORLD_RECORDS..]);
-        clear_new_seen(&mut self.0[at::NEW_SEEN..]);
-        self.set_u32(at::SHOP, 0);
-        self.set_u32(at::SHOP + 4, 0);
-        for k in 0..4 {
-            self.set_u32(at::SHOP_SEEN + 4 * k, 0);
-        }
-        self.set_u8(at::SHOP_VISITS, 0);
-        clear_moogle(&mut self.0[at::MOOGLE..]);
-        clear_journal(&mut self.0[at::JOURNAL..]);
-        init_config_block(&mut self.0[at::CONFIG_BLOCK..]);
-        init_object_block(&mut self.0[at::OBJECT_BLOCK..], &env.fixups);
+        static_init(&mut self.0, &env.fixups, 1, STATIC_INIT_TOKEN);
         let magic = header_word(env.region);
         self.set_u32(at::MAGIC, magic);
         self.set_u32(at::HEADER_WORD, 0x2d);
@@ -833,6 +820,266 @@ pub fn find_record_by_id(table: &[u8], id: u64) -> Option<usize> {
     (0..n.max(0) as usize).map(|k| 8 + 16 * k).find(|&r| u64::from(table[r]) == id)
 }
 
+/// Address of the save block in the original (`FUN_001057a8` answers it).
+pub const SAVE_ADDR: u32 = 0x33e860;
+
+/// The second argument of the static initialiser `FUN_001057b8` that both of its branches test for.
+pub const STATIC_INIT_TOKEN: i64 = 0xffff;
+
+/// `FUN_00105750(save)`: the game mode word of a save block (`+0x1658`; the original's accessor).
+///
+/// orig 0x105750
+pub fn game_level(save: &[u8]) -> u32 {
+    u32::from_le_bytes(save[at::GAME_MODE..at::GAME_MODE + 4].try_into().unwrap())
+}
+
+/// `FUN_001057a8()`: the address of the global save block, `0x33e860`.
+///
+/// orig 0x1057a8
+pub fn save_ram_address() -> u32 {
+    SAVE_ADDR
+}
+
+/// `FUN_001057b8(phase, token)`: the save block's static initialiser, the part of the new game's boot that runs on a zeroed block. Only the
+/// token `0xffff` does anything. Phase 1 sets up the story tables, the party block, the world records, the NEW tags, the shop words, the
+/// moogle and journal records, the config block and the object block (everything `FUN_00105638` does between zeroing the block and writing
+/// the header; `fixups` is the object block's fix-up list of the executable). Phase 0 calls an empty function (`FUN_002ee2e0`), so it
+/// changes nothing; any other phase changes nothing either.
+///
+/// orig 0x1057b8
+pub fn static_init(save: &mut [u8], fixups: &[u32], phase: i32, token: i64) {
+    if token == STATIC_INIT_TOKEN && phase == 1 {
+        clear_story_tables(&mut save[at::STORY_TABLES..]);
+        init_party(&mut save[at::PARTY..]);
+        clear_world_records(&mut save[at::WORLD_RECORDS..]);
+        clear_new_seen(&mut save[at::NEW_SEEN..]);
+        put32(save, at::SHOP, 0);
+        put32(save, at::SHOP + 4, 0);
+        clear_four_words(&mut save[at::SHOP_SEEN..]);
+        save[at::SHOP_VISITS] = 0;
+        clear_moogle(&mut save[at::MOOGLE..]);
+        clear_journal(&mut save[at::JOURNAL..]);
+        init_config_block(&mut save[at::CONFIG_BLOCK..]);
+        init_object_block(&mut save[at::OBJECT_BLOCK..], fixups);
+    }
+}
+
+/// `FUN_00105890()`: `FUN_001057b8(1, 0xffff)`, the entry the start-up table calls.
+///
+/// orig 0x105890
+pub fn static_init_boot(save: &mut [u8], fixups: &[u32]) {
+    static_init(save, fixups, 1, STATIC_INIT_TOKEN);
+}
+
+/// `FUN_00194fa8(bit)`: sets bit `bit` of the world-point bit words (save `+0x10b0`, bits counted from the first word's lowest bit).
+///
+/// orig 0x194fa8
+pub fn set_world_point_bit(save: &mut [u8], bit: u32) {
+    let o = at::WORLD_POINTS + (bit >> 5) as usize * 4;
+    let v = u32::from_le_bytes(save[o..o + 4].try_into().unwrap()) | 1u32.wrapping_shl(bit & 0x1f);
+    put32(save, o, v);
+}
+
+/// The world-point bit the story flag `flag` stands for in `FUN_00195130`'s map, or `None` for a flag the map does not list (the
+/// original then does nothing). Both `0x1822` and `0x1877` map to bit 0x1f.
+pub fn event_world_point(flag: i32) -> Option<u32> {
+    Some(match flag {
+        0x1877 | 0x1822 => 0x1f,
+        0x2822 => 0x26,
+        0x2023 => 0x29,
+        0x3012 => 0x13,
+        0x401e => 0x10,
+        0x1061 => 0x1e,
+        0x8b8 => 0x2f,
+        0x141f => 9,
+        _ => return None,
+    })
+}
+
+/// `FUN_00195130(flag)`: the story-flag event map. A handful of flags (one per world-map step) switch on a world-point bit when they are
+/// set: [`event_world_point`] picks the bit, [`set_world_point_bit`] sets it. The story flag setter calls it last.
+///
+/// orig 0x195130
+pub fn story_flag_world_point(save: &mut [u8], flag: i32) {
+    if let Some(bit) = event_world_point(flag) {
+        set_world_point_bit(save, bit);
+    }
+}
+
+/// The offset in an equipment table (`table`: a count word at `+4`, records of 16 bytes from `+8`, sorted by the halfword at byte 0) of the
+/// record whose id is `key`, or `None` (the original answers 0) when there is none. This is the binary search `FUN_0030ff40` with the
+/// comparator at `0x333ff8` (`key - record id`); a count the slice cannot hold is cut to what it holds.
+///
+/// orig 0x1d0120
+pub fn find_equipment_record(table: &[u8], key: i64) -> Option<usize> {
+    let count = u32::from_le_bytes(table[4..8].try_into().unwrap());
+    let count = count.min(((table.len().saturating_sub(8)) / 16) as u32);
+    if count == 0 {
+        return None;
+    }
+    let (mut lo, mut hi) = (0u32, count);
+    let mut n = count;
+    loop {
+        let mid = n >> 1;
+        let at = 8 + 16 * mid as usize;
+        let id = i64::from(u16::from_le_bytes([table[at], table[at + 1]]));
+        let diff = key.wrapping_sub(id);
+        if diff >= 0 {
+            lo = mid + 1;
+            if diff == 0 {
+                return Some(at);
+            }
+        } else {
+            hi = mid;
+        }
+        if lo >= hi {
+            return None;
+        }
+        n = lo + hi;
+    }
+}
+
+/// `FUN_001a67b0(item)`: the equipment record of an item record (`item`: byte 2 the kind). Kinds below 2 and above 15 have none; kinds 2 to
+/// 13 look up the halfword at `+6`, kinds 14 and 15 the halfword at `+4`, in [`find_equipment_record`]'s table.
+///
+/// orig 0x1a67b0
+pub fn item_equipment_record(item: &[u8], table: &[u8]) -> Option<usize> {
+    let key = match item[2] {
+        0 | 1 => return None,
+        2..=13 => u16::from_le_bytes([item[6], item[7]]),
+        14 | 15 => u16::from_le_bytes([item[4], item[5]]),
+        _ => return None,
+    };
+    find_equipment_record(table, i64::from(key))
+}
+
+/// The item id the give list (`FUN_001d7508`) hands back, with the target it names: the inventory.
+pub const GIVE_LIST_TARGET: i32 = 100;
+
+/// `FUN_001d7508(ids, count)`: returns each listed item to the inventory. For every non-zero entry of the first `count` halfwords `give` is
+/// called with the id (zero-extended, as the original passes it; the target is [`GIVE_LIST_TARGET`], equipped 0) and the entry is cleared.
+///
+/// orig 0x1d7508
+pub fn give_list(ids: &mut [u16], count: i32, mut give: impl FnMut(i32)) {
+    for id in ids.iter_mut().take(count.max(0) as usize) {
+        if *id != 0 {
+            give(i32::from(*id));
+            *id = 0;
+        }
+    }
+}
+
+/// `FUN_001ddff0()`: an empty function (the object block's start-up hook); the boot calls it and nothing changes.
+///
+/// orig 0x1ddff0
+pub fn object_block_hook() {}
+
+/// Which release routine freed a card unit buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Release {
+    /// The array delete `FUN_001062b0`.
+    Delete,
+    /// The loaded-data release `FUN_00106280`.
+    LoadData,
+}
+
+/// The card unit's global pointer words (`0x36cb08..0x36cb40`) that the shutdown routines clear. Each buffer word holds the address of
+/// a buffer the start-up routine `FUN_0023c948` allocated (the sizes are in `kh2_save::dir::Buffers`), or 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CardWords {
+    /// `0x36cb08`: set to 0 by the unit shutdown.
+    pub ready: u32,
+    /// `0x36cb0c`: the name buffer.
+    pub name: u32,
+    /// `0x36cb10`: the path buffer.
+    pub path: u32,
+    /// `0x36cb14`: the file buffer.
+    pub file: u32,
+    /// `0x36cb18`: the card info block (a loaded-data allocation).
+    pub info: u32,
+    /// `0x36cb1c`: the per-save file list (a loaded-data allocation).
+    pub list: u32,
+    /// `0x36cb20`: the aligned listing table, an address inside the allocation of `table_alloc`; cleared, never freed itself.
+    pub table: u32,
+    /// `0x36cb24`: the listing table's allocation.
+    pub table_alloc: u32,
+    /// `0x36cb38`: the CRC unit's flag word.
+    pub crc_flag: u32,
+    /// `0x36cb3c`: the CRC table buffer.
+    pub crc_table: u32,
+}
+
+impl CardWords {
+    /// `FUN_0023cac0()`: frees the six file layer buffers that are set, in the order name, path, file, info, list, listing table, clears
+    /// each word, and clears the aligned table word.
+    ///
+    /// orig 0x23cac0
+    pub fn free_buffers(&mut self, mut free: impl FnMut(Release, u32)) {
+        if self.name != 0 {
+            free(Release::Delete, self.name);
+            self.name = 0;
+        }
+        if self.path != 0 {
+            free(Release::Delete, self.path);
+            self.path = 0;
+        }
+        if self.file != 0 {
+            free(Release::Delete, self.file);
+            self.file = 0;
+        }
+        if self.info != 0 {
+            free(Release::LoadData, self.info);
+            self.info = 0;
+        }
+        if self.list != 0 {
+            free(Release::LoadData, self.list);
+            self.list = 0;
+        }
+        if self.table_alloc != 0 {
+            free(Release::Delete, self.table_alloc);
+            self.table_alloc = 0;
+        }
+        self.table = 0;
+    }
+
+    /// `FUN_0023e410()`: the CRC unit's shutdown: clears its flag word and frees the table buffer when there is one.
+    ///
+    /// orig 0x23e410
+    pub fn free_crc(&mut self, mut free: impl FnMut(Release, u32)) {
+        self.crc_flag = 0;
+        if self.crc_table != 0 {
+            free(Release::Delete, self.crc_table);
+            self.crc_table = 0;
+        }
+    }
+
+    /// `FUN_0023c8a8()`: the unit's shutdown: [`CardWords::free_buffers`], [`CardWords::free_crc`], then clears the ready word.
+    ///
+    /// orig 0x23c8a8
+    pub fn shutdown(&mut self, mut free: impl FnMut(Release, u32)) {
+        self.free_buffers(&mut free);
+        self.free_crc(&mut free);
+        self.ready = 0;
+    }
+}
+
+/// `FUN_00254038(phase, token)`: the static initialiser of the world record the field code keeps at `0x36cee0` (4 bytes): with phase 1 and
+/// token `0xffff` it runs the world slot initialiser `FUN_001a71a8` on `slot`; anything else changes nothing.
+///
+/// orig 0x254038
+pub fn static_init_world_slot(slot: &mut [u8], phase: i32, token: i64) {
+    if token == STATIC_INIT_TOKEN && phase == 1 {
+        init_world_slot(slot);
+    }
+}
+
+/// `FUN_002540a8()`: `FUN_00254038(1, 0xffff)`, the entry the start-up table calls.
+///
+/// orig 0x2540a8
+pub fn static_init_world_slot_boot(slot: &mut [u8]) {
+    static_init_world_slot(slot, 1, STATIC_INIT_TOKEN);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,6 +1091,44 @@ mod tests {
         assert_eq!(at::FLAGS, at::STORY_TABLES + 0xe44);
         assert_eq!(at::WORLD_POINTS, at::STORY_TABLES + 0x10a4);
         assert_eq!(LEN, SaveBlock::new().bytes().len());
+    }
+
+    #[test]
+    fn the_event_map_sets_the_listed_world_point_bits_only() {
+        let mut b = vec![0u8; LEN];
+        story_flag_world_point(&mut b, 0x8b8);
+        story_flag_world_point(&mut b, 0x1822);
+        story_flag_world_point(&mut b, 0x8b9);
+        assert_eq!(u32::from_le_bytes(b[at::WORLD_POINTS..at::WORLD_POINTS + 4].try_into().unwrap()), 1 << 0x1f);
+        assert_eq!(u32::from_le_bytes(b[at::WORLD_POINTS + 4..at::WORLD_POINTS + 8].try_into().unwrap()), 1 << 0xf);
+    }
+
+    #[test]
+    fn the_give_list_gives_each_entry_once_and_clears_it() {
+        let mut ids = [5u16, 0, 0xffff, 7];
+        let mut given = Vec::new();
+        give_list(&mut ids, 3, |id| given.push(id));
+        assert_eq!(given, [5, 0xffff]);
+        assert_eq!(ids, [0, 0, 0, 7], "the entry past the count stays");
+        give_list(&mut ids, -1, |_| panic!("a negative count gives nothing"));
+    }
+
+    #[test]
+    fn the_equipment_search_finds_a_record_or_none() {
+        let mut t = vec![0u8; 8 + 16 * 3];
+        t[4] = 3;
+        for (i, id) in [2u16, 9, 0x8001].into_iter().enumerate() {
+            t[8 + 16 * i..10 + 16 * i].copy_from_slice(&id.to_le_bytes());
+        }
+        assert_eq!(find_equipment_record(&t, 9), Some(24));
+        assert_eq!(find_equipment_record(&t, 0x8001), Some(40));
+        assert_eq!(find_equipment_record(&t, 3), None);
+        let mut item = [0u8; 8];
+        item[2] = 14;
+        item[4] = 2;
+        assert_eq!(item_equipment_record(&item, &t), Some(8));
+        item[2] = 16;
+        assert_eq!(item_equipment_record(&item, &t), None);
     }
 
     #[test]

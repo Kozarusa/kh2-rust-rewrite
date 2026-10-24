@@ -516,9 +516,9 @@ pub fn normalize_into(obj: &mut [u8], src: &[u8], w: f32) {
     wf(obj, 0x18, z * q);
     wf(obj, 0x1c, w);
 }
-/// orig 0x15db30: sets the byte at +0x10 of the object the global at 0x359330 points at (`obj`), when that pointer is not null.
-pub fn global_object_set_flag_10(obj: Option<&mut [u8]>) {
+/// orig 0x15db30: sets the byte at +4 of the object the global at 0x359330 points at (`obj`), when that pointer is not null.
+pub fn global_object_set_flag_4(obj: Option<&mut [u8]>) {
     if let Some(o) = obj {
-        o[0x10] = 1;
+        o[4] = 1;
     }
 }

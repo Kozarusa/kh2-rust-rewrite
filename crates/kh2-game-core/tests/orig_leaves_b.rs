@@ -913,7 +913,7 @@ fn orig_15db30_matches_the_game() {
     for ptr in [block_addr(0), 0] {
         run(&S, 500, move |ee| ee.w32(0x359330, ptr), |c| {
             let set = r32(&c.globals[0], 0) != 0;
-            global_object_set_flag_10(set.then(|| c.block(0)));
+            global_object_set_flag_4(set.then(|| c.block(0)));
             Out::none()
         });
     }

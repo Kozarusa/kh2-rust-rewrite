@@ -98,6 +98,10 @@ pub struct FrameClock {
     pub runs: u32,
     /// The frame type and limit the menu saved when it opened (`DAT_0036ca40`, `DAT_0036ca44`); `None` while no menu is up.
     saved: Option<(u8, u32)>,
+    /// The clock the logic sees as `Time` (see [`vblank_step`]).
+    logic_time: Time,
+    /// The app frame in which the logic ran last (see [`hold_messages`]).
+    logic_frame: Option<u32>,
 }
 
 impl FrameClock {
@@ -105,7 +109,7 @@ impl FrameClock {
     pub fn new() -> FrameClock {
         let mut vsync = crate::frame::Vsync::default();
         vsync.init();
-        FrameClock { vsync, runs: 0, saved: None }
+        FrameClock { vsync, runs: 0, saved: None, logic_time: Time::default(), logic_frame: None }
     }
 
     /// The step of the last completed frame (`0x356f40`).
@@ -146,6 +150,160 @@ impl FrameClock {
     }
 }
 
+/// The button edges of the app frames since the last logic tick: the logic of a frame sees every press and release made since the
+/// frame before it, once, as the original's pad task reads the pad once per game frame (`0x167038`, priority 110000). Without it a
+/// press in a frame whose vblank runs no logic would be lost, and one in a logic frame would be seen by both of its ticks.
+#[derive(Clone, Debug)]
+struct Edges<T: Clone + Eq + std::hash::Hash + Send + Sync + 'static> {
+    pressed: Vec<T>,
+    released: Vec<T>,
+    /// The app frame whose edges were taken last (a frame can hold more than one vblank).
+    frame: Option<u32>,
+}
+
+impl<T: Copy + Eq + std::hash::Hash + Send + Sync + 'static> Edges<T> {
+    fn new() -> Self {
+        Edges { pressed: Vec::new(), released: Vec::new(), frame: None }
+    }
+
+    /// Adds the edges of `input` unless this frame's were taken already.
+    fn gather(&mut self, input: &ButtonInput<T>, frame: Option<u32>) {
+        if frame.is_some() && frame == self.frame {
+            return;
+        }
+        self.frame = frame;
+        for k in input.get_just_pressed() {
+            if !self.pressed.contains(k) {
+                self.pressed.push(*k);
+            }
+        }
+        for k in input.get_just_released() {
+            if !self.released.contains(k) {
+                self.released.push(*k);
+            }
+        }
+    }
+
+    /// The input the logic sees: the keys held now, with the gathered edges.
+    fn input(&self, now: &ButtonInput<T>) -> ButtonInput<T> {
+        let mut b = ButtonInput::default();
+        for k in now.get_pressed().chain(&self.pressed).chain(&self.released) {
+            b.press(*k);
+        }
+        b.clear();
+        for k in &self.pressed {
+            b.release(*k);
+            b.press(*k);
+            if !self.released.contains(k) {
+                b.clear_just_released(*k);
+            }
+        }
+        for k in &self.released {
+            if !now.pressed(*k) {
+                b.release(*k);
+            }
+        }
+        b
+    }
+
+    fn take(&mut self) {
+        self.pressed.clear();
+        self.released.clear();
+    }
+}
+
+/// Runs `FixedUpdate` `runs` times with the logic's clock and the gathered button edges in place of the frame's (see [`vblank_step`]).
+fn run_logic(world: &mut World, runs: u32) {
+    let frame = world.get_resource::<bevy::diagnostic::FrameCount>().map(|f| f.0);
+    let keys = world.remove_resource::<ButtonInput<KeyCode>>();
+    let mouse = world.remove_resource::<ButtonInput<MouseButton>>();
+    if runs > 0 {
+        world.resource_mut::<FrameClock>().logic_frame = frame;
+    }
+    let (logic_keys, logic_mouse) = {
+        let mut latch = world.get_resource_or_insert_with(InputLatch::default);
+        if let Some(k) = &keys {
+            latch.keys.gather(k, frame);
+        }
+        if let Some(m) = &mouse {
+            latch.mouse.gather(m, frame);
+        }
+        if runs == 0 {
+            (None, None)
+        } else {
+            let out = (keys.as_ref().map(|k| latch.keys.input(k)), mouse.as_ref().map(|m| latch.mouse.input(m)));
+            latch.keys.take();
+            latch.mouse.take();
+            out
+        }
+    };
+    if let Some(k) = logic_keys {
+        world.insert_resource(k);
+    }
+    if let Some(m) = logic_mouse {
+        world.insert_resource(m);
+    }
+    // The logic sees its own clock as `Time`: one fixed step per run, so the systems that fire when the elapsed time crosses a
+    // scripted second (`elapsed - delta < at <= elapsed`) see every step once, also the vblanks that ran no logic.
+    let vblank_time = world.get_resource::<Time>().cloned();
+    for i in 0..runs {
+        if let Some(v) = &vblank_time {
+            let mut clock = world.resource_mut::<FrameClock>();
+            clock.logic_time.advance_by(v.delta());
+            let t = clock.logic_time;
+            *world.resource_mut::<Time>() = t;
+        }
+        if i == 1 {
+            // The edges belong to the frame's first tick.
+            if let Some(mut k) = world.get_resource_mut::<ButtonInput<KeyCode>>() {
+                k.clear();
+            }
+            if let Some(mut m) = world.get_resource_mut::<ButtonInput<MouseButton>>() {
+                m.clear();
+            }
+        }
+        world.run_schedule(FixedUpdate);
+    }
+    if let Some(v) = vblank_time {
+        *world.resource_mut::<Time>() = v;
+    }
+    match keys {
+        Some(k) => world.insert_resource(k),
+        None => {
+            world.remove_resource::<ButtonInput<KeyCode>>();
+        }
+    }
+    match mouse {
+        Some(m) => world.insert_resource(m),
+        None => {
+            world.remove_resource::<ButtonInput<MouseButton>>();
+        }
+    }
+}
+
+/// `FixedLast`: Bevy ages the message buffers once in each frame after a fixed step (the signal of `FixedPostUpdate`), and a message
+/// lives for two agings. A message the logic writes for its next tick would be gone after the two frames without logic between two
+/// logic frames, so the aging waits for frames in which the logic ran.
+pub fn hold_messages(clock: Res<FrameClock>, frame: Option<Res<bevy::diagnostic::FrameCount>>, registry: Option<ResMut<bevy::ecs::message::MessageRegistry>>) {
+    use bevy::ecs::message::ShouldUpdateMessages;
+    let Some(mut registry) = registry else { return };
+    if matches!(registry.should_update, ShouldUpdateMessages::Ready) && clock.logic_frame != frame.map(|f| f.0) {
+        registry.should_update = ShouldUpdateMessages::Waiting;
+    }
+}
+
+#[derive(Resource)]
+struct InputLatch {
+    keys: Edges<KeyCode>,
+    mouse: Edges<MouseButton>,
+}
+
+impl Default for InputLatch {
+    fn default() -> Self {
+        InputLatch { keys: Edges::new(), mouse: Edges::new() }
+    }
+}
+
 /// The schedule that stands in `FixedMain` where `FixedUpdate` stood: one run per vblank (see [`FrameClock`]).
 #[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Vblank;
@@ -167,9 +325,7 @@ pub fn vblank_step(world: &mut World) {
         }
         clock.vblank()
     };
-    for _ in 0..runs {
-        world.run_schedule(FixedUpdate);
-    }
+    run_logic(world, runs);
 }
 
 pub struct SchedulePlugin;
@@ -179,7 +335,8 @@ impl Plugin for SchedulePlugin {
         app.insert_resource(Time::<Fixed>::from_hz(data::LOGIC_HZ as f64))
             .init_resource::<Pause>()
             .insert_resource(FrameClock::new())
-            .add_systems(Vblank, vblank_step);
+            .add_systems(Vblank, vblank_step)
+            .add_systems(FixedLast, hold_messages);
         // `FixedUpdate` leaves the fixed order: `Vblank` runs it (absent in a bare test app without the main schedules).
         if let Some(mut order) = app.world_mut().get_resource_mut::<bevy::app::FixedMainScheduleOrder>() {
             if let Some(i) = order.labels.iter().position(|l| (**l).eq(&FixedUpdate)) {

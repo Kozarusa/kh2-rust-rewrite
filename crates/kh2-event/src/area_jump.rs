@@ -655,10 +655,16 @@ pub fn gate_passes(gate: u8, v: &Activator, w: &Walker, c: &ExitConsts) -> bool 
     }
 }
 
-/// `FUN_00199058`: the prompt shows while the player faces the volume's centre (dot >= 0).
+/// The facing test of `FUN_00199058`: the prompt shows while the player faces the volume's centre. The direction to the
+/// centre is taken on the ground plane (the record's x and z minus the player's position, y dropped, then normalised) and
+/// its dot with the player's forward vector must be 0 or more. The function then raises the prompt (`FUN_0015ad80` /
+/// `FUN_0015acc8`) when this test passes: that part is the caller's (`area.rs` calls the function through the host).
+///
+/// orig 0x199058
 pub fn faces_volume(v: &Activator, w: &Walker) -> bool {
-    let to = (area::game_to_app(v.position) - w.pos).normalize_or_zero();
-    w.facing.dot(to) >= 0.0
+    let mut to = area::game_to_app(v.position) - w.pos;
+    to.y = 0.0;
+    w.facing.dot(to.normalize_or_zero()) >= 0.0
 }
 
 /// What a walk-in does (`FUN_00198fa0` and the trigger on event 1).

@@ -146,12 +146,33 @@ pub fn kind_accepts(kind: u32, attr: u32) -> bool {
     match kind {
         0 | 6 => attr & 0x10 != 0,
         1 => attr & 0x20 != 0,
-        2 => attr & 0x40 != 0,
+        2 => accepts_bit_0x40(attr),
         3 => attr & 0x10 != 0 || attr & 0x80000 != 0,
-        4 => attr & 0x80 != 0,
+        4 => accepts_bit_0x80(attr),
         5 => attr & 0x100 != 0,
-        _ => true,
+        _ => accepts_all(attr),
     }
+}
+
+/// The handler of kind 2 in the table at 0x378f7c: the polygon passes when attribute bit 0x40 is set.
+///
+/// orig 0x32e3f0
+pub fn accepts_bit_0x40(attr: u32) -> bool {
+    attr & 0x40 != 0
+}
+
+/// The handler of kind 4: the polygon passes when attribute bit 0x80 is set.
+///
+/// orig 0x32e420
+pub fn accepts_bit_0x80(attr: u32) -> bool {
+    attr & 0x80 != 0
+}
+
+/// The handler of kind 15 (and the dispatcher's own answer for a kind of 16 or more): every polygon passes.
+///
+/// orig 0x32e44c
+pub fn accepts_all(_attr: u32) -> bool {
+    true
 }
 
 /// A polygon's vertices (orig 0x1418a0): three or four.

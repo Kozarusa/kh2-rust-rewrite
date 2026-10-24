@@ -53,7 +53,14 @@ pub struct World {
     /// ray and floor query of the original. The legacy queries above do not use it yet (WP-L1-P10 leaves the
     /// mover unwired); `enabled_groups` is copied into it before every use.
     oct: Option<std::sync::Mutex<kh2_map::oct::Oct>>,
+    /// The moving collision objects (lifts, platforms; the pool at 0x35a8a0, WP-L1-P15). Empty until something
+    /// registers one with `add_moving`; `walk_step` sweeps them before and after the map.
+    pool: std::sync::Mutex<kh2_map::pool::MovingPool>,
 }
+
+/// The address the pool's entry handles count from (`coll +0x78` holds `MOVING_BASE + 16 * index` while a body stands
+/// on a moving object). A stand-in for the game's heap block [inferred]; only the differences matter.
+pub const MOVING_BASE: u32 = 0x0200_0000;
 
 /// Group value of a triangle that has no COCT mesh.
 pub const NO_GROUP: u8 = 0xff;
@@ -151,11 +158,49 @@ impl World {
         Vec3::new(v[0], -v[1], -v[2])
     }
 
-    /// The original's walking step on this world's collision (`FUN_00143840`, map path; moving collision objects
-    /// are not ported): the sphere sweep of the collider, then the floor ray. The record is in the game's space
-    /// (`to_game`). `None` when the world has no COCT file.
+    /// The original's walking step on this world's collision (`FUN_00143840`): the sweep against the moving collision
+    /// objects, the sphere sweep against the map, then the floor ray against the moving objects or the map. The
+    /// record is in the game's space (`to_game`). `None` when the world has no COCT file. With no moving object
+    /// registered this is the map-only step.
     pub fn walk_step(&self, c: &mut kh2_map::oct::Collider) -> Option<u64> {
-        self.with_oct(|o| o.walk_step(c))
+        let pool = self.pool.lock().ok()?;
+        self.with_oct(|o| o.walk_step_with(&pool, c))
+    }
+
+    /// Registers a moving collision object over the COCT bytes `file` for `owner` (`FUN_001653d8`), placed with
+    /// `placement` (`FUN_00165250`; identity when `None`). Returns its handle (the value `coll +0x78` takes while a
+    /// body stands on it), `None` when the file is not a collision file or the pool is full.
+    pub fn add_moving(&self, file: &[u8], owner: u32, placement: Option<&kh2_map::geom::M4>) -> Option<u32> {
+        let mut pool = self.pool.lock().ok()?;
+        if pool.ends() == (0, 0) && pool.free_count() == 0 {
+            *pool = kh2_map::pool::MovingPool::new(MOVING_BASE, 0);
+        }
+        let h = pool.alloc(file, owner)?;
+        if let Some(m) = placement {
+            pool.place(h, m);
+        }
+        Some(h)
+    }
+
+    /// Removes a moving collision object (`FUN_00165188`).
+    pub fn remove_moving(&self, handle: u32) {
+        if let Ok(mut pool) = self.pool.lock() {
+            pool.free(handle);
+        }
+    }
+
+    /// Moves a moving collision object (`FUN_00165250`).
+    pub fn place_moving(&self, handle: u32, m: &kh2_map::geom::M4) {
+        if let Ok(mut pool) = self.pool.lock() {
+            pool.place(handle, m);
+        }
+    }
+
+    /// Switches a moving collision object off or on for the sweeps (`FUN_00165290` / `FUN_001652a0`).
+    pub fn set_moving_disabled(&self, handle: u32, disabled: bool) {
+        if let Ok(mut pool) = self.pool.lock() {
+            pool.set_disabled(handle, disabled);
+        }
     }
 
     /// The original's floor ray alone (`FUN_001423d8`): whether it hit a floor polygon.
@@ -164,8 +209,13 @@ impl World {
     }
 
     /// The original's floor query (`FUN_00143560`) over the floor polygon the last floor ray left in the record.
+    ///
+    /// When the record says a moving object is under the foot (`coll +0x78`), the normal, the attribute flag and
+    /// the material come from that object.
     pub fn floor_info(&self, c: &kh2_map::oct::Collider) -> Option<kh2_map::oct::FloorInfo> {
-        self.with_oct(|o| o.floor_info(c, None, None))
+        let pool = self.pool.lock().ok()?;
+        let moving = pool.oct_of(c.u32_at(kh2_map::oct::coll::MOVING));
+        self.with_oct(|o| o.floor_info_on(c, None, None, moving))
     }
 
     /// The COCT mesh index of triangle `i` (0 when it has none).
@@ -558,6 +608,86 @@ mod tests {
         assert!(World::empty().walk_step(&mut Collider::default()).is_none());
     }
     use super::*;
+
+    /// WP-L1-P15: `walk_step` over a non-empty moving-object list. A lift (a small floor above the map's) catches a
+    /// walking body, the record names the lift entry in `coll +0x78`, a wall of the lift stops the sweep, a disabled lift
+    /// or one of the body's own owner is ignored, a placed (moved) lift works in its own frame, and the floor query
+    /// reads the lift's normal.
+    #[test]
+    fn walk_step_sees_the_moving_collision_objects() {
+        use kh2_map::build::{BuildPoly, coct_file};
+        use kh2_map::geom::{M4, M4_IDENTITY};
+        use kh2_map::oct::{Collider, coll};
+        let solid = kh2_map::flags::PARTY_COLLIDE;
+        let map = coct_file(&[BuildPoly::new(&[[-3000.0, 0.0, -3000.0], [3000.0, 0.0, -3000.0], [3000.0, 0.0, 3000.0], [-3000.0, 0.0, 3000.0]], 1 | solid)]);
+        // The lift: a 400-wide slab whose top is 60 above the map floor, with a wall on its +x side.
+        let lift = coct_file(&[
+            BuildPoly::new(&[[-200.0, -60.0, -200.0], [200.0, -60.0, -200.0], [200.0, -60.0, 200.0], [-200.0, -60.0, 200.0]], 1 | solid),
+            BuildPoly::new(&[[200.0, -60.0, -200.0], [200.0, -260.0, -200.0], [200.0, -260.0, 200.0], [200.0, -60.0, 200.0]], solid),
+        ]);
+        let w = World::from_coct(&kh2_map::Coct::parse(&map).expect("parse"));
+        let body = |x: f32, y: f32, dx: f32, owner: u32| {
+            let mut c = Collider::default();
+            c.set_v4(coll::START, [x, y, 0.0, 1.0]);
+            c.set_v4(coll::DELTA, [dx, 0.0, 0.0, 1.0]);
+            c.set_v4(coll::END, [x + dx, y, 0.0, 1.0]);
+            c.set_f32(coll::RADIUS, 40.0);
+            c.set_f32(coll::HEIGHT, 90.0);
+            c.set_f32(coll::LIFT, 115.0);
+            c.set_u32(coll::OWNER, owner);
+            c
+        };
+        // No moving object yet: the body walks along the map floor.
+        let mut c = body(-100.0, 0.0, 20.0, 5);
+        w.walk_step(&mut c).unwrap();
+        assert_eq!(c.u32_at(coll::MOVING), 0);
+        assert!(c.v4(coll::END)[1].abs() < 1e-3);
+        // With the lift: the same step ends on its top, 60 above, and the record names it.
+        let h = w.add_moving(&lift, 9, Some(&M4_IDENTITY)).expect("entry");
+        let mut c = body(-100.0, -55.0, 20.0, 5);
+        w.walk_step(&mut c).unwrap();
+        assert_eq!(c.u32_at(coll::MOVING), h);
+        assert!((c.v4(coll::END)[1] - -60.0).abs() < 1e-3, "{:?}", c.v4(coll::END));
+        let info = w.floor_info(&c).unwrap();
+        assert_eq!(info.normal, [0.0, -1.0, 0.0, 1.0]);
+        // Its wall stops a body walking at it along the lift top: the sphere stops one radius short.
+        let mut c = body(100.0, -60.0, 150.0, 5);
+        let hit = w.walk_step(&mut c).unwrap();
+        assert_eq!(hit, 1);
+        assert!((c.v4(coll::END)[0] - (200.0 - 40.0 - 0.008)).abs() < 1e-2, "{:?}", c.v4(coll::END));
+        // The body's own lift (same owner) and a disabled one are not collided with.
+        let mut c = body(100.0, -60.0, 150.0, 9);
+        assert_eq!(w.walk_step(&mut c).unwrap(), 0);
+        assert_eq!(c.u32_at(coll::MOVING), 0);
+        w.set_moving_disabled(h, true);
+        let mut c = body(100.0, -60.0, 150.0, 5);
+        assert_eq!(w.walk_step(&mut c).unwrap(), 0);
+        w.set_moving_disabled(h, false);
+        // The lift moved 1000 along x (and turned a quarter): the old place is a plain floor again, the new one a lift.
+        let mut moved = M4_IDENTITY;
+        moved[3] = [1000.0, 0.0, 0.0, 1.0];
+        w.place_moving(h, &moved);
+        let mut c = body(-100.0, -55.0, 20.0, 5);
+        w.walk_step(&mut c).unwrap();
+        assert_eq!(c.u32_at(coll::MOVING), 0);
+        let mut c = body(900.0, -55.0, 20.0, 5);
+        w.walk_step(&mut c).unwrap();
+        assert_eq!(c.u32_at(coll::MOVING), h);
+        assert!((c.v4(coll::END)[1] - -60.0).abs() < 1e-3);
+        let mut turned: M4 = [[0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [1000.0, 0.0, 0.0, 1.0]];
+        w.place_moving(h, &turned);
+        let mut c = body(900.0, -55.0, 20.0, 5);
+        w.walk_step(&mut c).unwrap();
+        assert_eq!(c.u32_at(coll::MOVING), h, "a turned lift still carries the body");
+        assert!((w.floor_info(&c).unwrap().normal[1] - -1.0).abs() < 1e-5);
+        // Removing the entry frees it.
+        w.remove_moving(h);
+        let mut c = body(900.0, -55.0, 20.0, 5);
+        w.walk_step(&mut c).unwrap();
+        assert_eq!(c.u32_at(coll::MOVING), 0);
+        turned[3][0] = 0.0;
+        assert!(w.add_moving(&lift, 1, Some(&turned)).is_some(), "the freed index is reusable");
+    }
 
     /// A floor millions of units wide (map eh22) stays out of the cell grid, so building the world is
     /// cheap, and ground queries still find it.

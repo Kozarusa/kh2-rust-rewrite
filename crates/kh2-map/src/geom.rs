@@ -30,6 +30,19 @@ pub fn scale(a: V4, s: f32) -> V4 {
     [a[0] * s, a[1] * s, a[2] * s, a[3] * s]
 }
 
+/// `vmulbc` with the destination mask xyz: the three direction lanes times a scalar, w left as it was (the sphere
+/// solver's multiplies use this form, so a plane keeps its distance in w).
+pub fn mul_xyz(a: V4, s: f32) -> V4 {
+    [a[0] * s, a[1] * s, a[2] * s, a[3]]
+}
+
+/// `normalize4` with the divide applied to the three direction lanes only (`vmulq` with the mask xyz): w is kept.
+pub fn normalize_xyz(v: V4) -> V4 {
+    let len = dot3(v, v).sqrt();
+    let q = vu_div(1.0, len);
+    mul_xyz(v, q)
+}
+
 /// The dot of the first three lanes in the original's order: `(x*x' + y*y') + z*z'`.
 pub fn dot3(a: V4, b: V4) -> f32 {
     (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
@@ -47,6 +60,21 @@ pub fn normalize4(v: V4) -> V4 {
     let len = dot3(v, v).sqrt();
     let q = vu_div(1.0, len);
     scale(v, q)
+}
+
+/// A 4x4 matrix as four row vectors (the placement of a collision object, `oct +0x50` and its inverse `+0x90`).
+pub type M4 = [V4; 4];
+
+/// The identity matrix.
+pub const M4_IDENTITY: M4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+
+/// A point times a matrix as the original builds it: `vmulabc` with the x lane, `vmaddabc` with y and z, `vmaddbc` with
+/// w, i.e. `((row0 * x + row1 * y) + row2 * z) + row3 * w` lane by lane.
+pub fn xf(m: &M4, v: V4) -> V4 {
+    let mut a = scale(m[0], v[0]);
+    a = add(a, scale(m[1], v[1]));
+    a = add(a, scale(m[2], v[2]));
+    add(a, scale(m[3], v[3]))
 }
 
 /// The VU divide: an infinite quotient reads as the largest finite float of its sign (no NaN exists).

@@ -122,6 +122,17 @@ The target point the app uses is the locked enemy's position raised 100; the gam
   - Who enters: only Select (`FUN_0013fe20`, above). The only store of the constant 1 into the mode field (`DAT_00355880`, or camera +0x40) in the decompiled functions 0x130000..0x170000 is that one; the direct writers of `DAT_00355880` are `FUN_00140c50` and `FUN_00140f28` (0) and `FUN_00140e90` (restores the mode it found after its forced tick). A mode written through a computed value elsewhere would not be found by this search.
 - **App** (WP-FIX-11): V (or `KH2_KEYS` `t:V`) is Select and is the only way in (`Rig::tick`, test `look_around_starts_only_from_select`). While `OrbitCamera::first_person` is set, `camera::gather_input` clears the pad's move direction (`sora::Pad::dir`, `stick`) each frame, so Sora stands where he is (the original applies no velocity); the left/right arrows (the right stick) turn Sora by the two rates (`camera::tick` before the rig's tick; test `look_turn_is_the_right_stick_and_turns_left_for_left`), and up/down tilt the view as before. Before the fix the left stick moved Sora in camera-relative directions while the camera yaw itself followed his facing, so any sideways key made him and the view spin (the "glitchy when moving" report). The player is allowed to look in `State::Ground` (stand-in for the actor flags `FUN_0019ae30` and `FUN_001b7e00`, **inferred**). **[inferred]**: what the original does with the left stick's facing and motion requests while looking (the stick-to-motion code was not found to test the camera mode; only the velocity application does); the app ignores the left stick then (Sora idles, does not turn).
 
+## The drawn view and the player (WP-L2-S1)
+- The player's stick is mapped by the drawn view (smoothed position +0x10 to look-at +0x00, after collision, via `FUN_00107160` and the
+  matrix of `FUN_00106f78`), not by the orbit yaw +0x4c (`controller.md` "The stick vector"). The port maps it by `OrbitCamera.yaw`.
+- The auto-camera and zoom read the pad's sticks; the port's `camera::tick` reads the keyboard only, so a rig pad script never turns
+  the camera. Rig tt-run-06: both cameras stand at x 870 (the room's camera collision [inferred]); the original's slides to z 405 by
+  k 80 while the port's stays at 390.6.
+- Quick Run camera speed: the smoothing time and the auto-camera rate take the followed object's run speed +0x114 each tick, so they
+  follow whatever writes +0x114; the port passes the `prty` row's RunSpeed. Quick Run (`FUN_00178108`) writes its speed into the move
+  vector, not +0x114 (`movement.md` section 2), so during Quick Run the camera keeps the run-speed spring and lags more [inferred: no
+  other writer of +0x114 for the player was searched; an L2 package checks it with a rig scenario].
+
 ## Area camera types -- verified unless marked
 
 `FUN_00177128` (run when an area loads) from `DAT_0035cd38`, set by the area script's camera opcode:

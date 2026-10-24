@@ -159,6 +159,22 @@ The target point the app uses is the locked enemy's position raised 100; the gam
   Remaining camera-side residue: the eye sits 1 cm off in z from the first moving frame on in tt-run-06, because Sora's facing differs by
   0.15 degrees at k 42 (original 57.25 degrees, port 57.43) and the auto-camera follows the facing; the cause is in the heading or the
   turn (WP-L2-P1's code), not found.
+- **Frame phase.** The camera runs on the last of the frame's logic ticks: the count is against `FrameClock::runs`, the ticks the vblank
+  in progress runs (it restarts there), not against a counter of the camera's own.
+- **Pad branch.** The scripted pad's sticks and the R3 and Select edges are `camera::pad_input`, unit-tested (the pad's y down, the dead zone
+  and cap of `rig::stick_vector`, the reverse options, held buttons counting once).
+- **Ledger marks.** `FUN_0013fe20` (the right stick, Select, R3: the port splits it into `stick_turn`, `stick_zoom`, the reset and `enter_look`,
+  and decides left and right by the stick's direction where the game reads the logical bits of `FUN_00158040` and `FUN_00158090`) and
+  `FUN_00140a80` (the mode switch: `Rig::tick` adds the port's mouse zoom and takes the lock-on from the input, and only mode 0 is under the
+  oracle) are not whole ports, so they carry no `orig` mark; their parts that are whole do (`FUN_0013fd08`, `FUN_00140128`, `FUN_0013f7a0`,
+  `FUN_00140768`).
+- **Tried and dropped (WP-L2-F1): the game's rotation.** A version with the yaw in the game's convention (`PI` minus the app's), the game's
+  float-remainder wrap (`FUN_0017bbc0`), the swing `FUN_0017bc30` and the game's sine series (`FUN_002fb460`, `FUN_002fb628`; coefficients at
+  0x371ad0, the wrap loop `FUN_0011be08`) matched the oracle bit for bit (positions, swing, zoom, smoothing; the facing's `atan2f`
+  `FUN_00300f18` not ported, so yaws from a facing within 4e-6) but made `movement/tt-run-06` worse (36/37 to 31/37: the resting camera's
+  position drifted 0.2 cm at radius 600 from the first tick and Sora's run followed the view; cam.pos at k60 off by 2.07 against 1.03). The
+  same happened with libm in place of the series, so the cause is in the convention change, not found. Reverted; a next attempt starts from
+  the unit test that runs old and new rules side by side (equal over 120 ticks without a wall) and then the live run with a wall.
 - **Gaps**: the rotation of `FUN_0013f7a0` is the game's own sine series (`FUN_002fb628`, `FUN_002fb460`; the cosine is the root of one minus
   the sine squared), the port uses libm: positions differ by up to 5e-4 of the radius near a quarter turn. The script flag `+0x39`
   (`FUN_00140288`) has no port counterpart. `FUN_0019ae68` (the player's up-down flag that skips the zoom unless R2 is held) is not modelled.

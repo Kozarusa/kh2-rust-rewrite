@@ -367,9 +367,9 @@ pub fn field_hz_from_env() -> u32 {
     field_hz_for(std::env::var("KH2_FIELD_HZ").ok().as_deref(), rig)
 }
 
-/// F9 switches the field between 30 and 60 Hz (not in turbo runs).
+/// Home switches the field between 30 and 60 Hz (not in turbo runs).
 pub fn toggle_field_hz(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<FrameClock>, mut shown: ResMut<FieldHzShown>) {
-    if keys.just_pressed(KeyCode::F9) && !crate::harness::turbo() {
+    if keys.just_pressed(KeyCode::Home) && !crate::harness::turbo() {
         let hz = if clock.field_hz() == 60 { 30 } else { 60 };
         clock.set_field_hz(hz);
         shown.0 = 120;
@@ -377,7 +377,7 @@ pub fn toggle_field_hz(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<FrameC
     shown.0 = shown.0.saturating_sub(1);
 }
 
-/// Update frames left to show the field rate (about 2 seconds after F9).
+/// Update frames left to show the field rate (about 2 seconds after Home).
 #[derive(Resource, Default)]
 pub struct FieldHzShown(pub u32);
 
@@ -514,6 +514,27 @@ mod tests {
         assert_eq!(app.world().resource::<Seen>().0, [true], "the tap survived the frames without logic");
         run_logic(app.world_mut(), 1);
         assert_eq!(app.world().resource::<Seen>().0, [true, false], "and is seen once");
+    }
+
+    /// A latched tap in a frame with two ticks (field at 30 Hz) reaches the first tick only.
+    #[test]
+    fn a_latched_tap_is_seen_by_the_first_of_two_ticks_only() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<bool>);
+        let mut app = App::new();
+        app.add_plugins(SchedulePlugin).init_resource::<Seen>().init_resource::<ButtonInput<KeyCode>>();
+        app.add_systems(FixedUpdate, |k: Res<ButtonInput<KeyCode>>, mut s: ResMut<Seen>| s.0.push(k.just_pressed(KeyCode::KeyJ)));
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyJ);
+        app.update();
+        {
+            let mut k = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            k.clear();
+            k.release(KeyCode::KeyJ);
+            k.clear();
+        }
+        app.update();
+        run_logic(app.world_mut(), 2);
+        assert_eq!(app.world().resource::<Seen>().0, [true, false]);
     }
 
     #[test]

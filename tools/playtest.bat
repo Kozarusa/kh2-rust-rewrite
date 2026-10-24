@@ -20,7 +20,7 @@ copy /y "%TREE%\target\debug\kh2-game.exe" "local\play\pt\kh2-game.exe" >nul
 set "KH2_FRONT=1"
 set "KH2_AREALOG=1"
 set "KH2_HITLOG=1"
-echo Options: KH2_FIELD_HZ=30 for the original 30 Hz field (default 60, F9 toggles); KH2_VSYNC=0 for uncapped rendering (F8 toggles).
+echo Options: KH2_FIELD_HZ=30 for the original 30 Hz field (default 60, Home toggles); KH2_VSYNC=0 for uncapped rendering (End toggles).
 "local\play\pt\kh2-game.exe" %AREA% > "local\play\pt\last.log" 2>&1
 echo.
 echo Game closed (exit code %errorlevel%). Log: local\play\pt\last.log. Press any key to close this window.

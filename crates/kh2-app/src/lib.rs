@@ -66,26 +66,27 @@ pub fn run() {
     app.add_plugins(plugins::GamePlugins { iso, start }).run();
 }
 
-/// F8 toggles uncapped rendering (`KH2_VSYNC=0` starts it); the window title names the vsync mode and, for 2 seconds after F9, the
-/// field rate (F9 is `schedule::toggle_field_hz`; F10 stays the sound viewer's).
+/// End toggles uncapped rendering (`KH2_VSYNC=0` starts it). One title state machine: the title names the vsync mode while it is off
+/// and the field rate for 2 seconds after Home (Home is `schedule::toggle_field_hz`; no other handler reads either key).
 fn window_modes(
     keys: Res<ButtonInput<KeyCode>>,
     clock: Res<kh2_game_core::schedule::FrameClock>,
     shown: Res<kh2_game_core::schedule::FieldHzShown>,
     mut windows: Query<&mut Window>,
 ) {
+    use bevy::window::PresentMode::{AutoNoVsync, AutoVsync};
     let Ok(mut w) = windows.single_mut() else { return };
-    if keys.just_pressed(KeyCode::F8) {
-        w.present_mode = if matches!(w.present_mode, bevy::window::PresentMode::AutoNoVsync) {
-            bevy::window::PresentMode::AutoVsync
-        } else {
-            bevy::window::PresentMode::AutoNoVsync
-        };
-        w.title = format!("kh2-rs [{}]", if matches!(w.present_mode, bevy::window::PresentMode::AutoNoVsync) { "vsync off" } else { "vsync on" });
+    if keys.just_pressed(KeyCode::End) {
+        w.present_mode = if matches!(w.present_mode, AutoNoVsync) { AutoVsync } else { AutoNoVsync };
     }
-    if keys.just_pressed(KeyCode::F9) {
-        w.title = format!("kh2-rs [field {} Hz]", clock.field_hz());
-    } else if shown.0 == 1 && w.title.contains("field") {
-        w.title = "kh2-rs".into();
+    let mut title = String::from("kh2-rs");
+    if matches!(w.present_mode, AutoNoVsync) {
+        title.push_str(" [vsync off]");
+    }
+    if shown.0 > 0 {
+        title.push_str(&format!(" [field {} Hz]", clock.field_hz()));
+    }
+    if w.title != title {
+        w.title = title;
     }
 }

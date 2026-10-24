@@ -1468,9 +1468,7 @@ pub fn tick(
                 }
             }
             s.motor.vel *= s.dash_brake;
-            if body.slot == motion(mid::QUICK_RUN_END) && (body.finished || s.motor.vel.length() < prty.walk_speed) {
-                s.state = State::Ground;
-            } else if rolling && s.dash == Dash::Roll && body.finished {
+            if (body.slot == motion(mid::QUICK_RUN_END) && (body.finished || s.motor.vel.length() < prty.walk_speed)) || (rolling && s.dash == Dash::Roll && body.finished) {
                 s.state = State::Ground;
             }
         }

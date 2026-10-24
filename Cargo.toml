@@ -35,6 +35,7 @@ kh2-event = { path = "crates/kh2-event" }
 kh2-hud = { path = "crates/kh2-hud" }
 kh2-menu = { path = "crates/kh2-menu" }
 kh2-worldmap = { path = "crates/kh2-worldmap" }
+kh2-save = { path = "crates/kh2-save" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev]

@@ -3608,6 +3608,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kh2-save"
+version = "0.1.0"
+dependencies = [
+ "kh2-ee",
+ "kh2-factory",
+ "kh2-game-core",
+]
+
+[[package]]
 name = "kh2-sheets"
 version = "0.1.0"
 dependencies = [

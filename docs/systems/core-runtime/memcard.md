@@ -263,3 +263,10 @@ Callees looked at outside the unit: `FUN_00105758`, `FUN_00105cd8`, `FUN_00105d1
 - The region table strings at `0x349d5c` were not printed; the exact USA directory name is [inferred] until P9 lists the user's card.
 - `FUN_00303*` / `FUN_00304*` (the IOP library client) are outside the ledger range; their result meanings are from public docs.
 - Which screen state maps which result word to which message: in `menus-save.md` only for the paths already read.
+
+## Corrections after the port (WP-L1-P9, 2026-10-23)
+- The strings at 0x37f580 and 0x37f588 are the directory entries "." and ".." the other way round from section 3 of the first version of this spec; the port (`crates/kh2-save`) follows the executable.
+- The USA save name parts are `SLUS`, `210` and `05` (directory `BASLUS-21005NN`-style names as the user's card shows); the region table strings at 0x349d5c are still [inferred].
+- Card layout facts the port relies on (cluster and FAT layout, entry modes, time format) are in `crates/kh2-save/src/image.rs` doc comments and were checked against the user's real PCSX2 card: both saves load, the card round-trips byte for byte, and the original's validator 0x23d1c8 accepts the bodies the port writes.
+- Deviation: the port ignores a name whose slot number falls outside 0 to 98; the original would write outside the slot table (a second digit that is not a digit, 0x23d578).
+- Not ported: the allocator plumbing, folder cards (PCSX2 folder memory cards), and the screens on top of the request ring (menus-save).

@@ -294,7 +294,10 @@ impl World {
 
     /// Switches mesh group `g` on or off (`FUN_0015e9a8` / `FUN_0015e928`: bit `g` of the live mask
     /// `DAT_0035a810`, then the enabled byte of every mesh of the group by `FUN_00141840` / `FUN_00141800`).
-    /// Bits 64 and above do not exist in the word and are ignored.
+    /// Bits 64 and above do not exist in the word and are ignored. The original's collision objects differ there:
+    /// `kh2_map::mapcoll::MapCollision::group_on` / `group_off` (verified against 0x143028 / 0x142f78, WP-L1-P22) also
+    /// switch the meshes whose group byte is 64 to 255, which this word cannot hold, and fan out over five slots where
+    /// the world owns one object; so the app's queue is not routed through them until the world keeps the object.
     pub fn set_group(&mut self, g: u32, on: bool) {
         if g < 64 {
             if on { self.enabled_groups |= 1 << g } else { self.enabled_groups &= !(1 << g) }

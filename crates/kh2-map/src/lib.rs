@@ -8,8 +8,11 @@
 
 pub mod build;
 pub mod geom;
+pub mod mapcoll;
+pub mod mapobj;
 pub mod oct;
 pub mod pool;
+pub mod sphere;
 
 pub mod flags {
     pub const PARTY_STAND: u32 = 1 << 0;

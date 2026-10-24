@@ -75,6 +75,19 @@ mod mid {
     pub const GLIDE_HOVER: usize = 208;
 }
 
+/// The dodge roll's motion: `A180`, motion id 209 of Sora's motion set (user report 2026-10-24; Final Mix FM 0x179530 asks for
+/// motion 209, docs/systems/foundations/final-mix.md). The id is tried first with the state fallback of `Mset::slot`, then any slot
+/// tagged `A180`. `None` when the motion set has no such motion (the USA disc's has none [FM-only]): the caller then shows the Quick
+/// Run start motion.
+pub const DODGE_ROLL_ID: usize = 209;
+pub const DODGE_ROLL_TAG: &str = "A180";
+
+pub fn dodge_roll_slot(mset: &kh2_anim::Mset, state: PlayerState) -> Option<usize> {
+    mset.slot(DODGE_ROLL_ID, state)
+        .filter(|&s| mset.get(s).is_some_and(|x| x.tag == DODGE_ROLL_TAG))
+        .or_else(|| mset.by_tag(DODGE_ROLL_TAG).next())
+}
+
 /// A Square press while moving (Dodge Roll learned) that is released before this many ticks is a
 /// tap: the dodge roll; still held at this tick it is the Quick Run. The number is the Final Mix
 /// executable's: the roll's motion A180 carries frame trigger type 34 at tick 10, whose handler
@@ -1346,7 +1359,9 @@ pub fn tick(
                     s.dash_time = f.air_slide_time;
                     s.dash_brake = f.air_slide_brake;
                     s.invuln = f.air_slide_star_time;
-                    body.restart(motion(mid::QUICK_RUN), false, 0.0);
+                    // The roll shows A180 (user report); a motion set without it keeps the Quick Run start motion.
+                    let start = if act == SquareGround::Roll { dodge_roll_slot(&rig.mset, pstate) } else { None };
+                    body.restart(start.or_else(|| motion(mid::QUICK_RUN)), false, 0.0);
                     info!(
                         "sora square: moving, Dodge Roll level {}, Quick Run level {}: {} (speed {:.1})",
                         growth.dodge_roll,
@@ -1422,6 +1437,10 @@ pub fn tick(
                 s.dash_time -= 1.0;
             }
             let stopping = body.slot == motion(mid::QUICK_RUN_END);
+            // The roll plays A180 (dodge_roll_slot): a tap lets it play out; a hold past the tap window turns it into the Quick Run
+            // (the original's frame trigger 34 at tick 10 starts the Quick Run from the roll).
+            let roll_slot = dodge_roll_slot(&rig.mset, pstate);
+            let rolling = roll_slot.is_some() && body.slot == roll_slot;
             if !stopping {
                 let (phase, stop) = dash_step(s.dash, pad.square_held, s.timer, growth.quick_run, s.dash_time);
                 if phase != s.dash {
@@ -1433,7 +1452,15 @@ pub fn tick(
                     }
                     s.dash = phase;
                 }
-                if stop && let Some(f) = data.fmab(growth.quick_run.max(1)) {
+                if rolling && phase == Dash::Run {
+                    body.restart(motion(mid::QUICK_RUN), false, 0.0);
+                }
+                if stop && rolling && s.dash == Dash::Roll {
+                    // A tap: A180 plays on while the speed brakes; the state ends with the motion (below).
+                    if let Some(f) = data.fmab(growth.quick_run.max(1)) {
+                        s.dash_brake = f.air_slide_stop_brake;
+                    }
+                } else if stop && let Some(f) = data.fmab(growth.quick_run.max(1)) {
                     // The stop: AirSlideStopBrake per tick and motion 204 (0xcc), back to idle after.
                     s.dash_brake = f.air_slide_stop_brake;
                     body.restart(motion(mid::QUICK_RUN_END), false, 0.0);
@@ -1442,6 +1469,8 @@ pub fn tick(
             }
             s.motor.vel *= s.dash_brake;
             if body.slot == motion(mid::QUICK_RUN_END) && (body.finished || s.motor.vel.length() < prty.walk_speed) {
+                s.state = State::Ground;
+            } else if rolling && s.dash == Dash::Roll && body.finished {
                 s.state = State::Ground;
             }
         }
@@ -2305,6 +2334,33 @@ mod tests {
         assert_eq!(leap_launch(&l, 3, 185.0, Vec3::Z, Some((Vec3::new(0.0, 500.0, 30.0), 60.0))).2, 256.0);
         // A target behind the reach of a short gap: the speed is clamped to the lowest (backwards).
         assert_eq!(leap_launch(&l, 1, 185.0, Vec3::Z, Some((Vec3::new(0.0, 0.0, 1.0), 500.0))).1, -8.0);
+    }
+
+    /// A motion set with A180 at motion id 209 (the state variants differ by the low two bits of the slot).
+    fn mset_with(tag_slots: &[(usize, &str)]) -> kh2_anim::Mset {
+        use kh2_anim::{motion::{Data, Motion}, Slot, Triggers};
+        let n = tag_slots.iter().map(|x| x.0).max().unwrap_or(0) + 1;
+        let mut slots: Vec<Option<Slot>> = (0..n).map(|_| None).collect();
+        for &(i, tag) in tag_slots {
+            let motion = Motion { frame_start: 0.0, frame_end: 26.0, fps: 30.0, frame_return: 0.0, data: Data::Raw { bones: 0, frames: Vec::new() } };
+            slots[i] = Some(Slot { tag: tag.to_string(), motion: Some(motion), triggers: Triggers::default() });
+        }
+        kh2_anim::Mset { slots }
+    }
+
+    #[test]
+    fn dodge_roll_plays_a180_motion_209() {
+        // User report 2026-10-24: the roll is A180, motion id 209 (slot 209 * 4 + variant).
+        let m = mset_with(&[(203 * 4 + 2, "A150"), (209 * 4 + 2, "A180"), (209 * 4 + 3, "A180")]);
+        let s = dodge_roll_slot(&m, PlayerState::FieldNoWeapon).expect("A180 is in the set");
+        assert_eq!(s / 4, DODGE_ROLL_ID);
+        assert_eq!(m.get(s).unwrap().tag, "A180");
+        assert_eq!(dodge_roll_slot(&m, PlayerState::FieldWeapon), Some(209 * 4 + 3), "the state variant is followed");
+        // The tag wins over a stray id: a set whose motion 209 is another motion falls back to the A180 tag elsewhere.
+        let m = mset_with(&[(209 * 4 + 2, "A999"), (300 * 4, "A180")]);
+        assert_eq!(dodge_roll_slot(&m, PlayerState::FieldNoWeapon), Some(1200));
+        // No A180 (the USA disc): none, the caller keeps the Quick Run start motion.
+        assert_eq!(dodge_roll_slot(&mset_with(&[(203 * 4 + 2, "A150")]), PlayerState::FieldNoWeapon), None);
     }
 
     #[test]

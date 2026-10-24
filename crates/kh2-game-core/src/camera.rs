@@ -35,6 +35,10 @@ pub struct OrbitCamera {
     /// The player's draw fade the look-around drives (`player + 0x834`, 1 = drawn). Output;
     /// `sora::apply_player_fade` applies it to Sora's body and weapons.
     pub player_fade: f32,
+    /// The drawn view: the camera's smoothed position and look-at point in game units, as `FUN_001407b8` hands them to the view
+    /// block (`FUN_00107160`) that `FUN_00106f78` builds the view matrix from. The player's stick is mapped through it
+    /// (`controller_rules::stick_through_view`). None until the camera has run once. Output only.
+    pub drawn: Option<(Vec3, Vec3)>,
 }
 
 /// Dynamic camera blockers for this tick: spheres objects register (the game rebuilds its list
@@ -93,7 +97,7 @@ pub fn setup(mut commands: Commands) {
         // Near plane 1 cm like the game's projection (`FUN_001078f0`).
         Projection::Perspective(PerspectiveProjection { near: 0.01, ..default() }),
         Transform::from_xyz(0.0, 3.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-        OrbitCamera { yaw: 0.0, pitch: 0.0, distance: 0.0, first_person: false, player_fade: 1.0 },
+        OrbitCamera { yaw: 0.0, pitch: 0.0, distance: 0.0, first_person: false, player_fade: 1.0, drawn: None },
         // The lens pass draws over this camera's picture (fx_lens.rs).
         crate::fx::lens::LensScene,
     ));
@@ -508,6 +512,7 @@ fn tick(
     let (pos_m, look_m) = (view.pos * SCALE, view.look * SCALE);
     if pos_m.is_finite() && look_m.is_finite() && pos_m.distance_squared(look_m) > 1e-8 {
         *t = Transform::from_translation(pos_m).looking_at(look_m, Vec3::Y);
+        o.drawn = Some((view.pos, view.look));
         if view.roll != 0.0 {
             // Roll about the view axis; the sign is not checked against the original (only event
             // cameras roll, and none runs here yet).

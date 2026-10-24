@@ -251,6 +251,7 @@ pub fn build(id: u32, name: &str, file: Vec<u8>, orb_pool: bool, table: Option<&
         sounds: Vec::new(),
         finish: None,
         pending: None,
+        bonus: None,
     })
 }
 

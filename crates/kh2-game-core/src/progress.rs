@@ -308,16 +308,58 @@ pub fn pay_defeats(
         let paid = (row.bonus_level != 0).then(|| progress.give_bonus(&tables.bons, row.bonus_level)).flatten();
         if let Some(paid) = paid {
             info!("bonus: reward {} given by enmp {} (Bonus LV {}): {:?}", paid.id, enmp, progress.bonus_level(), paid.parts);
-            for part in &paid.parts {
-                for &(item, given) in &part.gifts {
-                    let key = progress.items().get(item).is_some_and(|i| i.is_key());
-                    log.push(crate::shared::prize::obtained_record(place, item, key, given, part.member as u8, 4));
-                }
-                if let (SORA, Ok(mut s)) = (part.member, sora.single_mut()) {
-                    s.hp = (s.hp + i32::from(part.hp)).min(i32::from(progress.sora().hp_max));
-                    s.mp = (s.mp + i32::from(part.mp)).min(i32::from(progress.sora().mp_max));
-                }
+            bonus_paid_effects(progress, &paid, place, &mut log, &mut sora);
+        }
+    }
+}
+
+/// What follows a paid bonus reward: the obtained log of each gift (`FUN_001d0828(item, member, 4)`) and the live HP and MP of
+/// Sora's (or Roxas's: the same record) entity raised as the record's current values were.
+fn bonus_paid_effects(progress: &Progress, paid: &BonusPaid, place: (u8, u8), log: &mut crate::shared::prize::ObtainedLog, sora: &mut Query<&mut crate::shared::sora::Sora>) {
+    for part in &paid.parts {
+        for &(item, given) in &part.gifts {
+            let key = progress.items().get(item).is_some_and(|i| i.is_key());
+            log.push(crate::shared::prize::obtained_record(place, item, key, given, part.member as u8, 4));
+        }
+        if Progress::member_index(part.member) == Progress::member_index(SORA)
+            && let Ok(mut s) = sora.single_mut()
+        {
+            s.hp = (s.hp + i32::from(part.hp)).min(i32::from(progress.sora().hp_max));
+            s.mp = (s.mp + i32::from(part.mp)).min(i32::from(progress.sora().mp_max));
+        }
+    }
+}
+
+/// `FUN_001b95a0`'s first step (a mission's end): the header's bonus reward id (`+0xd`, left on the manager by
+/// `Active::end_through`) goes to `FUN_001be6b8` (`Progress::give_bonus`), once per id. On this disc it is how Roxas gets
+/// Aerial Recovery (TT32_MS302, reward 54) and Guard (TT34_MS304, reward 33) (WP-FIX-GUARD,
+/// docs/systems/combat-effects/abilities.md "Guard and Aerial Recovery").
+pub fn pay_mission_bonus(
+    mission: Option<ResMut<crate::shared::struggle::Mission>>,
+    tables: Option<Res<ExperienceTables>>,
+    mut progress: Option<ResMut<Progress>>,
+    mut sora: Query<&mut crate::shared::sora::Sora>,
+    mut log: ResMut<crate::shared::prize::ObtainedLog>,
+    area: Option<Res<crate::assets::CurrentArea>>,
+) {
+    let Some(mut mission) = mission else { return };
+    let mut due: Vec<u8> = std::mem::take(&mut mission.bonus_due);
+    due.extend(mission.m.as_deref_mut().and_then(|a| a.bonus.take()));
+    if due.is_empty() {
+        return;
+    }
+    let (Some(tables), Some(progress)) = (tables, progress.as_deref_mut()) else {
+        warn!("bonus: mission rewards {due:?} due but no bons table or Progress");
+        return;
+    };
+    let place = area.as_ref().map_or((0, 0), |a| crate::shared::prize::place_bytes(&a.name));
+    for id in due {
+        match progress.give_bonus(&tables.bons, u16::from(id)) {
+            Some(paid) => {
+                info!("bonus: reward {} given by the mission end (FUN_001b95a0 -> FUN_001be6b8, Bonus LV {}): {:?}", paid.id, progress.bonus_level(), paid.parts);
+                bonus_paid_effects(progress, &paid, place, &mut log, &mut sora);
             }
+            None => info!("bonus: reward {id} of the mission end was given before (flag set): nothing"),
         }
     }
 }
@@ -3570,7 +3612,7 @@ impl Plugin for ProgressPlugin {
         ensure(app);
         app.add_message::<EnemyDefeated>()
             .add_message::<ExperienceGained>()
-            .add_systems(FixedUpdate, pay_defeats.in_set(crate::schedule::Sim::Effects));
+            .add_systems(FixedUpdate, (pay_defeats, pay_mission_bonus).in_set(crate::schedule::Sim::Effects));
         let tables = app.world().get_resource::<Disc>().and_then(|disc| {
             let mut a = disc.0.lock().ok()?;
             let lvup = kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b))?;

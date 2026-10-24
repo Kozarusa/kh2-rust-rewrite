@@ -34,6 +34,7 @@ use kh2_tables::tables::{self as t, Cmd, Item, Magc, Plrp};
 
 use crate::assets::Disc;
 use crate::data::KINGDOM_KEY;
+use crate::save_block::{BootEnv, SaveBlock};
 
 /// EE addresses of the blocks (for the docs and the oracle test).
 pub mod addr {
@@ -44,48 +45,11 @@ pub mod addr {
     pub const PARTY: u32 = 0x0033_fec0;
 }
 
-/// Byte offsets in the party block.
+/// Byte offsets in the party block (the constants live with the layout object in `save_block::party`).
 pub mod off {
-    /// Party member records: `FUN_00187d40(0x33fec0, member)` = `0x33fec0 + (index - 1) * 0xf4`.
-    pub const MEMBER_SIZE: usize = 0xf4;
-    pub const MEMBERS: usize = 13;
-    /// Form records: `FUN_00187f60(0x33fec0, f)` = `0x33fec0 + 0xc3c + f * 0x28`, `f` 1..=9.
-    pub const FORM_BASE: usize = 0xc3c;
-    pub const FORM_SIZE: usize = 0x28;
-    pub const FORMS: usize = 9;
-    /// `0x340c88` + 4: the current form (`FUN_001b4c28`).
-    pub const CURRENT_FORM: usize = 0xdcc;
-    /// `0x340c88` + 5: the active summon (1-based `sumn` index), + 6 the summon level, + 7 the
-    /// Genie form / Tinker Bell byte.
-    pub const SUMMON: usize = 0xdcd;
-    pub const SUMMON_LEVEL: usize = 0xdce;
-    pub const SUMMON_EXTRA: usize = 0xdcf;
-    /// Saved drive gauge bytes `+0xdd0..+0xdd3` and floats `+0xdd4`, `+0xdd8` (`FUN_0019f920`
-    /// copies them to status `+0x1b0..+0x1b8`).
-    pub const DRIVE: usize = 0xdd0;
-    /// World records `0x340c9c + 4 * world` (`FUN_001a71c0`), 19 of them.
-    pub const WORLDS: usize = 0xddc;
-    pub const WORLD_COUNT: usize = 19;
-    /// Item counts `0x340ce8`, one byte per item `Slot` (`FUN_001a1cc8`).
-    pub const COUNTS: usize = 0xe28;
-    pub const COUNT_SLOTS: usize = 0x140;
-    /// Key-item bits `0x340e28` (items with `Flag0` bit 0), by `Slot`.
-    pub const KEYS: usize = 0xf68;
-    pub const KEY_WORDS: usize = 8;
-    /// Experience total `0x340e48` (`FUN_001b51e0`, followed by the level-up check `FUN_001b52f8`).
-    pub const EXPERIENCE: usize = 0xf88;
-    /// Summon experience `0x340e4c` (`FUN_001d4ec8`).
-    pub const SUMMON_EXP: usize = 0xf8c;
-    /// Consumables Sora received, 8 ids (`FUN_001a2120`).
-    pub const RECENT: usize = 0xf90;
-    /// Four command shortcuts (`0x340e60`; `FUN_001a2120` and `FUN_001a1a18` fill empty ones).
-    pub const SHORTCUTS: usize = 0xfa0;
-    /// Per-spell switch bits `0x340eac` (`FUN_001a4b30`, `FUN_001a4b68`, `FUN_001a4bb8`).
-    pub const SPELL_SWITCH: usize = 0xfec;
-    /// "Obtained once" bits `0x3414f0`, by item `Slot` (`FUN_001a18d8`).
-    pub const OBTAINED: usize = 0x1630;
-    pub const OBTAINED_WORDS: usize = 10;
-    /// Length of the party block as `FUN_00187b38` touches it.
+    pub use crate::save_block::party::*;
+    /// Length of the party block as `FUN_00187b38` touches it (the same as `save_block::party::LEN`; spelled out because the rig's
+    /// constants test reads this file for it).
     pub const LEN: usize = 0x1998;
 }
 
@@ -549,7 +513,7 @@ pub struct Member {
     pub items: Vec<u16>,
     /// The ability list (64 slots, bit 15 = equipped), non-empty slots only.
     pub abilities: Vec<(u16, bool)>,
-    /// The AI settings block (record `+0xd4`, 32 bytes; FUN_00112308 reads it, `Progress::init_member` zeroes it).
+    /// The AI settings block (record `+0xd4`, 32 bytes; FUN_00112308 reads it, `save_block::init_member` zeroes it).
     /// Byte 0 is the battle style 0..5, byte `1 + k` the use setting of item or ability `k` (docs/systems/party/contract.md).
     pub settings: [u8; rec::SETTINGS_LEN],
 }
@@ -581,7 +545,8 @@ pub enum Source {
 pub struct Progress {
     /// The rig keys of a `KH2_STATE` file (`place`, `sora`, `rig`): where the original stood when the state was taken.
     pub rig: RigStart,
-    block: Vec<u8>,
+    /// The whole save block as the original lays it out (`save_block::SaveBlock`); the party block is its slice `+0x1660`.
+    save: SaveBlock,
     items: Arc<ItemIndex>,
     pub source: Source,
     /// What the app baseline added on top of the new game (empty with `KH2_STATE`).
@@ -592,15 +557,8 @@ pub struct Progress {
     /// (docs/systems/foundations/final-mix.md: the Final Mix game has it as growth slot 4), so the level is an app field
     /// beside the save block. 0 in the new game; the app baseline sets 1 (docs/systems/core-runtime/progress.md).
     pub dodge_roll: u8,
-    /// The munny the prizes pay: save block `+0x1600` (`0x33fe60`, before the party block, so it is
-    /// kept apart from `block`). `FUN_0023e620` adds to it and `FUN_0023e5e0` lets a sum through only
-    /// below 1,000,000 (else 999,999). The word at `0x340e48` that `experience()` reads is raised by
-    /// `FUN_001b51e0`, which then runs the level-up check of every party member (`FUN_001b52f8`
-    /// compares it with the level table), so that word is the experience total (docs/systems/combat-effects/prizes.md).
-    wallet: u32,
-    /// The option word (save `+0x31b0`, `0x33fa10`: the ten Config rows of docs/systems/ui/menus-pause.md 2.8) and the game
-    /// mode (save `+0x1658`, read-only on that page). Outside the party block, so kept apart like `wallet`.
-    config: [u32; 2],
+    // The munny (save `+0x1600`), the option word (`+0x31b0`), the game mode (`+0x1658`), the shops' seen words (`+0x3714`) and first-visit
+    // byte (`+0x3724`) live in `save` at those offsets (accessors `wallet`, `option_word`, `game_mode`, `shop_seen`, `shop_visit`).
     /// The story flags, the area program table and the exit-lock halfwords (`Story`, save block
     /// `0x33f6b0`, `0x33e86f`, `0x33f918`). Shared with the script hosts (`shared_story`): a clone of
     /// `Progress` shares it too.
@@ -614,12 +572,6 @@ pub struct Progress {
     /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/systems/ui/menus-shop.md 23), read and written by the shop's
     /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Saved in the slot files (key `moogle`).
     pub moogle: Moogle,
-    /// The shops' "seen" bits (save `+0x3714`, 0x80 bits over the shop file's item list, `FUN_00265ad0`): an item whose
-    /// bit is clear is NEW in a shop's Buy list until the cursor reaches it (`FUN_00265348`). Saved in the slot files (key `shop_seen`).
-    shop_seen: [u32; 4],
-    /// The shops' first-visit byte (save `+0x3724`): bit 0 / bit 1 once the opening text of a shop with the state's
-    /// `+0xd` clear / set was dismissed (`FUN_002621a0`, `FUN_00265498`). Saved in the slot files (key `shop_visits`).
-    shop_visits: u8,
     /// The journal's seen set (save `+0x38f0`, `FUN_002b70e0`, docs/systems/ui/menus-journal.md 20.9): one (category, entry) pair per entry the
     /// journal has marked seen (`menu_journal::marks::Cat` as a number). The original keeps bits at per-category offsets; the
     /// app keeps the pairs [inferred storage, same meaning]. Saved in the slot files (key `journal_seen`).
@@ -744,25 +696,25 @@ impl Progress {
     // --- raw block access -------------------------------------------------------------------
 
     fn u8_at(&self, o: usize) -> u8 {
-        self.block[o]
+        self.save.party()[o]
     }
     fn set_u8(&mut self, o: usize, v: u8) {
-        self.block[o] = v;
+        self.save.party_mut()[o] = v;
     }
     fn u16_at(&self, o: usize) -> u16 {
-        u16::from_le_bytes([self.block[o], self.block[o + 1]])
+        u16::from_le_bytes([self.save.party()[o], self.save.party()[o + 1]])
     }
     fn set_u16(&mut self, o: usize, v: u16) {
-        self.block[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        self.save.party_mut()[o..o + 2].copy_from_slice(&v.to_le_bytes());
     }
     fn u32_at(&self, o: usize) -> u32 {
-        u32::from_le_bytes(self.block[o..o + 4].try_into().unwrap())
+        u32::from_le_bytes(self.save.party()[o..o + 4].try_into().unwrap())
     }
     fn set_u32(&mut self, o: usize, v: u32) {
-        self.block[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        self.save.party_mut()[o..o + 4].copy_from_slice(&v.to_le_bytes());
     }
     fn zero(&mut self, o: usize, len: usize) {
-        self.block[o..o + len].fill(0);
+        self.save.party_mut()[o..o + len].fill(0);
     }
     fn bit(&self, base: usize, words: usize, n: u16) -> bool {
         let w = n as usize >> 5;
@@ -779,7 +731,13 @@ impl Progress {
 
     /// The party block bytes (`0x33fec0`, `off::LEN` bytes).
     pub fn block(&self) -> &[u8] {
-        &self.block
+        self.save.party()
+    }
+
+    /// The save block as the original lays it out. Only the regions `Progress` keeps in it are current: the party block, the munny, the
+    /// option word, the game mode and the shops' words. Use [`Progress::save_image`] for the whole image.
+    pub fn save(&self) -> &SaveBlock {
+        &self.save
     }
 
     pub fn items(&self) -> &ItemIndex {
@@ -788,10 +746,16 @@ impl Progress {
 
     /// A state from party block bytes (for the oracle test: the block the game's code built).
     pub fn from_block(bytes: &[u8], items: Arc<ItemIndex>) -> Progress {
-        let mut block = vec![0u8; off::LEN];
+        let mut save = SaveBlock::new();
         let n = bytes.len().min(off::LEN);
-        block[..n].copy_from_slice(&bytes[..n]);
-        Progress { rig: RigStart::default(), block, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
+        save.party_mut()[..n].copy_from_slice(&bytes[..n]);
+        save.set_options(OPTION_DEFAULT);
+        save.set_game_mode(GAME_MODE_DEFAULT);
+        Progress::with_save(save, items)
+    }
+
+    fn with_save(save: SaveBlock, items: Arc<ItemIndex>) -> Progress {
+        Progress { rig: RigStart::default(), save, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -821,23 +785,17 @@ impl Progress {
 
     /// `FUN_001b58d8`: member id -> 1-based record index (14 is Sora's record, 15 the sixth).
     fn member_index(member: u16) -> usize {
-        match member {
-            14 => 1,
-            15 => 6,
-            m if (1..=15).contains(&m) => m as usize,
-            _ => 0,
-        }
+        crate::save_block::member_index(i32::from(member))
     }
 
     /// `FUN_00187d40`: offset of a member's record.
     fn member_off(member: u16) -> Option<usize> {
-        let i = Self::member_index(member);
-        (i != 0 && i <= off::MEMBERS).then(|| (i - 1) * off::MEMBER_SIZE)
+        crate::save_block::member_offset(i32::from(member))
     }
 
     /// `FUN_00187f60`: offset of a form record, `form` 1..=9.
     fn form_off(form: u8) -> Option<usize> {
-        (1..=off::FORMS as u8).contains(&form).then(|| off::FORM_BASE + form as usize * off::FORM_SIZE)
+        crate::save_block::form_offset(i32::from(form))
     }
 
     /// A party member's record (`member` is the party id: 1 Sora, 2 Donald, 3 Goofy, ...).
@@ -869,7 +827,7 @@ impl Progress {
     }
 
     fn settings_at(&self, r: usize) -> [u8; rec::SETTINGS_LEN] {
-        self.block[r + rec::SETTINGS..r + rec::SETTINGS + rec::SETTINGS_LEN].try_into().unwrap()
+        self.save.party()[r + rec::SETTINGS..r + rec::SETTINGS + rec::SETTINGS_LEN].try_into().unwrap()
     }
 
     /// A member's setting byte `index` (0 = the battle style, `1 + k` = the use setting of item or ability `k`).
@@ -955,10 +913,9 @@ impl Progress {
         }
     }
 
+    /// `FUN_00282d30` (`save_block::set_form_weapon`): the form record's weapon halfword.
     pub fn set_form_weapon(&mut self, form: u8, item: u16) {
-        if let Some(r) = Self::form_off(form) {
-            self.set_u16(r, item);
-        }
+        crate::save_block::set_form_weapon(self.save.party_mut(), i32::from(form), item);
     }
 
     /// The form is unlocked: its "X Form" item is owned.
@@ -1159,6 +1116,8 @@ impl Progress {
 
     /// `FUN_001878b0(record, 1)`: the experience a member still needs for his next level (the `lvup` threshold
     /// of his level minus the total); 0 at level 99 or without a record.
+    ///
+    /// orig 0x1878b0
     pub fn experience_to_next(&self, member: u16, tables: &[Vec<t::Lvup>]) -> i32 {
         let Some(m) = self.member(member) else { return 0 };
         if m.level >= 99 {
@@ -1255,21 +1214,21 @@ impl Progress {
 
     /// `KH2_STATE` key `munny`: set the wallet, held at the prize limit.
     fn set_wallet(&mut self, v: u32) {
-        self.wallet = v.min(MAX_WALLET);
+        self.save.set_wallet(v.min(MAX_WALLET));
     }
 
     /// The option word (save `+0x31b0`).
     pub fn option_word(&self) -> u32 {
-        self.config[0]
+        self.save.options()
     }
 
     pub fn set_option_word(&mut self, w: u32) {
-        self.config[0] = w;
+        self.save.set_options(w);
     }
 
     /// The game mode (save `+0x1658`).
     pub fn game_mode(&self) -> u32 {
-        self.config[1]
+        self.save.game_mode()
     }
 
     /// `FUN_001a5328`: record bit `n` (the array at `0x33fdb0`) is set.
@@ -1288,13 +1247,15 @@ impl Progress {
 
     /// `FUN_00265348`'s test: the shop item at place `n` of the shop file's list was seen (save `+0x3714`).
     pub fn shop_seen(&self, n: usize) -> bool {
-        n < 128 && self.shop_seen[n >> 5] >> (n & 31) & 1 != 0
+        n < 128 && self.save.shop_seen()[n >> 5] >> (n & 31) & 1 != 0
     }
 
     /// `FUN_00265348`: marks the item at place `n` seen (`|=` of its bit in save `+0x3714`).
     pub fn set_shop_seen(&mut self, n: usize) {
         if n < 128 {
-            self.shop_seen[n >> 5] |= 1 << (n & 31);
+            let mut w = self.save.shop_seen();
+            w[n >> 5] |= 1 << (n & 31);
+            self.save.set_shop_seen(w);
         }
     }
 
@@ -1483,32 +1444,34 @@ impl Progress {
 
     /// `FUN_00265498`: bit `n` (0 or 1) of the first-visit byte (save `+0x3724`).
     pub fn shop_visit(&self, n: u8) -> bool {
-        self.shop_visits >> (n & 7) & 1 != 0
+        self.save.shop_visits() >> (n & 7) & 1 != 0
     }
 
     /// `FUN_002621a0`: sets bit `n` of the first-visit byte.
     pub fn set_shop_visit(&mut self, n: u8) {
-        self.shop_visits |= 1 << (n & 7);
+        self.save.set_shop_visits(self.save.shop_visits() | 1 << (n & 7));
     }
 
     /// `FUN_0023e6b0`: takes `n` from the munny (`FUN_0023e680` runs first [GAP: not read]); the shop's buy only
     /// asks for what the munny covers (`menu_shop::step_quantity`), so the port stops at 0.
     pub fn spend(&mut self, n: u32) -> u32 {
-        self.wallet = self.wallet.saturating_sub(n);
-        self.wallet
+        let v = self.save.wallet().saturating_sub(n);
+        self.save.set_wallet(v);
+        v
     }
 
     /// The prize munny (save `+0x1600`, see the field).
     pub fn wallet(&self) -> u32 {
-        self.wallet
+        self.save.wallet()
     }
 
     /// `FUN_0023e620`: add `n`; when the unsigned sum is not below 1,000,000 (`FUN_0023e5e0`) the
     /// counter becomes 999,999. Returns the new value.
     pub fn add_to_wallet(&mut self, n: u32) -> u32 {
-        let sum = self.wallet.wrapping_add(n);
-        self.wallet = if sum < MAX_WALLET + 1 { sum } else { MAX_WALLET };
-        self.wallet
+        let sum = self.save.wallet().wrapping_add(n);
+        let v = if sum < MAX_WALLET + 1 { sum } else { MAX_WALLET };
+        self.save.set_wallet(v);
+        v
     }
 
     // --- inventory ----------------------------------------------------------------------------
@@ -1719,27 +1682,10 @@ impl Progress {
         }
     }
 
-    /// `FUN_00187728`: a consumable into the member's first free battle item slot whose reserved
-    /// id is this item or empty (an empty reserved slot takes the id when another slot reserves it).
+    /// `FUN_00187728` (`save_block::reserve_battle_item`): a consumable into the member's first free battle item slot whose
+    /// reserved id is this item or empty (an empty reserved slot takes the id when another slot reserves it).
     fn put_battle_item(&mut self, r: usize, id: u16) {
-        let n = self.u8_at(r + rec::ITEM_SLOTS) as usize;
-        for i in 0..n {
-            if self.u16_at(r + rec::ITEMS + 2 * i) != 0 {
-                continue;
-            }
-            let reserved = self.u16_at(r + rec::RESERVED + 2 * i);
-            if reserved == id {
-                self.set_u16(r + rec::ITEMS + 2 * i, id);
-                return;
-            }
-            if reserved == 0 {
-                if (0..n).any(|j| self.u16_at(r + rec::RESERVED + 2 * j) == id) {
-                    self.set_u16(r + rec::RESERVED + 2 * i, id);
-                }
-                self.set_u16(r + rec::ITEMS + 2 * i, id);
-                return;
-            }
-        }
+        crate::save_block::reserve_battle_item(&mut self.save.party_mut()[r..], id);
     }
 
     /// A member's battle item slots as (item, reserved id) pairs, `+0x34` and `+0x44`, for the first
@@ -1772,6 +1718,8 @@ impl Progress {
 
     /// `FUN_001877c8`: every empty battle item slot that reserves an item takes one from the stock
     /// when the stock has it (`FUN_001a1cc8` >= 1, then `FUN_001a1c30(id, 1)`).
+    ///
+    /// orig 0x1877c8
     pub fn refill_battle_items(&mut self, member: u16) {
         let Some(r) = Self::member_off(member) else { return };
         let n = (self.u8_at(r + rec::ITEM_SLOTS) as usize).min(8);
@@ -1922,15 +1870,9 @@ impl Progress {
         std::array::from_fn(|i| self.u16_at(off::RECENT + 2 * i))
     }
 
-    /// `FUN_00187868`: an ability into the first empty slot of the member's list.
+    /// `FUN_00187868` (`save_block::add_ability`): an ability into the first empty slot of the member's list.
     fn put_ability(&mut self, r: usize, id: u16, equipped: bool) {
-        for i in 0..rec::ABILITY_SLOTS {
-            let o = r + rec::ABILITIES + 2 * i;
-            if self.u16_at(o) & 0x7fff == 0 {
-                self.set_u16(o, id & 0x7fff | (equipped as u16) << 15);
-                return;
-            }
-        }
+        crate::save_block::add_ability(&mut self.save.party_mut()[r..], id, equipped);
     }
 
     /// Test aid: a record's maximum HP and MP.
@@ -1988,20 +1930,22 @@ impl Progress {
         Some(slot)
     }
 
-    /// `FUN_00187f18`: an ability into the first empty slot of a form's list, always equipped.
+    /// `FUN_00187f18` (`save_block::add_form_ability`): an ability into the first empty slot of a form's list, always equipped.
     fn put_form_ability(&mut self, r: usize, v: u16) {
-        for i in 0..16 {
-            let o = r + 8 + 2 * i;
-            let old = self.u16_at(o);
-            if old & 0x7fff == 0 {
-                self.set_u16(o, old & 0x8000 | v & 0x7fff | 0x8000);
-                return;
-            }
-        }
+        crate::save_block::add_form_ability(&mut self.save.party_mut()[r..], v);
+    }
+
+    /// `FUN_00187658` on a member id: see [`Progress::set_item_slots`]. False when the member has no record.
+    pub fn set_battle_item_slots(&mut self, member: u16, n: u8) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        self.set_item_slots(r, n);
+        true
     }
 
     /// `FUN_00187658`: change a member's number of battle item slots; slots that disappear give
     /// their item back to the inventory.
+    ///
+    /// orig 0x187658
     fn set_item_slots(&mut self, r: usize, n: u8) {
         let cur = self.u8_at(r + rec::ITEM_SLOTS);
         if cur < n {
@@ -2044,100 +1988,22 @@ impl Progress {
 
     // --- the new game -------------------------------------------------------------------------
 
-    /// The new-game state: the party block after `FUN_00187b38` on the cleared save block and the
-    /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
+    /// The new-game state: the save block of `FUN_00105638` (`SaveBlock::head`: everything cleared, the party block after
+    /// `FUN_00187b38`, the header and the object block without the executable's fix-up list), the `plrp` rows with `Id` 0
+    /// (`FUN_001c0cb0(0)`, the body of `FUN_00187d20` before the world flags' boot, which `Story::world_boot` does), then
+    /// `SaveBlock::tail`.
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
-        let mut p = Progress {
-            rig: RigStart::default(),
-            block: vec![0; off::LEN],
-            items,
-            source: Source::NewGame,
-            baseline: Vec::new(), boot_weapons: Arc::default(),
-            dodge_roll: 0,
-            wallet: 0,
-            config: [OPTION_DEFAULT, GAME_MODE_DEFAULT],
-            story: StoryHandle::default(),
-            new_seen: Vec::new(),
-            record_bits: Vec::new(),
-            moogle: Moogle::default(),
-            shop_seen: [0; 4],
-            shop_visits: 0,
-            journal_seen: Default::default(),
-            minigames: Default::default(),
-            enemy_kills: Default::default(),
-            reaction_uses: Default::default(),
-            limit_best: Default::default(),
-            report: [0; REPORT_WORDS],
-        };
-        p.init_party();
+        Progress::new_game_with(items, plrp, &BootEnv { region: crate::save_block::REGION_USA, fixups: Vec::new() })
+    }
+
+    /// [`Progress::new_game`] with the executable's boot inputs given (the oracle test passes the region word and the object block's
+    /// fix-up list of the executable it runs).
+    pub fn new_game_with(items: Arc<ItemIndex>, plrp: &[Plrp], env: &BootEnv) -> Progress {
+        let mut p = Progress::with_save(SaveBlock::new(), items);
+        p.save.head(env);
         p.apply_plrp(plrp, 0);
+        p.save.tail();
         p
-    }
-
-    /// `FUN_00187b38(0x33fec0)`. The stores of zero are kept so the port reads like the routine.
-    fn init_party(&mut self) {
-        for m in 0..off::MEMBERS {
-            self.init_member(m * off::MEMBER_SIZE);
-        }
-        for f in 1..=off::FORMS {
-            // FUN_00187ed0: weapon 0, level 1, +3 = 1, experience 0, 16 empty ability slots.
-            let r = off::FORM_BASE + f * off::FORM_SIZE;
-            self.set_u16(r, 0);
-            self.set_u8(r + 3, 1);
-            self.set_u8(r + 2, 1);
-            self.set_u32(r + 4, 0);
-            self.zero(r + 8, 32);
-        }
-        self.set_u8(off::CURRENT_FORM, 0);
-        self.set_u8(off::DRIVE + 2, 3);
-        self.set_u8(off::SUMMON_LEVEL, 1);
-        self.set_u8(off::DRIVE, 100);
-        self.set_u8(off::SUMMON, 0);
-        self.set_u8(off::DRIVE + 1, 3);
-        for w in 0..off::WORLD_COUNT {
-            // FUN_001a71a8: {0, 0x10, 0x10, 0x10}.
-            let o = off::WORLDS + 4 * w;
-            self.block[o..o + 4].copy_from_slice(&[0, 0x10, 0x10, 0x10]);
-        }
-        self.zero(off::KEYS, 4 * off::KEY_WORDS);
-        self.set_u32(off::EXPERIENCE, 0);
-        self.zero(0xfac, 32);
-        self.zero(0xfcc, 32);
-        self.set_u32(off::SPELL_SWITCH, 0);
-        self.zero(off::OBTAINED, 4 * off::OBTAINED_WORDS);
-        self.set_u32(0x1658, 0);
-        for k in 0..32 {
-            let o = 0x165c + 8 * k + 2;
-            let v = self.u16_at(o) & 0x8000;
-            self.set_u16(o, v);
-        }
-        for k in 0..64 {
-            let o = 0x1760 + 8 * k;
-            self.set_u8(o, 0);
-            self.set_u32(o + 4, 0);
-        }
-        self.zero(0x1960, 16);
-        self.zero(0x197a, 26);
-        self.set_u16(0x1994, 0);
-        self.zero(off::SHORTCUTS, 8);
-    }
-
-    /// `FUN_001875c8`: a member record's defaults.
-    fn init_member(&mut self, r: usize) {
-        self.set_u8(r + rec::STRENGTH, 0);
-        self.set_u8(r + rec::MP_MAX, 100);
-        self.set_u8(r + rec::ACCESSORY_SLOTS, 1);
-        self.set_u8(r + rec::HP, 100);
-        self.set_u8(r + rec::HP_MAX, 100);
-        self.set_u8(r + rec::MP, 100);
-        for o in [rec::MAGIC, rec::DEFENSE, 0xc, 0xd, rec::WEAPON_SET] {
-            self.set_u8(r + o, 0);
-        }
-        self.set_u8(r + rec::LEVEL, 1);
-        self.set_u8(r + rec::ARMOR_SLOTS, 1);
-        self.set_u8(r + rec::ITEM_SLOTS, 0);
-        self.zero(r + rec::ABILITIES, 2 * rec::ABILITY_SLOTS);
-        self.zero(r + rec::SETTINGS, rec::SETTINGS_LEN);
     }
 
     /// `FUN_001c0cb0(id)`: the first `plrp` row with this `Id` and the rows after it with the same
@@ -2258,17 +2124,23 @@ impl Progress {
         let word = |addr: u32| u32::from_le_bytes(at(addr, 4).try_into().unwrap_or_default());
         // What `block` resets: a save block is a whole state.
         self.moogle = Moogle::default();
-        self.shop_seen = [0; 4];
-        self.shop_visits = 0;
         self.journal_seen.clear();
         self.minigames.clear();
         self.enemy_kills.clear();
         self.reaction_uses.clear();
         self.limit_best.clear();
         self.report = [0; REPORT_WORDS];
-        self.block = at(sb::PARTY, off::LEN).to_vec();
+        // The image is kept whole (the regions the app does not model stay as the original had them); the pieces the app keeps
+        // apart are set from it below, and `save_image` puts them back.
+        let mode = word(sb::GAME_MODE).min(2);
+        // The option word stays what the app has (a state file made before the image keys never set it); the image's own is not used.
+        let options = self.save.options();
+        self.save = SaveBlock::from_bytes(b);
+        self.save.set_options(options);
+        self.save.set_shop_seen([0; 4]);
+        self.save.set_shop_visits(0);
         self.set_wallet(word(sb::WALLET));
-        self.config[1] = word(sb::GAME_MODE).min(2);
+        self.save.set_game_mode(mode);
         let mut bits: Vec<u32> = (0..sb::RECORD_WORDS as u32).map(|i| word(sb::RECORD_BITS + 4 * i)).collect();
         while bits.last() == Some(&0) {
             bits.pop();
@@ -2284,6 +2156,46 @@ impl Progress {
         st.locks = locks;
         st.world_bits = [word(sb::WORLD_POINTS), word(sb::WORLD_POINTS + 4)];
         st.world = at(world::RECORDS, world::LEN).to_vec();
+    }
+
+    /// The whole save block as the original would hold it: the bytes `Progress` keeps in its [`SaveBlock`], with the regions the story
+    /// keeps apart laid over them (the flag pages, the area programs, the exit locks, the world-point bits, the world map's bytes) and the
+    /// record bits. A state loaded from a `save_block` image gives that image back for every region the app models (the regions it does
+    /// not model are carried unchanged).
+    pub fn save_image(&self) -> Vec<u8> {
+        let mut img = self.save.clone();
+        let base = save_block::BASE;
+        let at = |addr: u32| (addr - base) as usize;
+        {
+            let st = self.story();
+            let b = img.bytes_mut();
+            if !st.words.is_empty() {
+                for (i, w) in st.words.iter().enumerate() {
+                    let o = at(story::FLAGS) + 4 * i;
+                    b[o..o + 4].copy_from_slice(&w.to_le_bytes());
+                }
+                b[at(story::PROGRAMS)..][..st.programs.len()].copy_from_slice(&st.programs);
+            }
+            let locks = at(story::LOCKS);
+            let lock_bytes = at(save_block::RECORD_BITS) - locks;
+            b[locks..locks + lock_bytes].fill(0);
+            for (i, l) in st.locks.iter().enumerate().take(lock_bytes / 4) {
+                b[locks + 4 * i..][..2].copy_from_slice(&l[0].to_le_bytes());
+                b[locks + 4 * i + 2..][..2].copy_from_slice(&l[1].to_le_bytes());
+            }
+            for (i, w) in st.world_bits.iter().enumerate() {
+                b[at(save_block::WORLD_POINTS) + 4 * i..][..4].copy_from_slice(&w.to_le_bytes());
+            }
+            if st.world.len() == world::LEN {
+                b[at(world::RECORDS)..][..world::LEN].copy_from_slice(&st.world);
+            }
+        }
+        let b = img.bytes_mut();
+        for i in 0..save_block::RECORD_WORDS {
+            let w = self.record_bits.get(i).copied().unwrap_or(0);
+            b[at(save_block::RECORD_BITS) + 4 * i..][..4].copy_from_slice(&w.to_le_bytes());
+        }
+        img.bytes().to_vec()
     }
 
     /// Applies a state file (schema in docs/systems/core-runtime/progress.md) on top of this state.
@@ -2403,8 +2315,8 @@ impl Progress {
                     }
                 }
                 "spell_switch" => self.set_u32(off::SPELL_SWITCH, int(v, "spell_switch")? as u32),
-                "option_word" => self.config[0] = int(v, "option_word")? as u32,
-                "game_mode" => self.config[1] = int(v, "game_mode")?.clamp(0, 2) as u32,
+                "option_word" => self.save.set_options(int(v, "option_word")? as u32),
+                "game_mode" => self.save.set_game_mode(int(v, "game_mode")?.clamp(0, 2) as u32),
                 // Story flags: each id set through the game's setter `FUN_0017ff60` (its side effects
                 // from `00progress.bin` run: area programs, exit locks, other flags), in file order.
                 "story_flags" => {
@@ -2679,11 +2591,12 @@ impl Progress {
                 "format" | "slot" => {}
                 "block" => {
                     let Json::Str(h) = v else { return Err("block: expected a hex string".into()) };
-                    self.block = unhex(h, off::LEN).ok_or_else(|| format!("block: expected {} hex bytes", off::LEN))?;
+                    let party = unhex(h, off::LEN).ok_or_else(|| format!("block: expected {} hex bytes", off::LEN))?;
+                    self.save.party_mut().copy_from_slice(&party);
                     // A slot file is a whole state: what it does not carry (an older file) loads as the default.
                     self.moogle = Moogle::default();
-                    self.shop_seen = [0; 4];
-                    self.shop_visits = 0;
+                    self.save.set_shop_seen([0; 4]);
+                    self.save.set_shop_visits(0);
                     self.journal_seen.clear();
                     self.minigames.clear();
                     self.enemy_kills.clear();
@@ -3387,10 +3300,10 @@ impl Progress {
         let mut f = vec![
             ("format", "1".to_string()),
             ("slot", format!("{{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"{}}}", info.level, info.munny, info.play_seconds, area, entrance.map_or(String::new(), |e| format!(", \"entrance\": {e}")))),
-            ("block", format!("\"{}\"", hex(&self.block))),
-            ("munny", self.wallet.to_string()),
-            ("option_word", self.config[0].to_string()),
-            ("game_mode", self.config[1].to_string()),
+            ("block", format!("\"{}\"", hex(self.block()))),
+            ("munny", self.wallet().to_string()),
+            ("option_word", self.option_word().to_string()),
+            ("game_mode", self.game_mode().to_string()),
             ("dodge_roll", self.dodge_roll.to_string()),
             ("new_seen", format!("[{}]", seen.join(", "))),
         ];
@@ -3916,8 +3829,9 @@ mod tests {
     fn a_slot_file_restores_the_block_byte_for_byte() {
         let bytes: Vec<u8> = (0..off::LEN).map(|i| (i * 7 + 3) as u8).collect();
         let mut p = Progress::from_block(&bytes, Arc::new(ItemIndex::default()));
-        p.wallet = 123_456;
-        p.config = [0x41b, 2];
+        p.set_wallet(123_456);
+        p.set_option_word(0x41b);
+        p.save.set_game_mode(2);
         p.dodge_roll = 3;
         p.set_new_seen(&[1, 0xffff_ffff, 7]);
         let info = SlotInfo { level: 7, munny: 123_456, play_seconds: 3725, area: "tt03".into() };
@@ -4190,7 +4104,7 @@ mod tests {
     #[test]
     fn member_settings_default_to_zero_and_round_trip() {
         let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
-        p.init_party();
+        crate::save_block::init_party(p.save.party_mut());
         assert_eq!(p.member(2).unwrap().settings, [0; 32]);
         assert_eq!(p.member_setting(2, 0), Some(0));
         p.apply_json("{\"party_settings\": {\"2\": 2, \"3\": [4, 1, 3]}}").unwrap();

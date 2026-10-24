@@ -89,6 +89,19 @@ the USA executable; field names are ours.
 - decided: a step of 2.0 is two 60 Hz logic ticks back to back, not one tick with every speed doubled: every system of the app moves
   by a 60 Hz unit per tick. Linear motion is identical at every frame boundary (rig tt-run-06: k 42 now 0.18 off, was 6.7);
   integrating motion (gravity, turns) takes two half steps where the original takes one [inferred: no oracle compares it].
+- Where two half steps differ from one step of 2.0, and how each is handled:
+  - Camera smoothing (`camera_rules::smooth_and_collide`, the spring per tick, and `approach_angle` yaw turns): runs once per tick,
+    so a field frame has two springs of a 60 Hz unit where the original runs one with step 2.0. The result is near the original
+    but not bit-equal [inferred]. Follow-up: port the camera's step use (L2 camera).
+  - Animation and effects: the skeleton frame advances `fps / 60` per tick (`skel.rs`) and effects one `TICK` per tick
+    (`kh2-fx`). Both are linear, so two ticks give the same frame a step of 2.0 gives; blends and interpolation in between are not
+    compared. Handled.
+  - Enemy and timer `dt` (`time.delta_secs().min(0.05)` in `enemy.rs`, the wave timer, prize and struggle ticks): each run sees
+    `delta = 1/60` from the logic clock, so the clamp never fires and the totals per second stay the same. Handled.
+  - Harness pins (`KH2_YAW`, `KH2_DIST`): they now run before every logic tick (`harness::pin_camera_tick`). Pinned only in
+    `PreUpdate`, the second tick of a frame turned the camera freely, and the frames without logic handed the pad read the pinned
+    yaw. Under lock-on in `magic-fire` that sent Sora on a straight run into a wall, with the camera inside him. Fixed. With the
+    pin the scripted run follows integration's path within 1.4 cm (Sora) and 14 cm (camera) to k 600.
 - The rig clock, the trace and the turbo tick count run in `FixedFirst`, once per vblank. In a rig run the counter starts at 0 with
   `k = 0`, so the frame of an even `k` runs its logic at the odd vblank after it (the vblank whose pad the app has read, the pad
   being read in `Update`) and its motion stands at the next even `k`, as in the original's trace.

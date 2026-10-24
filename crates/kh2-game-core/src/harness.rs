@@ -31,6 +31,27 @@ fn count_turbo_ticks(mut ticks: ResMut<TurboTicks>) {
     ticks.0 += 1;
 }
 
+/// `KH2_YAW` / `KH2_DIST` written into the camera component (the camera's tick takes a changed value as a new setting).
+fn pin_camera(cam: &mut Query<&mut camera::OrbitCamera>) {
+    if let (Ok(yaw), Ok(mut o)) = (std::env::var("KH2_YAW").unwrap_or_default().parse::<f32>(), cam.single_mut()) {
+        o.yaw = yaw;
+    }
+    if let (Ok(d), Ok(mut o)) = (std::env::var("KH2_DIST").unwrap_or_default().parse::<f32>(), cam.single_mut()) {
+        o.distance = d;
+    }
+}
+
+/// The pin runs before every logic tick (`FixedUpdate`, first), as it ran before every 60 Hz tick when it lived in `PreUpdate` (one
+/// tick per turbo frame). Since WP-L1-P4 a field frame is two ticks every second vblank: pinned in `PreUpdate`, the second tick
+/// would turn the camera freely, and the frames without logic would hand the pad read (`Update`) the pinned yaw instead of the
+/// camera's, so the scripted runs would take another path.
+fn pin_camera_tick(time: Res<Time>, mut cam: Query<&mut camera::OrbitCamera>) {
+    let shot_at: f32 = std::env::var("KH2_SHOT_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(8.0);
+    if std::env::var_os("KH2_SCREENSHOT").is_some() && time.elapsed_secs() < shot_at {
+        pin_camera(&mut cam);
+    }
+}
+
 /// The whole tick of the scripted clock (`Time` in `PreUpdate` is the virtual clock).
 fn clock_tick(time: &Time) -> u64 {
     (time.elapsed().as_secs_f64() * f64::from(crate::data::LOGIC_HZ)).round() as u64
@@ -69,6 +90,7 @@ impl Plugin for HarnessPlugin {
         // (which takes its keys there) sees them like real ones.
         app.add_systems(PreUpdate, auto_screenshot.in_set(Keys).after(bevy::input::InputSystems));
         app.add_systems(PreUpdate, tick_shots.after(bevy::input::InputSystems));
+        app.add_systems(FixedUpdate, pin_camera_tick.before(crate::schedule::Sim::Weapon));
         // `KH2_FPS=1`: log frame rate every 2 s.
         if std::env::var("KH2_FPS").is_ok() {
             app.add_plugins((
@@ -87,7 +109,6 @@ fn auto_screenshot(
     mut commands: Commands,
     time: Res<Time>,
     mut state: Local<u8>,
-    mut cam: Query<&mut camera::OrbitCamera>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
 ) {
     let Ok(path) = std::env::var("KH2_SCREENSHOT") else { return };
@@ -167,14 +188,7 @@ fn auto_screenshot(
             }
         }
     }
-    if t < shot_at {
-        if let (Ok(yaw), Ok(mut o)) = (std::env::var("KH2_YAW").unwrap_or_default().parse::<f32>(), cam.single_mut()) {
-            o.yaw = yaw;
-        }
-        if let (Ok(d), Ok(mut o)) = (std::env::var("KH2_DIST").unwrap_or_default().parse::<f32>(), cam.single_mut()) {
-            o.distance = d;
-        }
-    }
+
     if *state == 0 {
         *state = 1;
     } else if *state == 1 && t > shot_at {

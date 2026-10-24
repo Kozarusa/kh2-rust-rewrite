@@ -157,7 +157,7 @@ struct Gfx<'w> {
 
 /// Scripted harness: `KH2_DRIVE=<form>` enters that form at `KH2_DRIVE_AT` seconds (default 4),
 /// `KH2_DRIVE_REVERT_AT=<s>` reverts. Keys: F5 chooses the form (1..4), F7 enters it, F8 reverts,
-/// F10 gives one drive point, End fills the gauge.
+/// F10 gives one drive point, Delete fills the gauge.
 #[derive(Resource)]
 struct Harness {
     enter: Option<(f32, u8)>,
@@ -340,7 +340,7 @@ fn input(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut h: ResMut<Harness
     if keys.just_pressed(KeyCode::F10) {
         queue.0.push(DriveRequest::Gain(100));
     }
-    if keys.just_pressed(KeyCode::End) {
+    if keys.just_pressed(KeyCode::Delete) {
         queue.0.push(DriveRequest::Gain(100 * 9));
     }
 }

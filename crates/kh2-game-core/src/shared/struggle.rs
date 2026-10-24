@@ -362,6 +362,9 @@ pub struct Mission {
     pub menu_request: Option<u16>,
     /// The manager ended with the game-over path (`FUN_001b9ce0`); `menu_gameover` takes it and opens the game over.
     pub game_over_request: Option<GameOverRequest>,
+    /// Bonus reward ids (`bons`) whose `FUN_001be6b8` is due: the end (`FUN_001b95a0`) of a manager that ended before
+    /// `progress::pay_mission_bonus` took its `Active::bonus` leaves it here.
+    pub bonus_due: Vec<u8>,
 }
 
 /// The jump records of the area triggers that answer the game-over menu's rows of mission kind 3 (`FUN_001b9c58`: code 3
@@ -434,6 +437,7 @@ impl Mission {
     /// `FUN_001b9518` -> `FUN_001b90d0`: the elements and the clock go with the manager; the orbs' entities are removed.
     pub fn end(&mut self) {
         let Some(mut a) = self.m.take() else { return };
+        self.bonus_due.extend(a.bonus.take());
         let (p, o) = (a.counter_value(0), a.counter_value(1));
         let orbs: Vec<Entity> = a.orbs.drain(..).flat_map(|o| o.ent).chain(a.gone.drain(..)).collect();
         self.gone.extend(orbs);
@@ -537,6 +541,9 @@ pub struct Active {
     /// The end's last step (`FUN_001b96e0`), once reached, and the same waiting for `mission_tick`.
     pub finish: Option<Finish>,
     pub pending: Option<Finish>,
+    /// The mission header's `+0xd` once the end (`FUN_001b95a0`) passed it to `FUN_001be6b8` (the `bons` reward id):
+    /// `progress::pay_mission_bonus` gives it (WP-FIX-GUARD: TT32_MS302 gives reward 54, Aerial Recovery; TT34_MS304 reward 33, Guard).
+    pub bonus: Option<u8>,
 }
 
 impl Active {
@@ -612,8 +619,10 @@ impl Active {
     /// the update waits for the event's last frames (state 2), else for its end (state 4). Without record 2 the
     /// last step runs at once.
     pub fn end_through(&mut self, ev: u32, arg: i32) {
+        // FUN_001b95a0's first step: the header's bonus reward id goes to FUN_001be6b8 (given by progress::pay_mission_bonus).
         if self.header.unlock != 0 {
-            info!("struggle: header +0xd {} (bonus reward, FUN_001be6b8) is not given by the manager", self.header.unlock);
+            info!("struggle: mission {} ends: header +0xd {} is a bonus reward (FUN_001be6b8)", self.name, self.header.unlock);
+            self.bonus = Some(self.header.unlock);
         }
         if self.header.se_end != 0 {
             self.sounds.push(self.header.se_end);

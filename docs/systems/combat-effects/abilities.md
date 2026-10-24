@@ -61,17 +61,54 @@ controller's view (`sora::Abilities`, `sora::Growth`) in step with the block (`s
 
 ## Default equipment
 
-**GAP (WP-FIX-BASE).** The original gives Sora Guard (82) and Aerial Recovery (158) early, through something other than the `lvup` rows (the user's states .04/.05/.06 carry [158, 82, ...] before the level-4 ability 138). Likely a script item grant (the trap_item_get op `FUN_0016e0e8` -> `FUN_001a18d8(id, count, 0)`), unconfirmed [inferred]. A fresh port game therefore has no way to get Guard except `KH2_DEV`, a state file or `KH2_ABILITY_START=baseline`. No grant is guessed.
+**Closed by WP-FIX-GUARD** (section "Guard and Aerial Recovery" below): the two are the bonus rewards of the tt32 and tt34 missions, not a script item grant; the port gives them at those missions' end. No start grant is invented.
 
 The data gives Sora nothing learned at the start of the story: only the Kingdom Key and the ability it
 grants. The app, though, has always started Sora with Guard so the guard motion works (`start_abilities`
 in `sora.rs`). The old default added Guard (id 82, bit 1) as equipped and says so: it is an
 **app baseline, not a data fact** (the Dodge Roll level, an FM-only growth kind, only acts with `KH2_FM_ROLL=1`); since WP-FIX-BASE it is off by default and only `KH2_ABILITY_START=baseline` adds it. Where the real game gives Sora
-Guard and the other early abilities (a story script, the unreached `Id` 1 rows, or a save default) was not
-found [GAP].
+Guard and Aerial Recovery: the mission rewards below (the other early abilities come from `lvup` and further rewards).
 
 `KH2_ABILITIES=bit,bit` keeps its meaning: each bit equips the ability row that owns it (21 adds a combo
 hit, 100 equips Aerial Finish), a bit no row owns is set raw. `KH2_ABILITY_IDS=id,...` equips by item id.
+
+## Guard and Aerial Recovery (WP-FIX-GUARD)
+
+Closes the GAP above [V, disc and executable; test `crates/kh2-game-core/tests/orig_guard.rs`]. Guard (item 82) and Aerial
+Recovery (158) are **bonus rewards** (`bons`), given at the end of two missions of the opening:
+
+| mission file | mission id (opcode 0x15) | header `+0xd` | `bons` row | area |
+|---|---|---|---|---|
+| `msn/us/TT32_MS302.bar` | 179 | 54 | character 14, item 158 | tt32 (Dusk battle) |
+| `msn/us/TT34_MS304.bar` | 181 | 33 | character 14, item 82, HP +5 | tt34 |
+
+- The path: the mission end `FUN_001b95a0` passes the header byte `+0xd` (when not 0) to `FUN_001be6b8` (once per id: flag bits
+  `0x340e6c`, count `0x340e68`), which applies each `bons` row of that id through `FUN_001be500`; its two items go through
+  `FUN_001a18d8(item, character, 0)` -> `FUN_00187868`: unequipped, into the first empty slot of the ability list. Character 14 is
+  Roxas, and `FUN_001b58d8` maps 14 to record 1, Sora's record, so the abilities land in the list the Abilities menu shows. The
+  order (Aerial Recovery, then Guard) matches the user's PCSX2 states `[158, 82, ...]`.
+- The programs: `ard/tt32.ard` btl program 154 and `ard/tt34.ard` btl program 157 start the missions (opcode 0x15); both also
+  set story flag 2267 (opcode 0x19) [V, printed by the test].
+- The user's states agree [V, `kh2 state from-p2s` of states .03 to .06, party block]: the earliest (.06, world 2 area 0x15)
+  already has Sora's list `[158, 82]`, Bonus LV 2, the reward flags 33 and 54 set (bits 1 and 22 of the second word at
+  `0x340e6c`) and maximum HP 25 (the new game's 20 plus reward 33's 5).
+- Searched without a hit: the `lvup` ability columns, every `trsr` row, the `plrp` rows, every other `bons` row, and BDX host
+  calls: `trap_item_get` (host 0.63, `FUN_0016e0e8`, table slot `0x35bba8` in the image) and `trap_bonuslevel_up` (host 2.73,
+  `FUN_0018eb90`) have no call site in any of the 1,244 scripts on the disc. The other bonus paths: an `enmp` BonusLevel
+  (`FUN_001b25d0`, 0 on this disc) and `FUN_001c46a8`.
+- The argument [V, assembly of `FUN_001b95a0` at 0x1b95c0..0x1b95d0, not the decompiled text, which drops it]: `lw t7, 8(a0)`
+  (the header pointer at manager `+8`), `lbu a0, 0xd(t7)`, `beqz a0` over the call, `jal 0x1be6b8`: the header byte is the
+  reward id.
+- The port pays every mission's header reward this way, as the original does, not only these two. The other Twilight Town
+  missions with one (rows read from the disc by the test): `TT14_MS001` reward 56 (Sora HP +5, Donald item 407, Goofy HP +5),
+  `TT20_MS603` reward 34 (Roxas HP +5), `TT40_MS003` reward 63 (Sora MP +10). On the whole disc 50 mission headers carry a
+  reward (45 outside Twilight Town); each is paid when the port runs that mission to its end.
+- Area names [inferred, community naming]: tt32 and tt34 are rooms of the dream sequence of Roxas's prologue (the Station
+  platforms); the disc fact is only the area number and the mission.
+- Port: `Active::end_through` (`shared/struggle.rs`) keeps the header byte as `Active::bonus`; `progress::pay_mission_bonus` gives
+  it through `Progress::give_bonus` (the obtained log and Sora's live HP follow). No grant at start is invented: a new game has
+  neither ability until the port plays those missions to their end (the mission manager starts from the btl program's opcode
+  0x15 when its group spawns; the end comes from the mission script's host 4.3 / 4.16).
 
 ## API for sora.rs and drive.rs
 

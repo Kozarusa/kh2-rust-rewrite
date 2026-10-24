@@ -39,6 +39,9 @@ pub struct OrbitCamera {
     /// block (`FUN_00107160`) that `FUN_00106f78` builds the view matrix from. The player's stick is mapped through it
     /// (`controller_rules::stick_through_view`). None until the camera has run once. Output only.
     pub drawn: Option<(Vec3, Vec3)>,
+    /// The camera object's wanted position and look-at point after this tick (`0x355840 + 0x60` and `+ 0x80`, game units, map-model axes).
+    /// The diff rig's `cam.pos` and `cam.look` read them. None until the camera has run once. Output only.
+    pub wanted: Option<(Vec3, Vec3)>,
 }
 
 /// Dynamic camera blockers for this tick: spheres objects register (the game rebuilds its list
@@ -97,7 +100,7 @@ pub fn setup(mut commands: Commands) {
         // Near plane 1 cm like the game's projection (`FUN_001078f0`).
         Projection::Perspective(PerspectiveProjection { near: 0.01, ..default() }),
         Transform::from_xyz(0.0, 3.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-        OrbitCamera { yaw: 0.0, pitch: 0.0, distance: 0.0, first_person: false, player_fade: 1.0, drawn: None },
+        OrbitCamera { yaw: 0.0, pitch: 0.0, distance: 0.0, first_person: false, player_fade: 1.0, drawn: None, wanted: None },
         // The lens pass draws over this camera's picture (fx_lens.rs).
         crate::fx::lens::LensScene,
     ));
@@ -303,6 +306,10 @@ fn stick(x: f32, y: f32, mag: f32) -> (Vec2, f32) {
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn tick(
     keys: Res<ButtonInput<KeyCode>>,
+    pad_state: Option<Res<crate::rig::PadState>>,
+    scale: Option<Res<crate::rig::StickScale>>,
+    mut local: Local<(u16, u32)>,
+    frame_clock: Option<Res<crate::schedule::FrameClock>>,
     params: Option<Res<CamParams>>,
     data: Res<GameData>,
     render_world: Option<Res<CameraWorld>>,
@@ -315,6 +322,14 @@ fn tick(
     options: Option<Res<crate::shared::ui::Options>>,
     area_rec: Option<Res<crate::area::AreaRecord>>,
 ) {
+    // The original's camera task runs once per game frame, with the frame step `DAT_00356f40` (2.0 for a field frame at 30 Hz) as
+    // the factor of every per-frame rate; the app runs the logic that many 60 Hz ticks per frame, so at a step above 1 the camera
+    // runs on the frame's last tick only (the springs take no step: two springs per frame would pull the camera in twice as fast).
+    let step = frame_clock.as_deref().map_or(1.0, |c| c.step()).max(1.0);
+    local.1 += 1;
+    if local.1 % (step.round() as u32).max(1) != 0 {
+        return;
+    }
     let options = options.map(|o| *o).unwrap_or_default();
     let (Some(params), Ok(mut s), Ok((mut t, mut o, mut proj))) = (params, sora.single_mut(), cam.single_mut()) else { return };
     let (Some(mode0), false) = (st.mode, st.area.is_none()) else { return };
@@ -421,25 +436,53 @@ fn tick(
             let y = rig.yaw + p.yaw;
             rig.set_yaw(y);
         }
-        let pressed = |k: KeyCode| keys.pressed(k) as i32 as f32;
-        let (left, left_mag) = stick(
-            pressed(KeyCode::KeyD) - pressed(KeyCode::KeyA),
-            pressed(KeyCode::KeyS) - pressed(KeyCode::KeyW),
-            if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 },
-        );
-        // Config: Camera Left/Right and Up/Down "Reverse" flip the right stick's axes [inferred: the game swaps the
-        // two logical camera bits of each pair, `FUN_00157f98..00158090`].
-        let flip = |on: bool| if on { -1.0 } else { 1.0 };
-        let (right, right_mag) = stick(
-            flip(options.camera_lr_reverse) * (pressed(KeyCode::ArrowRight) - pressed(KeyCode::ArrowLeft)),
-            flip(options.camera_ud_reverse) * (pressed(KeyCode::ArrowDown) - pressed(KeyCode::ArrowUp)),
-            1.0,
-        );
-        let sticks = Sticks { left, left_mag, right, right_mag };
+        let (sticks, pad_reset, pad_select) = match pad_state.as_deref().filter(|p| p.scripted) {
+            // A rig pad script is running: the sticks are the pad's, through the original's dead zone and scale (`FUN_00167198`), so
+            // the auto-camera (`FUN_00140128`) sees the left stick the player runs with. R3 and Select arrive as button edges.
+            Some(pad) => {
+                let scale = scale.as_deref().copied().unwrap_or_default();
+                let stick = |x: u8, y: u8| {
+                    let (d, m) = crate::rig::stick_vector(x, y, &scale);
+                    (Vec2::new(d.x, -d.y), m)
+                };
+                let (left, left_mag) = stick(pad.lx, pad.ly);
+                let (mut right, right_mag) = stick(pad.rx, pad.ry);
+                if options.camera_lr_reverse {
+                    right.x = -right.x;
+                }
+                if options.camera_ud_reverse {
+                    right.y = -right.y;
+                }
+                let edge = |name: &str| {
+                    let i = kh2_rig::pad::BUTTONS.iter().position(|b| *b == name).unwrap_or(0);
+                    pad.buttons >> i & 1 != 0 && local.0 >> i & 1 == 0
+                };
+                let (reset, select) = (edge("r3"), edge("select"));
+                local.0 = pad.buttons;
+                (Sticks { left, left_mag, right, right_mag }, reset, select)
+            }
+            None => {
+                let pressed = |k: KeyCode| keys.pressed(k) as i32 as f32;
+                let (left, left_mag) = stick(
+                    pressed(KeyCode::KeyD) - pressed(KeyCode::KeyA),
+                    pressed(KeyCode::KeyS) - pressed(KeyCode::KeyW),
+                    if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 },
+                );
+                // Config: Camera Left/Right and Up/Down "Reverse" flip the right stick's axes [inferred: the game swaps the
+                // two logical camera bits of each pair, `FUN_00157f98..00158090`].
+                let flip = |on: bool| if on { -1.0 } else { 1.0 };
+                let (right, right_mag) = stick(
+                    flip(options.camera_lr_reverse) * (pressed(KeyCode::ArrowRight) - pressed(KeyCode::ArrowLeft)),
+                    flip(options.camera_ud_reverse) * (pressed(KeyCode::ArrowDown) - pressed(KeyCode::ArrowUp)),
+                    1.0,
+                );
+                (Sticks { left, left_mag, right, right_mag }, false, false)
+            }
+        };
         // The player's own update turns him with the right stick while the look-around runs
         // (`FUN_001779e8`, before the camera's tick); the look yaw then follows his facing.
         if rig.mode == Mode::Look && subject.can_look {
-            let d = rules::look_turn(params, &sticks);
+            let d = rules::look_turn(params, &sticks) * step;
             if d != 0.0 {
                 s.motor.yaw = rules::wrap(s.motor.yaw + d);
                 subject.facing = s.motor.forward();
@@ -453,13 +496,14 @@ fn tick(
             params,
             &TickIn {
                 sticks,
-                reset: p.reset,
-                select: p.select,
+                reset: p.reset || pad_reset,
+                select: p.select || pad_select,
                 subject,
                 lock,
                 zoom: p.zoom,
                 auto: !options.field_camera_manual,
                 warp,
+                step,
                 cast: &cast,
                 blockers: &list,
             },
@@ -513,6 +557,7 @@ fn tick(
     if pos_m.is_finite() && look_m.is_finite() && pos_m.distance_squared(look_m) > 1e-8 {
         *t = Transform::from_translation(pos_m).looking_at(look_m, Vec3::Y);
         o.drawn = Some((view.pos, view.look));
+        o.wanted = Some((rig.wanted_pos, rig.wanted_look));
         if view.roll != 0.0 {
             // Roll about the view axis; the sign is not checked against the original (only event
             // cameras roll, and none runs here yet).

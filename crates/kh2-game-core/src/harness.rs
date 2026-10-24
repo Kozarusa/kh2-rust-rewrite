@@ -57,14 +57,27 @@ fn clock_tick(time: &Time) -> u64 {
     (time.elapsed().as_secs_f64() * f64::from(crate::data::LOGIC_HZ)).round() as u64
 }
 
+/// The tick the shots count in: the rig clock `k` (which starts once the area stands, `rig::RigClock`) when a rig run is on, else the
+/// whole ticks of the scripted clock. `PreUpdate` runs before this frame's `FixedUpdate` tick, so a shot of the frame rendered
+/// after tick k is requested when the clock has run k - 1 ticks (the rig clock counts the tick that ran last).
+fn shot_clock(time: &Time, rig: Option<&crate::rig::RigClock>) -> Option<u64> {
+    // `RigPlugin` always adds the resource; the clock only runs when a pad script or a trace is asked for.
+    let rig_run = std::env::var_os("KH2_PAD").is_some() || std::env::var_os("KH2_TRACE").is_some();
+    match rig {
+        Some(c) if c.started => Some(u64::from(c.ticks) + 1),
+        Some(_) if rig_run => None,
+        _ => Some(clock_tick(time)),
+    }
+}
+
 /// `KH2_SHOT_TICKS=k1,k2,...`: writes `shot-<k>.png` (next to `KH2_SCREENSHOT`, else in the working
 /// directory) when the clock reaches tick k, and exits 60 ticks after the last one.
-fn tick_shots(mut commands: Commands, time: Res<Time>, mut taken: Local<usize>) {
+fn tick_shots(mut commands: Commands, time: Res<Time>, rig: Option<Res<crate::rig::RigClock>>, mut taken: Local<usize>) {
     let Ok(spec) = std::env::var("KH2_SHOT_TICKS") else { return };
     let mut ticks: Vec<u64> = spec.split(',').filter_map(|v| v.trim().parse().ok()).collect();
     ticks.sort_unstable();
     let Some(&last) = ticks.last() else { return };
-    let now = clock_tick(&time);
+    let Some(now) = shot_clock(&time, rig.as_deref()) else { return };
     if let Some(&k) = ticks.get(*taken) {
         if now >= k {
             use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -80,6 +93,24 @@ fn tick_shots(mut commands: Commands, time: Res<Time>, mut taken: Local<usize>) 
     }
 }
 
+/// `KH2_SHOT_SIZE=WxH` (the rig sets 640x448, the original's internal frame): the primary window gets that physical size so the
+/// port's `shot-<k>.png` is the same size and shape as the original's frame (`kh2_rig::frames`). Applied for the first frames,
+/// because the window may not exist at startup.
+fn shot_size(mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>, mut left: Local<Option<u32>>) {
+    let Ok(spec) = std::env::var("KH2_SHOT_SIZE") else { return };
+    let n = left.get_or_insert(30);
+    if *n == 0 {
+        return;
+    }
+    *n -= 1;
+    let Some((w, h)) = spec.split_once('x').and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?))) else { return };
+    for mut win in &mut windows {
+        if win.resolution.physical_width() != w || win.resolution.physical_height() != h {
+            win.resolution.set_physical_resolution(w, h);
+        }
+    }
+}
+
 /// The scripted key presses of `KH2_KEYS` (the menu's input runs after this set).
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Keys;
@@ -90,6 +121,7 @@ impl Plugin for HarnessPlugin {
         // (which takes its keys there) sees them like real ones.
         app.add_systems(PreUpdate, auto_screenshot.in_set(Keys).after(bevy::input::InputSystems));
         app.add_systems(PreUpdate, tick_shots.after(bevy::input::InputSystems));
+        app.add_systems(Update, shot_size);
         app.add_systems(FixedUpdate, pin_camera_tick.before(crate::schedule::Sim::Weapon));
         // `KH2_FPS=1`: log frame rate every 2 s.
         if std::env::var("KH2_FPS").is_ok() {

@@ -8,6 +8,7 @@
 # -OriginalOnly  run only the original (PCSX2) and write its trace; nothing is compared.
 # -Fresh         record the original again even when the cached trace is current.
 # -NoBuild       do not run cargo first (the exes in target\debug must be current).
+# -NoFrames      skip the frame part even when the scenario has [[shot]] entries.
 # -Id <name>     the owner written into local\pcsx2.lock (default RIG).
 #
 # Original side: `kh2-rig run` takes local\pcsx2.lock, backs up the user's PINE slot 0 file, starts the patched PCSX2-MCP with the
@@ -18,12 +19,20 @@
 # scenario's seeds. Output in local\rig\<name>\ of the main checkout: trace-orig.csv, trace-port.csv, values.csv (every checked value
 # of both sides, the difference, the tolerance, PASS/FAIL/INFO), report.txt (a line per row, the first failing k per value, and the
 # last line "RIG <name> PASS|FAIL n/m"), port.log. Exit code: 0 pass, 1 fail, 2 error.
+#
+# Frame part (scenarios with [[shot]], see crates\kh2-rig\src\frames.rs): the original run also captures the PCSX2 window at each
+# shot's k (tools\pcsx2_shot.py, raw -> shot-orig-<name>.png); the port runs with KH2_SHOT_TICKS and KH2_SHOT_SIZE=640x448
+# (shot-<k>.png); `kh2-rig frames` crops both to the 4:3 content area, scales to 640x448, scores SSIM and mean absolute luma
+# difference under each shot's mask, and writes frames\<name>-{orig,port,diff,side}.png, frames.csv and frames.txt next to the
+# value report. The exit code is 1 when a value row or a frame fails. The PCSX2 window must be visible (not covered) while the
+# original runs.
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Scenario,
     [switch]$PortOnly,
     [switch]$OriginalOnly,
     [switch]$Fresh,
     [switch]$NoBuild,
+    [switch]$NoFrames,
     [string]$Id = 'RIG'
 )
 $ErrorActionPreference = 'Stop'
@@ -65,11 +74,15 @@ $stateFile = (& $rigExe port-state $file $stateJson | Select-Object -Last 1)
 if ($LASTEXITCODE -ne 0 -or -not $stateFile) { Fail 'kh2-rig port-state failed (is the state file there?)' }
 
 # --- the original -----------------------------------------------------------------------------------------------------------
+$shotNames = @(); if ($plan.shot_names -and -not $NoFrames) { $shotNames = $plan.shot_names -split ',' }
+$shotTicks = if ($shotNames.Count -gt 0) { $plan.shots } else { '' }
+$shotFiles = @($shotNames | ForEach-Object { Join-Path $out "shot-orig-$_.png" })
 $parts = @($file, $plan.pad, (Join-Path $KhRoot 'scenarios\values.toml'), $stateFile) | Where-Object { $_ }
 $key = ($parts | ForEach-Object { (Get-FileHash -Algorithm SHA1 -LiteralPath $_).Hash }) -join ''
 $keyFile = Join-Path $out 'orig.key'
 if (-not $PortOnly) {
     $current = (Test-Path $origCsv) -and (Test-Path $keyFile) -and ((Get-Content $keyFile -Raw).Trim() -eq $key)
+    foreach ($f in $shotFiles) { if (-not (Test-Path $f)) { $current = $false } }   # the cached trace has no captures yet
     if ($current -and -not $Fresh) {
         Write-Host "rig: the original's trace is current, reused ($origCsv)"
     } else {
@@ -77,11 +90,15 @@ if (-not $PortOnly) {
         if ($p) { Fail 'a pcsx2-qt process is running (the rig needs the only PCSX2 instance; never stop one you did not start)' }
         Remove-Item $keyFile -ErrorAction SilentlyContinue
         Write-Host "rig: running $name on the original (PCSX2, state $stateFile)"
-        & $rigExe run $file --id $Id --out $out
+        $runArgs = @($file, '--id', $Id, '--out', $out)
+        if ($shotNames.Count -eq 0) { $runArgs += '--no-shots' }
+        & $rigExe run @runArgs
         if ($LASTEXITCODE -ne 0) { Fail 'the run on the original failed' }
         Set-Content -Path $keyFile -Value $key -Encoding ascii
     }
     if ($OriginalOnly) { Write-Host "rig: original trace in $origCsv"; exit 0 }
+} elseif ($shotFiles | Where-Object { -not (Test-Path $_) }) {
+    Fail "-PortOnly: no original capture(s) in $out (run once without -PortOnly): $(($shotFiles | Where-Object { -not (Test-Path $_) }) -join ', ')"
 } elseif (-not (Test-Path $origCsv)) {
     Fail "-PortOnly: no original trace at $origCsv (run once without -PortOnly)"
 } else {
@@ -96,6 +113,11 @@ $saved = @{}
 $set = @{
     KH2_TURBO = '1'; KH2_STATE = $stateJson; KH2_TRACE = $plan.names; KH2_TRACE_AT = $plan.at; KH2_TRACE_FILE = $portCsv
     KH2_PAD = $plan.pad; KH2_TRACE_END = $plan.frames
+}
+if ($shotTicks) {
+    # The shot is requested one tick ahead and saved over the next frames: run a few ticks past the last checkpoint.
+    $set.KH2_SHOT_TICKS = $shotTicks; $set.KH2_SHOT_SIZE = '640x448'; $set.KH2_DEBUGHUD = '0'; $set.KH2_TRACE_END = [string]([int]$plan.frames + 10)
+    Get-ChildItem -Path $out -Filter 'shot-*.png' | Where-Object { $_.Name -notlike 'shot-orig-*' } | Remove-Item -ErrorAction SilentlyContinue
 }
 if ($plan['seed.drive']) { $set.KH2_DRIVE_SEED = $plan['seed.drive'] }
 if ($plan['seed.auto_limit']) { $set.KH2_AUTO_LIMIT_SEED = $plan['seed.auto_limit'] }
@@ -115,4 +137,10 @@ if ($proc.ExitCode -ne 0 -or -not (Test-Path $portCsv)) { Fail "the port run fai
 & $rigExe compare $file $origCsv $portCsv --out $out
 $code = $LASTEXITCODE
 Write-Host "rig: values table $out\values.csv, report $out\report.txt"
+if ($shotNames.Count -gt 0) {
+    & $rigExe frames $file $out
+    $fcode = $LASTEXITCODE
+    Write-Host "rig: frames $out\frames.txt, pictures in $out\frames"
+    if ($fcode -ne 0 -and $code -eq 0) { $code = $fcode }
+}
 exit $code

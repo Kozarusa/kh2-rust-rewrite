@@ -8,7 +8,7 @@
 //! kh2-rig port-state <scenario.toml> <out.json>   the scenario's state as one KH2_STATE file for the port (prints the .p2s path)
 //! kh2-rig plan <scenario.toml>                  key=value lines for tools/rig.ps1 (area, pad, frames, seeds, trace names and checkpoints)
 //! kh2-rig compare <scenario.toml> <orig.csv> <port.csv> [--out DIR]   pass/fail table by the scenario's checks (values.csv, report.txt)
-//! options: --unlimited  --out DIR  --id NAME (lock owner)  --attach load|bp  --ram  --lock-wait SECONDS
+//! options: --unlimited  --out DIR  --id NAME (lock owner)  --attach load|bp  --ram  --lock-wait SECONDS  --no-shots (skip [[shot]] captures)
 //! ```
 //! Needs `KH2_ISO` and the patched PCSX2-MCP under `local/tools/pcsx2-mcp` (see `client`).
 
@@ -18,8 +18,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-const USAGE: &str = "usage: kh2-rig check|run|determinism <scenario.toml> [--unlimited] [--out DIR] [--id NAME] [--attach bp|load] [--ram] [--lock-wait SECONDS]\n       kh2-rig diff <a.csv> <b.csv>
+const USAGE: &str = "usage: kh2-rig check|run|determinism <scenario.toml> [--unlimited] [--out DIR] [--id NAME] [--attach bp|load] [--ram] [--lock-wait SECONDS] [--no-shots]\n       kh2-rig diff <a.csv> <b.csv>
        kh2-rig compare <scenario.toml> <orig.csv> <port.csv> [--out DIR]
+       kh2-rig frames <scenario.toml> <run-dir>
        kh2-rig port-state <scenario.toml> <out.json>
        kh2-rig plan <scenario.toml>";
 
@@ -70,6 +71,18 @@ fn run(args: &[String]) -> Result<bool, String> {
         print!("{}", report.text());
         return Ok(report.passed());
     }
+    if cmd == "frames" {
+        let (sc, _, _) = client::load_scenario(&PathBuf::from(args.get(1).ok_or(USAGE)?))?;
+        if sc.shots.is_empty() {
+            return Err(format!("{}: the scenario has no [[shot]]", sc.name));
+        }
+        let dir = PathBuf::from(args.get(2).ok_or(USAGE)?);
+        let report = kh2_rig::frames::compare_dir(&sc, &dir)?;
+        std::fs::write(dir.join("frames.csv"), report.csv()).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("frames.txt"), report.text()).map_err(|e| e.to_string())?;
+        print!("{}", report.text());
+        return Ok(report.passed());
+    }
     if cmd == "port-state" {
         let (sc, _, _) = client::load_scenario(&PathBuf::from(args.get(1).ok_or(USAGE)?))?;
         let cfg = Config::from_env(None)?;
@@ -109,7 +122,9 @@ pad={}
 frames={}
 state={}
 names={}
-at={at}", sc.name, sc.port_area.as_deref().unwrap_or(""), sc.pad_path().map_or(String::new(), |p| p.display().to_string()), sc.frames, sc.state, sc.value_names().join(","));
+at={at}
+shots={}
+shot_names={}", sc.name, sc.port_area.as_deref().unwrap_or(""), sc.pad_path().map_or(String::new(), |p| p.display().to_string()), sc.frames, sc.state, sc.value_names().join(","), sc.shots.iter().map(|s| s.at.to_string()).collect::<Vec<_>>().join(","), sc.shots.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(","));
         for (k, v) in &sc.seeds {
             println!("seed.{k}={v}");
         }
@@ -127,6 +142,7 @@ at={at}", sc.name, sc.port_area.as_deref().unwrap_or(""), sc.pad_path().map_or(S
         ram_hash: flag(args, "--ram"),
         out: value(args, "--out").map(PathBuf::from),
         lock_wait: Duration::from_secs(value(args, "--lock-wait").and_then(|s| s.parse().ok()).unwrap_or(1800)),
+        no_shots: flag(args, "--no-shots"),
     };
     let out = opt.out.clone().unwrap_or_else(|| cfg.local.join("rig").join(&sc.name));
     match cmd {

@@ -7,6 +7,7 @@
 //! * [`client`]: the PCSX2 rig client (debug server + PINE): launch the patched PCSX2-MCP with a state, stop at the pad read of every
 //!   game frame, inject the pad bytes, read the values, write the trace.
 //! * [`report`]: original versus port, joined by name with the scenario's tolerances (`kh2-rig compare`, used by `tools/rig.ps1`).
+//! * [`frames`]: the frame part, screenshots of both sides compared by SSIM and mean absolute difference (`kh2-rig frames`).
 //! * [`trace`]: the trace CSV both sides write (`k,name,value,stop`).
 //!
 //! # State transfer
@@ -36,6 +37,7 @@
 
 pub mod cli;
 pub mod client;
+pub mod frames;
 pub mod p2s;
 pub mod pad;
 pub mod save;

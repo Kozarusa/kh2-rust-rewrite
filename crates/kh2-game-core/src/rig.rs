@@ -316,7 +316,7 @@ fn rig_trace(
         // The playing motion: the slot is `id * 4 + variant` (contract.md, the controller's +0x14 holds the id), the frame is the animator's.
         let motion = sora.and_then(|s| anims.get(s.body).ok()).and_then(|a| Some((i32::try_from(a.slot? / 4).ok()?, a.frame)));
         let menu = phase.as_deref().zip(menu.as_deref());
-        let ctx = Ctx { k, sora, area: area.as_deref(), progress: progress.as_deref(), cam: cam.single().ok(), menu, motion, step: frame.map(|f| f.step()) };
+        let ctx = Ctx { k, sora, area: area.as_deref(), progress: progress.as_deref(), cam: cam.single().ok(), menu, motion, vsync: frame.as_deref().map(|f| &f.vsync) };
         trace.record(k, &ctx);
     }
     if trace.end.is_some_and(|e| k >= e) {
@@ -464,7 +464,7 @@ mod tests {
         let mut t = RigTrace::create(path.to_str().unwrap(), vec!["clock.vsync".into(), "place.world".into(), "nope".into()], TraceAt::parse("3,5"), Some(5)).unwrap();
         let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         p.rig.vsync = Some(1000);
-        let ctx = Ctx { k: 3, sora: None, area: None, progress: Some(&p), cam: None, menu: None, motion: None, step: None };
+        let ctx = Ctx { k: 3, sora: None, area: None, progress: Some(&p), cam: None, menu: None, motion: None, vsync: None };
         for k in 0..=5 {
             if t.at.wants(k) {
                 t.record(k, &Ctx { k, ..ctx });

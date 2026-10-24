@@ -28,7 +28,7 @@ auto_limit = 1
 
 [trace]
 every = 20
-values = ["frame.step", "sora.pos"]
+values = ["frame.step", "frame.vblanks", "frame.since_step", "frame.speed", "sora.pos"]
 
 # The field's step is 2.0 at every checkpoint, before, during and after the run: the cadence does not depend on the input.
 [[check]]

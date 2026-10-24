@@ -76,12 +76,12 @@ pub fn motion_step(holder: &mut [u8], dt: f32, sample: impl FnMut(f32)) {
 /// on all four lanes.
 pub fn place_matrix(rotated: &M4, position: V4, scale: V4) -> M4 {
     let mut m = *rotated;
-    for k in 0..3 {
-        m[3][k] = vu(m[3][k] + position[k]);
+    for (t, p) in m[3].iter_mut().zip(position).take(3) {
+        *t = vu(*t + p);
     }
-    for r in 0..3 {
-        for k in 0..4 {
-            m[r][k] = vu(m[r][k] * scale[r]);
+    for (row, s) in m.iter_mut().zip(scale).take(3) {
+        for v in row.iter_mut() {
+            *v = vu(*v * s);
         }
     }
     m
@@ -92,9 +92,9 @@ pub fn place_matrix(rotated: &M4, position: V4, scale: V4) -> M4 {
 /// prop's centre.
 pub fn world_matrix(object: &M4, holder: &M4, row_scale: f32) -> M4 {
     let mut a = *object;
-    for r in 1..3 {
-        for k in 0..4 {
-            a[r][k] = vu(a[r][k] * row_scale);
+    for row in a.iter_mut().skip(1).take(2) {
+        for v in row.iter_mut() {
+            *v = vu(*v * row_scale);
         }
     }
     [transform(&a, holder[0]), transform(&a, holder[1]), transform(&a, holder[2]), transform(&a, holder[3])]

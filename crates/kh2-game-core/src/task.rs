@@ -884,10 +884,11 @@ pub mod modes {
         fn count(&mut self, mgr: u32) -> i64;
         /// Frees the manager (`FUN_00102740`).
         fn destroy(&mut self, mgr: u32);
-        /// Virtual method 1 of the mode (the table slot at +4), called with the mode and the thread's task.
-        fn enter(&mut self, mode: u32, task: u32);
+        /// Virtual method 1 of the mode (the table slot at +4), called with the mode and the thread's task. It may change the mode's
+        /// fields (it makes the mode's manager); `modes` holds the mode objects.
+        fn enter(&mut self, modes: &mut Modes, mode: u32, task: u32);
         /// Virtual method 2 (the slot at +8).
-        fn exit(&mut self, mode: u32, task: u32);
+        fn exit(&mut self, modes: &mut Modes, mode: u32, task: u32);
     }
 
     /// Where the mode thread stands (the resume points of `FUN_00101e98`).
@@ -1104,7 +1105,7 @@ pub mod modes {
                 }
                 modes.mode_mut(mode).set_state(1);
                 modes.push_front(mode);
-                env.enter(mode, task);
+                env.enter(modes, mode, task);
                 self.phase = Phase::Running;
             }
             let mgr = modes.mode(mode).manager();
@@ -1117,7 +1118,7 @@ pub mod modes {
                     return Step::Yield(0);
                 }
                 env.kill_all(mgr);
-                env.exit(mode, task);
+                env.exit(modes, mode, task);
                 self.phase = Phase::Drain;
             }
             if env.count(mgr) > 0 {

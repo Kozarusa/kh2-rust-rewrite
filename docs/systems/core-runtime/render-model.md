@@ -9,10 +9,10 @@ Numbers after L1-S4 (275 rows, 41.3 KB, including the rows L1-S4 moved here from
 
 | part | what | rows | bytes | ledger decision |
 |---|---|---|---|---|
-| (a) plumbing | GS registers, VRAM placement, texture upload, VIF/DMA packet build | 34 | 8.6 KB | `not-needed:hw` |
+| (a) plumbing | GS registers, VRAM placement, texture upload, VIF/DMA packet build | 29 | 3.7 KB | `not-needed:hw` |
 | (b) rules ported through kh2-model / bevy | texture-container footer, TEXA and UVSC animation, animation object lists, model matrices | 67 + 9 ported/verified | 7.4 KB | port L1-P23 |
-| (c) what is drawn | view and frustum, the map's draw tree and culling, sky and map pass order, draw layers, translucent sort, map props | 119 | 20.2 KB | port L1-P25 |
-| (d) real gaps | model and map lighting, fog, screen clear colour, frame freeze copy, monochrome filter | 22 (+7 in core.task/core) | 3.6 KB | port L1-P26 |
+| (c) what is drawn | view and frustum, the map's draw tree and culling, sky and map pass order, draw layers, translucent sort, map props | 123 | 24.5 KB | port L1-P25 |
+| (d) real gaps | model and map lighting, fog, screen clear colour, frame freeze copy, monochrome filter | 23 (+7 in core.task/core) | 4.3 KB | port L1-P26 |
 | dead | lv4 starts and functions with no call, no literal and no pointer word in the executable or the overlays | 24 | 2.4 KB | `not-needed:dead` |
 
 ## (a) Plumbing the port replaces (not-needed:hw)
@@ -20,9 +20,8 @@ Evidence: each function only builds GS register values, GIF tags or VIF UNPACK c
 texture in GS memory or kicks DMA; none of them decides what the player sees beyond what the rules in (b) to (d) already decide.
 - GS register cache with change test: `0x108c00`, `0x108ce0`, `0x108e30`; packet templates `0x1081f8`, `0x108350`, getters `0x108e70..0x108e88`.
 - GS memory: allocator `0x109168`, `0x109278`, placement `0x109308`, bind `0x109188`, upload `0x109590`, `0x1095f0`, `0x2337f0`.
-- Packet build: `0x10a9d0`, `0x10a9f8` (lighting packet), `0x1091f0`, `0x134e30`, `0x121558`, `0x121770`, `0x133e90`, `0x147de8`, `0x1b60d0`.
-- Mesh DMA chain `0x11f560` with its pointer-word wrappers `0x1202d8`, `0x120308`: the mesh rules it reads (texture index bits 1..5 of the
-  mesh entry `+0xc`, material flags) are already ported in `kh2-model` (`lib.rs`, `texture.rs`); the chain itself is not.
+- Packet build: `0x10a9d0`, `0x1091f0`, `0x134e30`, `0x121558`, `0x133e90`, `0x147de8`, `0x1b60d0`.
+
 - Frame unit (core.task): display set-up `0x14d378`, DMA `0x14d5a0`, `0x14d5c8`, `0x14d608`, environment packets `0x14d670`, `0x14d768`,
   `0x14d8a0..0x14d9d0`, `0x14da38`, `0x14da40`, `0x14dad8`, vblank thread and semaphores `0x14d03c..0x14d338`.
 
@@ -30,10 +29,10 @@ texture in GS memory or kicks DMA; none of them decides what the player sees bey
 The port already implements these; the package adds `/// orig` lines and factory oracle tests (pure parsers and updates over a byte block):
 - Footer and tag walk: `0x132238` (`kh2_model::texanim::footer_offset`), `0x132288`, `0x1322e0`, `0x132320`, `0x132360`, `0x1323b0`,
   `0x132438` (`texanim::parse`), `0x1323a0`.
-- TEXA objects: constructor and destructors `0x1326e8`, `0x132798`, `0x1327c0`, request test `0x132910` (`Texa::anim_index`), start `0x1329e0`
-  (`TexaPlayer::start`), update `0x132a80` (`TexaPlayer::update`), slot request `0x132c90`, `0x132ca0`, `0x192c80` (`TexaPlayer::play_slot`),
-  sprite lists `0x1331c8`, `0x1332a8` (`TexaPlayer::sprite`), frame fields `0x132e98..0x132f90`, state copy `0x132ce0`.
-- UVSC objects: `0x1333c8`, `0x133430`, `0x133458`, offset `0x133490` (`UvscPlayer::offset`), update `0x133518` (`UvscPlayer::update`), `0x1335d8`, `0x1335f8`.
+- TEXA objects: constructor and destructors `0x1326e8`, `0x132798`, `0x1327c0`, vtable query wrapper `0x132910` over `0x1327f8` (`Texa::anim_index`), request-and-start wrapper `0x1329e0` over `0x132950`
+  (`TexaPlayer::start`), update `0x132a80` (`TexaPlayer::update`), slot request `0x132c90`, `0x132ca0`, `0x192c80` (one call into `0x11e850`; the slot
+  request `0x133058` is `TexaPlayer::play_slot`), sprite lists `0x1331c8`, builder `0x1332a8` (the current sprite `0x132fc0` is `TexaPlayer::sprite`), frame fields `0x132e98..0x132f90`, state copy `0x132ce0`.
+- UVSC objects: `0x1333c8`, `0x133430`, `0x133458`, kind-2 request test `0x133490` (the offsets `0x133628`/`0x1336d8` are `UvscPlayer::offset`), update `0x133518` (`UvscPlayer::update`), `0x1335d8`, `0x1335f8`.
 - Animation object base and list: `0x1324a0`, `0x132520..0x1325b0`, `0x11e018`, `0x11e108`, `0x11e1c8`, `0x11e208`, `0x11e3b8`, `0x11e598`,
   `0x11e638`, `0x11e760`, `0x11e7f8` (every object's update once per field), range dispatcher `0x188bd8` with `0x188010`.
 - Model unit: matrix swap `0x11d1f8`, animation links `0x132580`, `0x1325c0`, `0x1337c0`, `0x133948`, globals `0x134728`, `0x134898`, static
@@ -54,16 +53,19 @@ These change which polygons reach the screen and in what order. The port draws t
 - Pass order: `0x147300` draws the sky first (`0x148440`/`0x148478` mark it, on/off `0x143140`/`0x143160`, `0x15f1b0`/`0x15f1c8`), then map
   groups, then objects by draw flags (`0x1479c0`: opaque `0x147bb8`, translucent `0x147c98`, second view `0x147728`), then the draw layers
   (buckets at `0x3b4070`: `0x148948`, `0x148980`, `0x1489d8`) and the translucent list sorted by distance (`0x1485a8`, `0x1487a8`).
+- Mesh draw `0x11f560` (wrappers `0x1202d8`, `0x120308`): a mesh is drawn when `(flag & 0xf) != 0`; the pass splits on `+0x28 < 0x10000`;
+  a mesh with `+0x2c` bit 0 and a lighting record is skipped. Model draw `0x121770`: two passes, the second with alpha byte `+0x28 >> 1`.
+  The packet build inside both is hw.
 - Distance fade: `0x147158` (skipped while a scene event runs).
 - Per-frame passes: `0x143f78`, `0x143ff8`, `0x144168` (not while the freeze flag `0x35594e` is set).
 - Map props (background objects of the map file): create `0x15f3a0`, set-up `0x15f490`, `0x15f8e0`, constructor/destructor `0x15fdc0`,
   `0x15fe50`, per-frame `0x160428`, task `0x160588`/`0x1604a8`, colour scale `0x15ff50`, box `0x160068`, `0x1601a8`, `0x160388`, motion
   `0x160fb0..0x161238`, texture players that follow the camera `0x15fef8` (the sky).
 
-## (d) Real gaps (port L1-P26)
+## (d) Not reproduced yet (port L1-P26)
 Nothing in the port reproduces these today; each is visible:
 - Model lighting: `0x11dc40` builds the light set of a model from its object's light record (`0x11dac0`, record at object `+0xd0`), with the
-  inverse matrix `0x11bc08` (`0x11bb78`, `0x11bb28`); map group lights `0x148a58`, `0x148e08`; light matrices `0x134960`, `0x134bd8`; light
+  inverse matrix `0x11bc08` (`0x11bb78`, `0x11bb28`); light record registration `0x10a9f8` (0x120-byte slots at `0x349e70`); map group lights `0x148a58`, `0x148e08`; light matrices `0x134960`, `0x134bd8`; light
   blocks `0x134f40..0x135880`, `0x1358a0` (global light at `0x354e30`/`0x354e50`). The app lights models with bevy's own lights.
 - Fog: colour `0x10a5e0` (`0x34e0d0..0x34e0d2`), near/far and scale `0x10a630`, limits `0x10a6b0`, state `0x10a9b0`, `0x10ac98`.
 - Screen clear colour and switch: `0x14da88`, `0x14daa8`, `0x14dac8`, `0x14de68`, the clear task `0x14dc70` (priority 100000) with its
@@ -92,6 +94,6 @@ Read for this classification (main image): `0x106868..0x1071c0`, `0x108c00..0x10
 the executable and `OVL.IMG` for 32-bit words equal to each address.
 
 ## Gaps
-- The part of `0x11f560` that is not packet build (which mesh entries it skips) was not separated; L1-P25 must read it again for skip rules.
+- `0x11f560` and `0x121770` hold draw rules besides the packet build (reviewer of L1-S4); L1-P25 ports the rules, the packets stay out.
 - `0x147980` is named by 16 words of the executable: it may be a table value rather than only a function [inferred]; read before porting.
-- Whether `0x10a9f8` (the lighting packet) also holds a lighting rule the (d) list misses was not checked [inferred: it only packs].
+- `0x10a9f8` registers light records (reviewer of L1-S4): part of L1-P26.

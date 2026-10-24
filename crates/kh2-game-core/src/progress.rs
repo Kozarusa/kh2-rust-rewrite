@@ -1605,6 +1605,14 @@ impl Progress {
         (0..n).take_while(|_| self.give(id, INVENTORY, false)).count() as u8
     }
 
+    /// The give list (`crate::save_block::give_list`, `FUN_001d7508`) on this inventory: every non-zero id of the first `count` entries
+    /// goes back through [`Progress::give`] to the inventory and the entry is cleared. Not called by the app yet.
+    pub fn give_list(&mut self, ids: &mut [u16], count: i32) {
+        crate::save_block::give_list(ids, count, |id| {
+            self.give(id as u16, INVENTORY, false);
+        });
+    }
+
     /// `FUN_001a1c30(id, n)`: remove `n` copies (to 0 at least); a key item loses its bit.
     /// orig 0x1a1c30
     pub fn use_item(&mut self, id: u16, n: u8) {

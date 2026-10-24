@@ -508,6 +508,10 @@ impl Mem {
         self.regs.push((a, v, true));
         self
     }
+    fn fixed(&mut self, a: u32, bytes: Vec<u8>) -> &mut Mem {
+        self.regs.push((a, bytes, true));
+        self
+    }
     fn scratch(&mut self, a: u32, n: u32) -> &mut Mem {
         self.regs.push((a, vec![0; n as usize], false));
         self
@@ -1152,6 +1156,355 @@ fn orig_16e1e0_matches_the_game() {
         }
         let (g, p) = d.run(&m, n, |ee| call(ee, 0x16e1e0, &[]), |p| t::objentry_load(p));
         assert_eq!(g, p, "case {n}: return value");
+    }
+}
+
+
+// ---- the data cache, the table loaders and the group records -------------------------------------------------------------------------
+
+const DREC: u32 = 0x0181_0000;
+const ENT: u32 = 0x0182_0000;
+
+fn data_cache_cfg() -> Cfg {
+    Cfg::new(
+        &[(0x16ed08, 2), (0x16fd18, 2), (0x16ef80, 1), (0x16efd8, 1), (0x16ed50, 2), (0x16eda8, 3), (0x1a7940, 1), (0x16e208, 1), (0x1a7d48, 2), (0x1700e0, 0)],
+        |tag, _, _, h| match tag {
+            0x16ef80 | 0x16efd8 => (h >> 3) & 1,
+            0x16eda8 => {
+                if h & 1 == 0 {
+                    0
+                } else {
+                    h
+                }
+            }
+            0x16e208 => {
+                if h & 3 == 0 {
+                    0
+                } else {
+                    (ENT + 0x100) as u64
+                }
+            }
+            0x1a7d48 => h & 1,
+            _ => h,
+        },
+    )
+}
+
+fn data_cache_mem(r: &mut Rng) -> Mem {
+    let mut m = Mem::new();
+    m.win(r, DREC, 0x18).win(r, ENT, 0x100).win(r, ENT + 0x100, 0x100).win(r, 0, 0x100);
+    m.w32(DREC + 8, [ENT, ENT + 0x100, 0][r.below(3) as usize]);
+    m
+}
+
+/// The cache buffer allocation: the first buffer always, the second when the id passes neither test and the entry byte +0x48 has bit 0
+/// clear, the third when the id fails the first test. Stand-ins: 0x16ed08, 0x16fd18, 0x16ef80, 0x16efd8, 0x16ed50, 0x16eda8.
+#[test]
+fn orig_1a7808_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_1a7808", data_cache_cfg()) else { return };
+    let mut r = Rng::new(0x1a7808);
+    let (mut b, mut c) = (0, 0);
+    for n in 0..1500u64 {
+        let m = data_cache_mem(&mut r);
+        d.run(&m, n, |ee| call(ee, 0x1a7808, &[DREC as u64]), |p| {
+            let mut rec = p.mem.get(DREC, 0x18);
+            t::data_cache_fill(p, &mut rec);
+            p.mem.put(DREC, &rec);
+            0
+        });
+        let log = d.sh.borrow().log.clone();
+        b += log.iter().any(|e| e.0 == 0x16ed50) as u32;
+        c += log.iter().any(|e| e.0 == 0x16eda8) as u32;
+    }
+    assert!(b > 100 && c > 400, "branches: {b} second buffers, {c} third-buffer lookups");
+}
+
+/// Pointing the record at a model: free, entry lookup when none is given, room check (dump when full), then the allocation.
+/// Stand-ins as above plus 0x1a7940, 0x16e208, 0x1a7d48 and 0x1700e0.
+#[test]
+fn orig_1a78c8_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_1a78c8", data_cache_cfg()) else { return };
+    let mut r = Rng::new(0x1a78c8);
+    let (mut looked_up, mut dumped) = (0, 0);
+    for n in 0..1500u64 {
+        let m = data_cache_mem(&mut r);
+        let id = sx(r.word() as u32) >> if r.below(2) == 0 { 0 } else { 40 };
+        let entry: u64 = if r.below(2) == 0 { 0 } else { [ENT as u64, (ENT + 0x100) as u64][r.below(2) as usize] };
+        d.run(&m, n, |ee| call(ee, 0x1a78c8, &[DREC as u64, id, entry]), |p| {
+            let mut rec = p.mem.get(DREC, 0x18);
+            t::data_cache_set(p, DREC, &mut rec, id, entry);
+            p.mem.put(DREC, &rec);
+            0
+        });
+        let log = d.sh.borrow().log.clone();
+        looked_up += log.iter().any(|e| e.0 == 0x16e208) as u32;
+        dumped += log.iter().any(|e| e.0 == 0x1700e0) as u32;
+    }
+    assert!(looked_up > 300 && dumped > 300, "branches: {looked_up} entry lookups, {dumped} dumps");
+}
+
+const PA: u32 = 0x0182_0000;
+const B1: u32 = 0x0181_0000;
+const B2: u32 = 0x0181_1000;
+
+/// The words the loader's setters write (address, bytes), the windows the test lays.
+const LOADER_WINDOWS: &[(u32, u32)] = &[
+    (0x35d270, 8),
+    (0x1c89700, 8),
+    (0x1c8a970, 0x10),
+    (0x1c95588, 12),
+    (0x1d5d640, 8),
+    (0x1d5d6b4, 4),
+    (0x1d5dd80, 4),
+    (0x1d5df10, 4),
+    (0x1d5df58, 0x10),
+    (0x1d6a920, 0x70),
+    (0x360768, 4),
+    (0x3608f8, 4),
+    (0, 0x100),
+];
+
+const NAME_REGION: (u32, u32) = (0x37aed8, 0xf4);
+
+fn all_steps() -> Vec<t::TableStep> {
+    let mut v = Vec::new();
+    v.extend(t::SYSTEM_STEPS_A);
+    v.extend(t::SYSTEM_STEPS_B);
+    v.extend(t::BATTLE_STEPS);
+    v
+}
+
+/// A BAR image of one file: the wanted entries (some missing, some preceded by a decoy of the same name and another type), noise
+/// entries and, for the first file, the optional type-0x29 entry. Payloads point at blocks of the arena at `PA`.
+fn build_bar(m: &mut Mem, r: &mut Rng, at: u32, steps: &[t::TableStep], names: &[u8], optional: bool, next_block: &mut u32) -> (usize, usize) {
+    let mut entries: Vec<(u16, u16, u32, u32)> = Vec::new();
+    let mut missing = 0;
+    for s in steps {
+        let o = (s.name_at - NAME_REGION.0) as usize;
+        let name = t::name_from_bytes([names[o], names[o + 1], names[o + 2], names[o + 3]]) as u32;
+        if r.below(16) == 0 {
+            missing += 1;
+            continue;
+        }
+        if r.below(4) == 0 {
+            entries.push((if s.ty == 2 { 1 } else { 2 }, 0, name, PA + r.below(0x40) as u32 * 0x100));
+        }
+        entries.push((s.ty as u16, 0, name, PA + *next_block * 0x100));
+        *next_block += 1;
+    }
+    if optional {
+        match r.below(3) {
+            0 => {}
+            1 => entries.push((0x29, 0, r.word() as u32, 0)),
+            _ => entries.push((0x29, 0, r.word() as u32, PA + 0x100)),
+        }
+    }
+    for _ in 0..r.below(5) {
+        entries.push((r.below(0x30) as u16, 0, r.word() as u32, r.word() as u32));
+    }
+    for i in (1..entries.len()).rev() {
+        entries.swap(i, r.below(i as u64 + 1) as usize);
+    }
+    m.w32(at + 4, entries.len() as u32);
+    for (k, e) in entries.iter().enumerate() {
+        let a = at + 0x10 + 0x10 * k as u32;
+        m.w16(a, e.0);
+        m.w16(a + 2, e.1);
+        m.w32(a + 4, e.2);
+        m.w32(a + 8, e.3);
+    }
+    (entries.len(), missing)
+}
+
+/// The two table loaders. Stand-ins: 0x1af9e0 (hands out the two BAR images in turn), the setters that are other units' (0x1cc040,
+/// 0x1b6f38, 0x1a6f48, 0x1a7dd8, 0x1d1118, 0x19e778, 0x1d8ca0, 0x1a41c8, 0x1adfb0, 0x1be4a8, 0x1be818, 0x1d1c70, 0x1d4c58, 0x1a4c68,
+/// 0x1d3b80, 0x1d5910 with one argument, 0x265ac0 with none). The ported setters run for real in the original, so the globals they write
+/// are compared. The name words are copied from the executable's data once.
+#[test]
+fn orig_193610_matches_the_game() {
+    let mut standins = vec![(0x1af9e0, 1), (0x265ac0, 0)];
+    for s in [0x1cc040, 0x1b6f38, 0x1a6f48, 0x1a7dd8, 0x1d1118, 0x19e778, 0x1d8ca0, 0x1a41c8, 0x1adfb0, 0x1be4a8, 0x1be818, 0x1d1c70, 0x1d4c58, 0x1a4c68, 0x1d3b80, 0x1d5910] {
+        standins.push((s, 1));
+    }
+    let cfg = Cfg::new(&standins, |tag, k, _, h| if tag == 0x1af9e0 { [B1, B2][k as usize % 2] as u64 } else { h });
+    let Some(mut d) = Dual::new("orig_193610", cfg) else { return };
+    let names = exe_bytes(&mut d.ee, NAME_REGION.0, NAME_REGION.1);
+    let mut r = Rng::new(0x193610);
+    let (mut missing_total, mut optional_called, mut optional_idle, mut total) = (0, 0, 0, 0);
+    for n in 0..600u64 {
+        let mut m = Mem::new();
+        for &(a, len) in LOADER_WINDOWS {
+            m.win(&mut r, a, len);
+        }
+        m.fixed(NAME_REGION.0, names.clone());
+        // An entry that is missing makes the loader read the word at address 8: it holds a valid payload address.
+        m.w32(8, PA + 0x3f00);
+        m.win(&mut r, B1, 0x400).win(&mut r, B2, 0x400).win(&mut r, PA, 0x4000);
+        // Payload blocks: a count word at +4 and type words behind it, so that the table end and the type-2 lookup have something to read.
+        for k in 0..0x40u32 {
+            let a = PA + k * 0x100;
+            m.w32(a + 4, r.below(6) as u32);
+            for e in 0..6u32 {
+                m.w16(a + 0x10 + 0x10 * e, [1u16, 2, 3, 2][r.below(4) as usize]);
+            }
+        }
+        let steps = all_steps();
+        let sys: Vec<t::TableStep> = steps[..13].to_vec();
+        let battle: Vec<t::TableStep> = steps[13..].to_vec();
+        let mut next = 0u32;
+        let (c1, miss1) = build_bar(&mut m, &mut r, B1, &sys, &names, true, &mut next);
+        let (c2, miss2) = build_bar(&mut m, &mut r, B2, &battle, &names, false, &mut next);
+        assert!(c1 < 60 && c2 < 60);
+        missing_total += miss1 + miss2;
+        total += 1;
+        d.run(&m, n, |ee| call(ee, 0x193610, &[]), |p| {
+            t::load_system_tables(p);
+            0
+        });
+        let log = d.sh.borrow().log.clone();
+        optional_called += log.iter().any(|e| e.0 == 0x265ac0) as u32;
+        optional_idle += !log.iter().any(|e| e.0 == 0x265ac0) as u32;
+    }
+    assert!(missing_total > 100 && optional_called > 100 && optional_idle > 100, "branches over {total}: {missing_total} missing entries, {optional_called} with the optional call, {optional_idle} without");
+}
+
+/// The BAR payload setter that also reads the BAR: the type-2 entry's payload word, or the word at address 8 when there is none.
+#[test]
+fn orig_1d3050_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_1d3050", Cfg::new(&[], |_, _, _, h| h)) else { return };
+    let mut r = Rng::new(0x1d3050);
+    let (mut found, mut none) = (0, 0);
+    for n in 0..1000u64 {
+        let mut m = Mem::new();
+        m.win(&mut r, 0x360768, 4).win(&mut r, 0x1d6a988, 4).win(&mut r, 0, 0x100).win(&mut r, PA, 0x100);
+        let count = r.below(6) as u32;
+        m.w32(PA + 4, count);
+        for e in 0..6u32 {
+            m.w16(PA + 0x10 + 0x10 * e, [1u16, 2, 3, 1][r.below(4) as usize]);
+        }
+        if (0..count).any(|e| m.r16(PA + 0x10 + 0x10 * e) == 2) {
+            found += 1;
+        } else {
+            none += 1;
+        }
+        d.run(&m, n, |ee| call(ee, 0x1d3050, &[PA as u64]), |p| {
+            t::set_table_1d3050(p, PA);
+            0
+        });
+    }
+    assert!(found > 300 && none > 100, "outcomes: {found} with a type-2 entry, {none} without");
+}
+
+const KT: u32 = 0x0181_0000;
+
+/// The keyed row search of the table behind the word 0x1d5df58: rows of 8 bytes sorted by their first word, searched with the game's
+/// halving binary search (0x30ff40 with the comparator 0x3335c0, both run for real in the original).
+#[test]
+fn orig_1c0b40_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_1c0b40", Cfg::new(&[], |_, _, _, h| h)) else { return };
+    let mut r = Rng::new(0x1c0b40);
+    let (mut hit, mut miss) = (0, 0);
+    for n in 0..3000u64 {
+        let mut m = Mem::new();
+        m.win(&mut r, 0x1d5df58, 4).win(&mut r, KT, 0x100);
+        m.w32(0x1d5df58, KT);
+        let count = r.below(20) as u32;
+        m.w32(KT + 4, count);
+        let mut ids: Vec<u32> = (0..count).map(|_| (r.below(40) as u32) * 3).collect();
+        if r.below(8) != 0 {
+            ids.sort();
+        }
+        for (k, id) in ids.iter().enumerate() {
+            m.w32(KT + 8 + 8 * k as u32, *id);
+        }
+        let key: u32 = match r.below(5) {
+            0 => r.word() as u32,
+            1 | 2 if count > 0 => ids[r.below(count as u64) as usize],
+            _ => (r.below(42) as u32) * 3 + r.below(2) as u32,
+        };
+        let (g, p) = d.run(&m, n, |ee| call(ee, 0x1c0b40, &[sx(key)]) as u32, |p| t::keyed_row(p, key));
+        assert_eq!(g, p, "case {n}: row address");
+        if g == 0 {
+            miss += 1
+        } else {
+            hit += 1
+        }
+    }
+    assert!(hit > 500 && miss > 500, "outcomes: {hit} found, {miss} missed");
+}
+
+const GRP: u32 = 0x01c8_af90;
+const SREC: u32 = 0x01c8_9400;
+
+fn group_case_mem(r: &mut Rng) -> (Mem, u32, u32) {
+    let mut m = Mem::new();
+    m.win(r, SREC, 0x40).win(r, GRP, 64 * 0x38).win(r, 0x35e468, 4);
+    let nobj = r.below(4) as u32;
+    for k in 0..nobj.max(1) {
+        m.win(r, OBJS + k * 0x100, 0x100);
+    }
+    let idx = r.below(64) as u32;
+    let group = if r.below(10) == 0 { 0 } else { GRP + idx * 0x38 };
+    let rec = SREC + 12 * r.below(4) as u32;
+    m.w32(rec + 8, group);
+    if group != 0 {
+        m.w32(group + 0xc, if nobj == 0 { 0 } else { OBJS });
+        for k in 0..nobj {
+            vt(&mut m, OBJS + k * 0x100);
+            m.w32(OBJS + k * 0x100 + 0x60, if k + 1 < nobj { OBJS + (k + 1) * 0x100 } else { 0 });
+        }
+    }
+    if r.below(2) == 0 {
+        let f = m.r32(rec + 4) & !1;
+        m.w32(rec + 4, f);
+    }
+    (m, rec, group)
+}
+
+/// Releasing a spawn record: when its flag bit 0 is clear and it holds a group, the group's objects are dismissed (method 1 of each)
+/// and the group slot counter drops. Stand-in: virtual method 1 of the group's objects.
+#[test]
+fn orig_181630_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_181630", Cfg::new(&[], |_, _, _, h| h).v(1, 0)) else { return };
+    let mut r = Rng::new(0x181630);
+    let (mut released, mut idle) = (0, 0);
+    for n in 0..1500u64 {
+        let (m, rec, group) = group_case_mem(&mut r);
+        let mut m = m;
+        let live = m.r32(rec + 4) & 1 == 0 && group != 0;
+        if live {
+            released += 1
+        } else {
+            idle += 1
+        }
+        d.run(&m, n, |ee| call(ee, 0x181630, &[rec as u64]), |p| {
+            use kh2_game_core::area::ctl::{AreaCtl, GroupRec, GroupTable};
+            let bytes = p.mem.get(rec, 12);
+            let mut groups = GroupTable { recs: (0..64).map(|i| GroupRec(p.mem.get(GRP + i * 0x38, 0x38).try_into().unwrap())).collect() };
+            let mut ctl = AreaCtl { group_slots: p.mem.r32(0x35e468), ..AreaCtl::default() };
+            t::spawn_record_release(&bytes, &mut groups, &mut ctl, p);
+            for (i, g) in groups.recs.iter().enumerate() {
+                p.mem.put(GRP + i as u32 * 0x38, &g.0);
+            }
+            p.mem.w32(0x35e468, ctl.group_slots);
+            0
+        });
+    }
+    assert!(released > 400 && idle > 400, "outcomes: {released} released, {idle} left alone");
+}
+
+/// The per-group pass of a live spawn record. Stand-in: 0x1986c8.
+#[test]
+fn orig_181688_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_181688", Cfg::new(&[(0x1986c8, 1)], |_, _, _, h| h)) else { return };
+    let mut r = Rng::new(0x181688);
+    for n in 0..500u64 {
+        let (m, rec, _) = group_case_mem(&mut r);
+        d.run(&m, n, |ee| call(ee, 0x181688, &[rec as u64]), |p| {
+            let bytes = p.mem.get(rec, 12);
+            t::spawn_record_pass(&bytes, p);
+            0
+        });
     }
 }
 

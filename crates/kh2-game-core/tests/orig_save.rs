@@ -6,9 +6,11 @@
 //! region word and a random fix-up list, the port builds the block from nothing, and all 0xb4e0 bytes must agree.
 //!
 //! Stand-ins, all documented here and nowhere else:
-//! - `FUN_00105638` runs with two callees replaced by `jr ra`: `FUN_00194d78` (starts the script VM; touches no save byte) and
-//!   `FUN_001b6870` (the world flags' boot, `Story::world_boot`; the port's `Progress::new_game` does not run it either). The starting gear
-//!   (`FUN_001c0cb0(0)`, inside `FUN_00187d20`) runs for real on the executable's `item` and `plrp` tables laid out in memory.
+//! - `FUN_00105638` runs with `FUN_00194d78` (starts the script VM; touches no save byte) replaced by `jr ra`. The world flags' boot
+//!   `FUN_001b6870` runs for real, with its two callees replaced: `FUN_001b68c0` (the `wldf` record lookup) answers a pointer into a table of
+//!   16-byte records at `RECS` (byte 1 the kind), `FUN_001b6a48` (the list runner) counts its calls at `RUNS`. The port's `SaveBlock::init_save`
+//!   runs `progress_flags::world_boot` on the same table in its `mid` step, and the whole block, the world region included, must agree.
+//!   The starting gear (`FUN_001c0cb0(0)`, inside `FUN_00187d20`) runs for real on the executable's `item` and `plrp` tables laid out in memory.
 //! - `FUN_00187868` and the other record functions run on a pointer to a random record; the ones that take the party block as `g_save.party`
 //!   have it as a randomised global.
 //!
@@ -19,7 +21,7 @@ use std::sync::Arc;
 use kh2_ee::Ee;
 use kh2_factory::fuzz::*;
 use kh2_game_core::progress::{ItemIndex, Progress};
-use kh2_game_core::progress_flags::{FLAGS_ADDR, FLAGS_LEN, flag_8d0};
+use kh2_game_core::progress_flags::{FLAGS_ADDR, FLAGS_LEN, WorldEnv, flag_8d0, world_boot};
 use kh2_game_core::save_block::{self as sb, BootEnv, LEN, SaveBlock, at, party};
 use kh2_tables::tables::{self as t, Cmd, Item, Magc, Plrp};
 
@@ -536,6 +538,28 @@ fn first_diff(a: &[u8], b: &[u8]) -> String {
     a.iter().zip(b).enumerate().filter(|(_, (x, y))| x != y).map(|(o, (x, y))| format!("+{o:#x}: game {x:#x} port {y:#x}")).take(8).collect::<Vec<_>>().join("; ")
 }
 
+const RECS: u32 = 0x01f1_0000;
+const RUNS: u32 = 0x01f0_0000;
+
+/// The port's side of the boot's stand-ins (see the module doc).
+struct Boot<'a> {
+    recs: &'a [u8],
+    second: bool,
+    runs: u32,
+}
+
+impl WorldEnv for Boot<'_> {
+    fn record_byte(&self, index: u32, offset: usize) -> u8 {
+        self.recs[16 * (index as usize & 0xff) + offset]
+    }
+    fn second_part(&self) -> bool {
+        self.second
+    }
+    fn run_list(&mut self, _world: &mut [u8], _key: u8, _hook: bool) {
+        self.runs += 1;
+    }
+}
+
 /// The whole new-game save block. The original runs on a save block of random bytes, a random region word and a random fix-up list
 /// (offsets 1..=0x3f, deltas any byte, ended by an offset of 0 after 0 to 9 pairs); the port builds the block from the same inputs.
 #[test]
@@ -544,7 +568,18 @@ fn orig_105638_matches_the_game() {
     let ix = tb.index();
     let ee = &mut tb.ee;
     ee.hooks.insert(0x194d78, |e| e.gpr[kh2_ee::reg::V0] = 0);
-    ee.hooks.insert(0x1b6870, |e| e.gpr[kh2_ee::reg::V0] = 0);
+    ee.hooks.insert(0x1b68c0, |e| e.gpr[kh2_ee::reg::V0] = (RECS + 16 * (e.gpr[kh2_ee::reg::A0] as u32 & 0xff)) as u128);
+    ee.hooks.insert(0x1b6a48, |e| {
+        let n = e.r32(RUNS);
+        e.w32(RUNS, n + 1);
+        e.gpr[kh2_ee::reg::V0] = 0;
+    });
+    let mut recs = vec![0u8; 0x1000];
+    for (i, r) in recs.chunks_mut(16).enumerate() {
+        r[0] = i as u8;
+        r[1] = (i % 3) as u8;
+    }
+    ee.write(RECS, &recs);
     let mut rng = Rng::new(0x105638);
     let mut steps = 0;
     for case in 0..40 {
@@ -561,18 +596,31 @@ fn orig_105638_matches_the_game() {
         for (i, w) in table.iter().enumerate() {
             ee.w32(FIXUPS + 4 * i as u32, *w);
         }
+        ee.w32(RUNS, 0);
         let s0 = ee.steps;
         ee.call(0x105638, &[SAVE as u64], &[], STACK).unwrap_or_else(|f| panic!("case {case}: the original faulted: {f:?}"));
         steps += ee.steps - s0;
         let game = read(ee, SAVE as u32, LEN);
         let port = Progress::new_game_with(ix.clone(), &tb.plrp, &BootEnv { region, fixups: table.clone() });
         let image = port.save_image();
-        assert!(game == image, "case {case} (region {region}, {pairs} fix-up pairs): the save block differs: {}", first_diff(&game, &image));
-        // The SaveBlock of the port built without Progress agrees in every byte the starting gear does not touch.
+        // `Progress::new_game` does not run the world flags' boot (`Story::world_boot` does, with the disc's table): outside the world region
+        // the whole block agrees.
+        let w = at::WORLD_RECORDS;
+        let w_end = w + kh2_game_core::progress::world::LEN;
+        assert!(game[..w] == image[..w] && game[w_end..] == image[w_end..], "case {case} (region {region}, {pairs} fix-up pairs): the save block differs: {}", first_diff(&game, &image));
+        // The SaveBlock of the port built without Progress agrees in every byte the starting gear does not touch, the world flags included.
         let mut bare = SaveBlock::new();
-        bare.init_save(&BootEnv { region, fixups: table }, |_| {});
+        let mut runs = 0;
+        let recs = recs.clone();
+        bare.init_save(&BootEnv { region, fixups: table }, |b| {
+            let second = kh2_game_core::progress_flags::flag_102b(&b.bytes()[at::FLAGS..]);
+            let mut env = Boot { recs: &recs, second, runs: 0 };
+            world_boot(&mut b.bytes_mut()[w..], &mut env);
+            runs = env.runs;
+        });
         assert_eq!(&bare.bytes()[..at::PARTY], &game[..at::PARTY], "case {case}: bytes before the party block");
-        assert_eq!(&bare.bytes()[at::WORLD_RECORDS..], &game[at::WORLD_RECORDS..], "case {case}: bytes after the party block");
+        assert_eq!(&bare.bytes()[w..], &game[w..], "case {case}: bytes after the party block");
+        assert_eq!(ee.r32(RUNS), runs, "case {case}: how often the boot ran a world flag's list");
     }
     eprintln!("0x105638: 40 whole-block cases equal, {steps} interpreter steps");
 }

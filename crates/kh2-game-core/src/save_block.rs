@@ -789,6 +789,50 @@ pub fn take_stashed_halfword(party: &mut [u8], slot: &mut u16) {
     party[o..o + 2].fill(0);
 }
 
+/// `FUN_00187e68(party, id)`: the defeat counter of an enemy id (`FUN_00187dc8` finds the word). An id without a counter makes the
+/// original read address 0; the port answers 0 [inferred].
+///
+/// orig 0x187e68
+pub fn defeat_count(party: &[u8], id: i32) -> u32 {
+    defeat_counter_offset(id).map_or(0, |o| u32::from_le_bytes(party[o..o + 4].try_into().unwrap()))
+}
+
+/// `FUN_0014ca28`: one tick of the play time. The word at save `+0x1604` goes up by one unless it is already above 0xcdfe5c3 (it stops at
+/// 0xcdfe5c4); the word after it (`+0x1608`) is read and written back unchanged. When the word at `0x33e6fc` is non-zero (`counting`) and the
+/// current world byte (`0x33e830`) is below 0x13, the word `world` places on from `+0x160c` (`+0x1604 + 8 + 4 * world`) counts the same way:
+/// the time spent in each world. The original runs it from the vblank handler `FUN_0014cc88`.
+///
+/// orig 0x14ca28
+pub fn play_time_tick(save: &mut [u8], counting: bool, world: u8) {
+    let bump = |save: &mut [u8], o: usize| {
+        let v = u32::from_le_bytes(save[o..o + 4].try_into().unwrap());
+        put32(save, o, if v > 0xcdf_e5c3 { v } else { v + 1 });
+    };
+    bump(save, at::WALLET + 4);
+    if counting && world < 0x13 {
+        bump(save, at::WALLET + 12 + 4 * world as usize);
+    }
+}
+
+/// `FUN_001a6810(a, b, c)`: the offset in the chest table (`table`: a count halfword at `+2`, the records of 12 bytes from `+4`) of the first
+/// record whose byte 4 is 0 and whose bytes 5, 6 and 7 are `a`, `b` and `c`; `None` (the original answers 0) when there is none. The
+/// arguments are 64-bit in the original, so a value above 255 never matches.
+///
+/// orig 0x1a6810
+pub fn find_chest(table: &[u8], a: u64, b: u64, c: u64) -> Option<usize> {
+    let n = u16::from_le_bytes([table[2], table[3]]) as usize;
+    (0..n).map(|k| 4 + 12 * k).find(|&r| table[r + 4] == 0 && u64::from(table[r + 5]) == a && u64::from(table[r + 6]) == b && u64::from(table[r + 7]) == c)
+}
+
+/// `FUN_001be4b8(id)`: the offset in a table (`table`: a count word at `+4`, the records of 16 bytes from `+8`) of the first record whose byte 0
+/// is `id` (64-bit in the original, so above 255 never); `None` (the original answers 0) for none or a count below 1.
+///
+/// orig 0x1be4b8
+pub fn find_record_by_id(table: &[u8], id: u64) -> Option<usize> {
+    let n = i32::from_le_bytes(table[4..8].try_into().unwrap());
+    (0..n.max(0) as usize).map(|k| 8 + 16 * k).find(|&r| u64::from(table[r]) == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

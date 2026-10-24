@@ -185,19 +185,25 @@ fn orig_180350_matches_the_game() {
 
 #[test]
 fn orig_1803b0_matches_the_game() {
-    static ARGS: [Arg; 1] = [Arg::Int(&[0x2409, 0x2411, 0x2419, 0x2421, 0x2428])];
+    // The five removal ids, then ids outside them (a wide range and the neighbours of the five); the random item table makes
+    // ITEMS[0x20] non-zero in nearly every case and zero in some, so the pair loop runs and is skipped.
+    static FIVE: [Arg; 1] = [Arg::Int(&[0x2409, 0x2411, 0x2419, 0x2421, 0x2428])];
+    static WIDE: [Arg; 1] = [Arg::Range(0, 0x3000)];
+    static NEAR: [Arg; 1] = [Arg::Int(&[0x2408, 0x240a, 0x2410, 0x2412, 0x2418, 0x241a, 0x2420, 0x2422, 0x2427, 0x2429, 0, 1, -1])];
     let mut globals = ENV_GLOBALS.to_vec();
     globals.push((0x37a650, 40, false));
     let globals: &'static [(u32, u32, bool)] = Box::leak(globals.into_boxed_slice());
-    let spec = Spec { addr: 0x1803b0, args: &ARGS, floats: 0, ret: Ret::None, globals, stubs: &[], nulls: false };
-    run("0x1803b0", &spec, |c| {
-        let id = c.int(0);
-        let pairs = c.global(4).to_vec();
-        let mut s = sim(c);
-        story_chain(&mut s, &pairs, id);
-        write_log(c, 1, &s.log);
-        Out::none()
-    });
+    for args in [&FIVE, &WIDE, &NEAR] {
+        let spec = Spec { addr: 0x1803b0, args, floats: 0, ret: Ret::None, globals, stubs: &[], nulls: false };
+        run("0x1803b0", &spec, |c| {
+            let id = c.int(0);
+            let pairs = c.global(4).to_vec();
+            let mut s = sim(c);
+            story_chain(&mut s, &pairs, id);
+            write_log(c, 1, &s.log);
+            Out::none()
+        });
+    }
 }
 
 #[test]

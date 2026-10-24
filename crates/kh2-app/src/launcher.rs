@@ -173,10 +173,12 @@ pub fn attach_console(allow_new: bool) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::io::IntoRawHandle;
-        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
+        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
         // SAFETY: plain Win32 calls with no pointers.
         let ok = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 || (allow_new && AllocConsole() != 0) };
-        if ok && let Ok(f) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+        // A redirected stdout (a pipe or file from the parent) stays as it is.
+        let redirected = unsafe { let h = GetStdHandle(STD_OUTPUT_HANDLE); !h.is_null() && h != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE };
+        if ok && !redirected && let Ok(f) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
             let h = f.into_raw_handle();
             // SAFETY: the handle stays open for the life of the process.
             unsafe {
@@ -184,7 +186,7 @@ pub fn attach_console(allow_new: bool) -> bool {
                 SetStdHandle(STD_ERROR_HANDLE, h as _);
             }
         }
-        ok
+        ok || redirected
     }
     #[cfg(not(windows))]
     {

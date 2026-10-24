@@ -8,6 +8,7 @@
 //! `OpenKh.Kh2/Mdlx.Model.cs` and `OpenKh.Engine/Parsers/*` (Apache-2.0); see CREDITS.md.
 
 pub mod collision;
+pub mod draw;
 pub mod texanim;
 pub mod texture;
 

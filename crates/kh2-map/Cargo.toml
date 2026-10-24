@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 kh2-bar.workspace = true
+kh2-model.workspace = true
 
 [dev-dependencies]
 kh2-ee.workspace = true

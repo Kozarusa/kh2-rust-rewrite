@@ -840,6 +840,43 @@ pub fn save_ram_address() -> u32 {
     SAVE_ADDR
 }
 
+/// `FUN_00105cd8()`: the region word of the executable (global `0x349d44`; [`BootEnv::region`] carries it into the port).
+///
+/// orig 0x105cd8
+pub fn region_word(env: &BootEnv) -> u32 {
+    env.region
+}
+
+/// `FUN_002b70e0()`: the address of the journal's seen set, the save block's address plus `0x38f0` (`at::JOURNAL`).
+///
+/// orig 0x2b70e0
+pub fn journal_seen_address() -> u32 {
+    save_ram_address().wrapping_add(at::JOURNAL as u32)
+}
+
+/// `FUN_001a71c0(world)`: the address of a world's four-byte record, `0x340c9c + 4 * world`. A negative `world` means the current world:
+/// `current` is the byte at `0x33e830`. The arithmetic is the game's 32-bit one (the argument is cut to 32 bits, the product wraps).
+///
+/// orig 0x1a71c0
+pub fn world_record_address(world: i64, current: u8) -> u32 {
+    let w = if world < 0 { i64::from(current) } else { world };
+    (w as i32 as u32).wrapping_mul(4).wrapping_add(0x340c9c)
+}
+
+/// `FUN_001a6730(prev)`: the next record of the item table. The table (`table` is the pointer word `0x1c95588`, `count` the word at
+/// `table + 4`) holds records of 0x18 bytes from `+8`. With no previous record (0) the answer is the first record; otherwise the record
+/// after `prev`, or 0 once that would lie at or past the end. All sums are the game's 32-bit ones.
+///
+/// orig 0x1a6730
+pub fn item_table_each(prev: i64, table: u32, count: i32) -> u32 {
+    if prev == 0 {
+        return table.wrapping_add(8);
+    }
+    let next = (prev as i32 as u32).wrapping_add(0x18);
+    let end = table.wrapping_add((count as u32).wrapping_mul(0x18)).wrapping_add(8);
+    if next < end { next } else { 0 }
+}
+
 /// `FUN_001057b8(phase, token)`: the save block's static initialiser, the part of the new game's boot that runs on a zeroed block. Only the
 /// token `0xffff` does anything. Phase 1 sets up the story tables, the party block, the world records, the NEW tags, the shop words, the
 /// moogle and journal records, the config block and the object block (everything `FUN_00105638` does between zeroing the block and writing

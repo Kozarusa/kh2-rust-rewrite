@@ -76,6 +76,60 @@ pub mod logical {
     pub const PHYS_RESET: u64 = 0xf09;
     pub const SYNTH_CONFIRM: u64 = 0x0100_0000;
     pub const SYNTH_CANCEL: u64 = 0x0200_0000;
+
+    pub const PHYS_L2: u64 = 0x100;
+    pub const PHYS_R2: u64 = 0x200;
+    pub const PHYS_L1: u64 = 0x400;
+    pub const PHYS_R1: u64 = 0x800;
+    pub const PHYS_TRIANGLE: u64 = 0x1000;
+    pub const PHYS_CIRCLE: u64 = 0x2000;
+    pub const PHYS_CROSS: u64 = 0x4000;
+    pub const PHYS_SQUARE: u64 = 0x8000;
+
+    /// A row of a button set: the physical mask and the logical bit the set gives it.
+    pub struct Row {
+        pub physical: u64,
+        pub logical: u64,
+        pub name: &'static str,
+    }
+
+    /// The single-button rows of the field set (set 1, table `0x379768`, chosen by the field start `0x102a60`) that name one physical
+    /// button and one logical bit each; the set has more rows (combinations with the right stick, shoulder pairs, camera flags). What
+    /// each logical bit does in the field is not established here: the readers of the logical words are other units [gap].
+    pub const FIELD: [Row; 11] = [
+        Row { physical: PHYS_CROSS, logical: 0x800_0000, name: "Cross" },
+        Row { physical: PHYS_CIRCLE, logical: 0x100_0000, name: "Circle" },
+        Row { physical: PHYS_TRIANGLE, logical: 0x200_0000, name: "Triangle" },
+        Row { physical: PHYS_SQUARE, logical: 0x400_0000, name: "Square" },
+        Row { physical: PHYS_L1, logical: 0x80_0000, name: "L1" },
+        Row { physical: PHYS_R1, logical: 0x800, name: "R1" },
+        Row { physical: PHYS_SELECT, logical: 0x40_0000, name: "Select" },
+        Row { physical: PHYS_UP, logical: 0x4000, name: "Up" },
+        Row { physical: PHYS_DOWN, logical: 0x8000, name: "Down" },
+        Row { physical: PHYS_LEFT, logical: 0x1_0000, name: "Left" },
+        Row { physical: PHYS_RIGHT, logical: 0x1000_0000, name: "Right" },
+    ];
+
+    /// The three rows of set 3 (table `0x379ab8`).
+    pub const SET3: [Row; 3] = [
+        Row { physical: PHYS_R1, logical: 0x100, name: "R1" },
+        Row { physical: PHYS_L1, logical: 0x200, name: "L1" },
+        Row { physical: PHYS_TRIANGLE, logical: 0x400, name: "Triangle" },
+    ];
+
+    /// The d-pad rows that sets 4 and 5 (tables `0x379af8`, `0x379b88`) start with.
+    pub const SET5_DPAD: [Row; 4] = [
+        Row { physical: PHYS_UP, logical: 0x100, name: "Up" },
+        Row { physical: PHYS_DOWN, logical: 0x200, name: "Down" },
+        Row { physical: PHYS_LEFT, logical: 0x400, name: "Left" },
+        Row { physical: PHYS_RIGHT, logical: 0x800, name: "Right" },
+    ];
+}
+
+/// The logical word a table gives a physical word: every row `(mask, bit)` whose mask is fully pressed adds its bit. This is what
+/// `FUN_00167660` does for the shared table and for the active set; `FUN_001676a0` ORs the two results.
+pub fn apply_table(rows: &[(u64, u64)], physical: u64) -> u64 {
+    rows.iter().filter(|&&(mask, _)| physical & mask == mask).fold(0, |acc, &(_, bit)| acc | bit)
 }
 
 fn put32(b: &mut [u8], o: usize, v: u32) {

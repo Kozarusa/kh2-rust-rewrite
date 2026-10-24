@@ -1716,3 +1716,226 @@ fn orig_14a080_matches_the_game() {
     }
     assert!(tally[2] + tally[3] > 100 && tally[0] > 100, "the generator reaches short and long polls: {tally:?}");
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The pad unit and the vibration
+
+const PAD_LOGICAL: u32 = 0x35b7c0;
+const PAD_SETS: u32 = 0x35b888;
+
+/// Random pad globals in the original's memory (the set pointer table is the executable's own and stays).
+fn random_pad(ee: &mut Ee, r: &mut Rng) {
+    ee.write(PAD_LOGICAL, &rnd_bytes(r, 0xc0));
+    for a in [0x35b880u32, 0x35b8ac, 0x522150, 0x522168, 0x52216c, 0x522170] {
+        ee.w32(a, r.word() as u32);
+    }
+}
+
+fn pad_from(ee: &mut Ee) -> PadUnit {
+    let mut sets = [0u32; 6];
+    for (i, s) in sets.iter_mut().enumerate() {
+        *s = ee.r32(PAD_SETS + 4 * i as u32);
+    }
+    let mut p = PadUnit::new(sets);
+    for (i, b) in p.logical.iter_mut().enumerate() {
+        for (o, x) in b.iter_mut().enumerate() {
+            *x = ee.r8(PAD_LOGICAL + 0x60 * i as u32 + o as u32);
+        }
+    }
+    p.scale = [ee.f32_at(0x522168), ee.f32_at(0x52216c), ee.f32_at(0x522170)];
+    p.active = ee.r32(0x35b8ac);
+    p.active_number = ee.r32(0x522150);
+    p.word_880 = ee.r32(0x35b880);
+    p
+}
+
+fn same_pad(ee: &mut Ee, p: &PadUnit, case: u32, what: &str) {
+    let g = pad_from(ee);
+    for i in 0..2 {
+        if let Some(o) = (0..p.logical[i].len()).find(|&o| g.logical[i][o] != p.logical[i][o]) {
+            panic!("{what} case {case}: logical block {i} byte +{o:#x}: game {:02x} port {:02x}", g.logical[i][o], p.logical[i][o]);
+        }
+    }
+    for w in 0..3 {
+        assert_eq!(g.scale[w].to_bits(), p.scale[w].to_bits(), "{what} case {case}: scale word {w}");
+    }
+    assert_eq!((g.active, g.active_number, g.word_880), (p.active, p.active_number, p.word_880), "{what} case {case}: active table, set number, word 0x35b880");
+}
+
+#[test]
+fn orig_167908_matches_the_game() {
+    let Some(mut ee) = machine("oracle test of 0x167908") else { return };
+    let mut r = Rng::new(0x167908);
+    for n in 0..600 {
+        random_pad(&mut ee, &mut r);
+        let mut p = pad_from(&mut ee);
+        let set = r.below(6) as u32;
+        call(&mut ee, 0x167908, &[set as u64], &[]);
+        p.select_set(set);
+        same_pad(&mut ee, &p, n, "0x167908");
+        assert!(set == 0 || p.active != 0, "the executable's set table has the set");
+    }
+}
+
+#[test]
+fn orig_167600_matches_the_game() {
+    let Some(mut ee) = machine("oracle test of 0x167600") else { return };
+    let mut r = Rng::new(0x167600);
+    for n in 0..300 {
+        random_pad(&mut ee, &mut r);
+        let mut p = pad_from(&mut ee);
+        call(&mut ee, 0x167600, &[], &[]);
+        p.init_blocks();
+        same_pad(&mut ee, &p, n, "0x167600");
+        assert_eq!(p.active_number, 0);
+        assert_eq!(p.logical[1][0x44..0x48], PadUnit::record_address(1).to_le_bytes());
+    }
+}
+
+#[test]
+fn orig_166fd0_matches_the_game() {
+    let Some(mut w) = TW::new("oracle test of 0x166fd0") else { return };
+    let st = w.stubs(&[0x167588]);
+    for n in 0..300u32 {
+        let mut r = Rng::new(0x166fd0 + n as u64);
+        w.reset(&mut r, 1.0);
+        let root = w.manager();
+        w.ee.w32(ROOT_WORD, w.run.tr(root));
+        for h in 0..r.below(3) {
+            w.plain(root, h as u32, r.below(200_000) as i32);
+        }
+        random_pad(&mut w.ee, &mut r);
+        let mut p = pad_from(&mut w.ee);
+        let constants = [w.ee.f32_at(0x379680), w.ee.f32_at(0x379684), w.ee.f32_at(0x379688)];
+        let _ = host_policy(&mut w.ee, &st, &mut r, &[], &[]);
+        call(&mut w.ee, 0x166fd0, &[], &[]);
+        let mut tasks = std::mem::take(&mut w.tasks);
+        let mut created = Vec::new();
+        p.start(constants, |bits, prio, function| created.push((tasks.create_task(root, bits, prio, function), function)));
+        w.tasks = tasks;
+        assert_eq!(created.len(), 1);
+        w.run.bind_task(created[0].0);
+        assert_eq!(w.tasks.task(created[0].0).unwrap().priority(), 110_000);
+        same_pad(&mut w.ee, &p, n, "0x166fd0");
+        w.verify(n);
+    }
+}
+
+#[test]
+fn orig_167038_matches_the_game() {
+    let Some((mut ee, st)) = stubbed("oracle test of 0x167038", &[0x167550, 0x167840]) else { return };
+    let mut r = Rng::new(0x167038);
+    for n in 0..20 {
+        let _ = host_policy(&mut ee, &st, &mut r, &[], &[]);
+        call(&mut ee, 0x167038, &[], &[]);
+        let mut p = PadUnit::new([0; 6]);
+        let mut seen = Vec::new();
+        p.task(|a| seen.push(a));
+        let game: Vec<u32> = st.borrow().log.iter().map(|e| e.0).collect();
+        assert_eq!(game, seen, "case {n}");
+        assert_eq!(seen, vec![0x167550, 0x167840]);
+    }
+}
+
+const CURVES: u32 = 0x0183_0000;
+const REC0: u32 = 0x35b4c0;
+
+/// Random vibration state, with its curves in the original's memory; returns the port's copy and the curve bytes.
+fn random_vibration(ee: &mut Ee, r: &mut Rng) -> (Vibration, Vec<u8>) {
+    let mut arena = vec![0u8; 0x400];
+    let mut counts = [0i32; 2];
+    let mut curves = [0u32; 2];
+    for c in 0..2 {
+        let n = r.below(7) as usize;
+        counts[c] = n as i32;
+        curves[c] = CURVES + (c as u32) * 0x100;
+        let mut t = r.below(6) as i32 - 1;
+        for k in 0..n {
+            let o = c * 0x100 + k * 8;
+            arena[o..o + 4].copy_from_slice(&t.to_le_bytes());
+            let v = match r.below(4) {
+                0 => r.word() as i32,
+                1 => r.below(300) as i32 - 150,
+                _ => r.below(256) as i32,
+            };
+            arena[o + 4..o + 8].copy_from_slice(&v.to_le_bytes());
+            t += r.below(9) as i32;
+        }
+    }
+    ee.write(CURVES, &arena);
+    let v = Vibration {
+        counts,
+        curves,
+        state: [0, 1, 2, 2, 2, 3, -1, r.word() as i32][r.below(8) as usize],
+        time: if r.below(3) == 0 { r.float().abs() * 10.0 } else { r.below(40) as f32 },
+        length: [r.below(60) as i32 + 1, 0, -3, r.word() as i32][r.below(4) as usize],
+        use_curves: [1, 1, 0, r.word() as u32][r.below(4) as usize],
+    };
+    ee.w32(0x36ca08, v.counts[0] as u32);
+    ee.w32(0x36ca0c, v.counts[1] as u32);
+    ee.w32(0x36ca10, v.curves[0]);
+    ee.w32(0x36ca14, v.curves[1]);
+    ee.w32(0x36ca18, v.state as u32);
+    ee.w32(0x36ca1c, v.time.to_bits());
+    ee.w32(0x36ca20, v.length as u32);
+    ee.w32(0x36ca24, v.use_curves);
+    ee.write(REC0, &rnd_bytes(r, 0x180));
+    (v, arena)
+}
+
+fn same_vibration(ee: &mut Ee, v: &Vibration, rec: &[u8], case: u32, what: &str) {
+    let g = (
+        [ee.r32(0x36ca08) as i32, ee.r32(0x36ca0c) as i32],
+        [ee.r32(0x36ca10), ee.r32(0x36ca14)],
+        ee.r32(0x36ca18) as i32,
+        ee.r32(0x36ca1c),
+        ee.r32(0x36ca20) as i32,
+        ee.r32(0x36ca24),
+    );
+    assert_eq!(g, (v.counts, v.curves, v.state, v.time.to_bits(), v.length, v.use_curves), "{what} case {case}: the vibration block");
+    for i in 0..0x180u32 {
+        assert_eq!(ee.r8(REC0 + i), rec[i as usize], "{what} case {case}: pad record byte +{i:#x}");
+    }
+}
+
+fn vibration_cases(addr: u32, task: bool) {
+    let Some(mut ee) = machine(&format!("oracle test of {addr:#x}")) else { return };
+    let mut r = Rng::new(addr as u64);
+    let mut tally = [0u32; 4];
+    for n in 0..4000 {
+        let (mut v, arena) = random_vibration(&mut ee, &mut r);
+        let mut rec: Vec<u8> = (0..0x180u32).map(|i| ee.r8(REC0 + i)).collect();
+        let one = ee.f32_at(0x37f454);
+        let read = |a: u32| u32::from_le_bytes(arena[(a - CURVES) as usize..(a - CURVES) as usize + 4].try_into().unwrap());
+        if task {
+            let mode = [0u32, 1, 2, 2, 3][r.below(5) as usize];
+            ee.w32(0x1dc0dd0, mode);
+            let block = 0x0191_0000u32;
+            ee.write(block, &rnd_bytes(&mut r, 0x48));
+            ee.w32(block, 0x1234_5678);
+            call(&mut ee, addr, &[block as u64], &[]);
+            let ends = v.task(mode, one, read, &mut rec);
+            assert_eq!(ee.r32(block) == 0, ends, "case {n}: the task ends exactly when the port says so");
+            tally[ends as usize] += 1;
+        } else {
+            call(&mut ee, addr, &[], &[]);
+            let before = v.state;
+            v.step(one, read, &mut rec);
+            tally[(before == 2) as usize] += 1;
+            tally[2 + (v.state == 0 && before != 0) as usize] += 1;
+        }
+        same_vibration(&mut ee, &v, &rec, n, &format!("{addr:#x}"));
+    }
+    let used = if task { &tally[..2] } else { &tally[..] };
+    assert!(used.iter().all(|&t| t > 100), "the generator reaches both outcomes of each choice: {tally:?}");
+}
+
+#[test]
+fn orig_239b20_matches_the_game() {
+    vibration_cases(0x239b20, false);
+}
+
+#[test]
+fn orig_239ac8_matches_the_game() {
+    vibration_cases(0x239ac8, true);
+}

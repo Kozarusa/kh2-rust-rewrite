@@ -741,9 +741,7 @@ impl Tasks {
     pub fn thread_mut(&mut self, h: u32) -> Option<&mut Thread> {
         self.threads.get_mut(slot_of(h, THREAD_BASE)?)?.as_mut()
     }
-    /// The top of the runner's jump-buffer stack (`FUN_00105618`), 0 when no task is running through the runner.
-    ///
-    /// orig 0x105618
+    /// The top of the runner's jump-buffer stack (what `FUN_00105618` reads), 0 when no task is running through the runner.
     pub fn jump_top(&self) -> u32 {
         self.jmp.last().copied().unwrap_or(0)
     }

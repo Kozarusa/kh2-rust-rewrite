@@ -1,137 +1,63 @@
 # kh2-rs
 
-An experimental, from-scratch Rust rewrite of **Kingdom Hearts II** (PS2, USA, `SLUS_210.05`).
-It reads all game data at runtime from **your own disc image**. No game assets, extracted files or decompiled code are in this repository, and none ever will be.
+A fan-made, from-scratch rewrite of **Kingdom Hearts II** (PS2, USA) in Rust.
 
-Status: a playable combat slice in Twilight Town (`tt00`, `tt02`, `tt04`) with the camp menu, shops and the first events. Everything is decoded from your disc at startup: maps, sky, textures, models, animations, hitboxes, stats, enemy scripts, effects and audio.
+It is **not** a copy of the game. This project contains no game files at all. To play, you supply **your own Kingdom Hearts II (USA) disc image** (`.iso`), and the game reads everything from it when it starts.
 
-Sora:
-- **Movement:** runs, walks, turns and jumps with his real speeds and jump height from the game's `pref` tables.
-- **Animation:** plays his real motions (idle and battle stances, run, jump, fall, land, attacks, damage), GPU-skinned.
-- **Keyblade:** holds the Kingdom Key in his right hand; it runs its own motion set in lockstep with his.
-- **Combos:** a ground combo (A300 → A301 → A302 → finisher A303/A304) and a hovering air combo (A310–A314). Each hit chains only inside the motions' own combo windows.
-- **Weapon trail:** the keyblade's own trail effect from its PAX, run by a port of the game's particle program runtime, shown exactly while the keyblade motion's trail trigger is on.
-- **Hit sparks:** chosen like the game does (the attack's effect bits matched against the keyblade PAX's element categories) and run by the same runtime, with textures sampled from an emulated GS memory.
-- **Hitboxes:** the keyblade's motion triggers switch on its real collision shapes for exactly the authored frames.
-- **Damage:** comes from `atkp` with the game's formula, so damage numbers match the original.
-- **Guard and lock-on:** guards (A320, with the A321 counter on a frontal block), dodge-rolls, and locks on with KH2-style camera assist.
-- **Getting hit:** flinches, gets blown away, goes down and revives.
+## What works today
 
-Sora (continued):
-- **Abilities and drive forms:** the ability and stat block, growth abilities, Valor, Wisdom, Master, Final and Anti forms with their outfits and hand weapons, and limits.
-- **Reaction commands:** native offers, the accept path, and Soldier's command 34 played on Sora; clashes between attacks.
-- **Camera:** the game's field camera model, look-around (the model fades), area camera types and collision.
-- **Magic (phase 1):** a Magic page in the command menu (T/G move, B back, J casts) with Fire, Blizzard, Thunder and Cure at level 1, their MP cost, charge and damage rows.
-- **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card, banners and message windows.
-- **Party:** Donald and Goofy follow, fight with the friend AI's target styles (including the class 16 chooser), and their Battle Style and use settings are set on the Customize page. Slot 3 is a reserve member, Auto Change swaps it in when a companion is knocked out, a jump record can rearrange the party and show the "Party Members have been switched" notice, Donald and Goofy are targets of the field command's items and have rows on the pause menu's Items and Equipment pages. Reserve members keep HP and MP across areas, regain HP with Auto Healing, and a partner's limit is offered as a reaction command by Auto Limit. The limit's own script now runs as a thread, but nothing it would show is ported, so no limit scene plays.
-- **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts with their hosts (link break and routine, the item command, Stitch's limit records and heal, Genie's follow motions, Tinker Bell's revive sequence). The summon limits run only from a harness aid, not from play.
-- **World map:** the save point's World Map row opens the map (area `wm00`): the Gummi ship cursor flies over the world symbols, the info panel, the land prompt, the area list with its pictures and the episode list work, and landing in Twilight Town returns to the field. Other worlds are listed but only Twilight Town destinations exist.
-- **Experience:** defeats pay experience (lvpm x enmp), raise levels through the lvup rows (abilities are given) and Sora's stats follow his level and equipment; the popup and the NEXT LEVEL strip show on every defeat.
-- **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid, story, characters, Heartless and Nobody lists with defeated counts, Ansem reports, limits, moogle list, quests, minigames, treasures, maps, album, and 3D models on the character and model pages) and the moogle's shop with synthesis, collection rewards and their texts. The BATTLE REPORT ending screen reads its counters from the save state. Sora's knock-out opens the game-over list (Continue, Load Game, Quit, Retry), and Load Game opens the Load screen on the slot files the Save menu wrote.
-- **Townspeople:** their heads turn toward the player (head look-at controller).
-- **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades, hiding and showing the event's objects, the keyhole wipe above the HUD), jump types 4 to 6 and the jump record's party words.
-- **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
+A small playable slice of Twilight Town: run around as Sora, fight Heartless and Nobodies with combos, magic, guard and lock-on, use the pause menu and shops, and watch the first story events. Donald and Goofy fight beside you.
 
-Enemies:
-- **Shadows, Soldiers, Dusks and more (Dancer, Seifer, N_EX500/600, M_EX940/850 and M_EX420, M_EX760, M_EX880, M_EX700, M_EX950, M_EX650, M_EX660, M_EX110, M_EX520, M_EX770, M_EX210, M_EX910, M_EX690, M_EX730, M_EX050, M_EX510, M_EX560, M_EX750, M_EX620, M_EX060, M_EX600, M_EX920):** each has its own model, motions, hitboxes, and `enmp`/`lvpm` stats. In Twilight Town (tt04) the waves come from the area's own battle groups (Dusks and a Struggle opponent); other areas use stand-in Shadow/Soldier waves.
-- **Behaviour:** they run the game's own AI scripts (BDX) in an interpreter that was checked against the game's code, so they chase, sink and resurface (Shadows), attack, flinch, get blown away and die as in the original.
+It is an early work in progress. Most of the game is not here yet: other worlds, most bosses and the title screen are missing, and some things look or sound wrong. Please do not expect the full game.
 
-Not done yet:
-- Magic beyond level 1 (Magnet, Reflect, drive-form casts).
-- Summons: the limit task (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts.
-- Party: the limit scene an accepted Auto Limit offer should start (the limit script runs and Sora, Donald and Goofy play its motions and effects, but other characters' participants, the camera event, the gauge animation and host 7.28 are missing), and the member-swap fade.
-- Game over: the GAMEOVER scene model (WP-GO2), restoring the save body on Continue, and the Load screen's header art. Mickey's rescue is ported only as far as the decision, the chance and the alternate list; it is switched off because Mickey and his heal are not found, so the 11 missions that could offer it show the normal list.
-- Other enemy types (the area survey, docs/systems/script-host/area-survey.md, ranks about 75 missing kinds after shift 17) and some area-script group kinds.
-- Journal: the viewer plate's lighting on the model pages.
-- World map: route markers, the cursor's real movement and camera type 4, the other libretto events, voices and the play time.
-- BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.
-- Events: the movie player and voices.
-- Final Mix differences (only the USA release is supported).
-- Some audio gaps (the landing footstep) and some effects (munny payout).
-- COCT collision is used; some camera blockers and the Quick Run camera speed are open.
+## How to play
 
-The open rows of `sheets/systems.json` are the to-do list.
+**You need:**
+- A Windows PC with a graphics card that supports Vulkan or DirectX 12 (any recent one).
+- A disc image of Kingdom Hearts II **USA** (`Kingdom Hearts II (USA).iso`) that you made from your own copy. Other editions, including Final Mix, are refused.
+- [Rust](https://rustup.rs) (the installer is one click; it also asks you to install Microsoft's C++ build tools, say yes).
 
-`cargo run -p kh2 -- preflight` lists exactly what is done.
+**Steps:**
+1. Download this project (green **Code** button, then **Download ZIP**, or `git clone`) and open the folder in PowerShell.
+2. Build the player package:
+   ```
+   powershell -NoProfile -ExecutionPolicy Bypass -File tools\package.ps1
+   ```
+   The first build takes a while (10 to 20 minutes). It creates the folder `dist\kh2-rs\`.
+3. Open `dist\kh2-rs\` and double-click **`kh2-game.exe`** (or `Play kh2-rs.bat`).
+4. The first time, a window asks for your `.iso`. Pick it. The game remembers it for next time.
 
-## Playing
+The game starts straight in Twilight Town. There is no title screen yet.
 
-Build a player package with `powershell -NoProfile -ExecutionPolicy Bypass -File tools\package.ps1`; it assembles `dist\kh2-rs\` (`kh2-game.exe`, a player README and `Play kh2-rs.bat`). Double-click `kh2-game.exe`: the first run asks for your Kingdom Hearts II (USA) `.iso` in a file dialog and remembers it in `%APPDATA%\kh2-rs\config.toml`; later runs start straight away. The release build has no console; its log is `%APPDATA%\kh2-rs\kh2-rs.log`. Options: `--help`, `--choose-disc`, `--windowed`, `--fullscreen`, `--console`, and a start area (default `tt04`). F11 or Alt+Enter toggles borderless fullscreen. There is no title screen yet: the game starts in Twilight Town.
+If something goes wrong, the log is at `%APPDATA%\kh2-rs\kh2-rs.log`. To pick another disc later, run `kh2-game.exe --choose-disc`.
 
-Developers keep `KH2_ISO` and `local/iso.txt` (written by `kh2 set-iso`); the disc is taken from `KH2_ISO` first, then the config file, then `local/iso.txt`, then the dialog. `KH2_CONFIG_DIR` moves the config folder.
+## Controls
 
-## Play (developers)
-
-```
-cargo run -p kh2 -- set-iso "path/to/Kingdom Hearts II (USA).iso"
-cargo run -p kh2 -- fetch-names        # OpenKH's file-name list (Apache-2.0), saved to local/
-cargo run --release -p kh2-app         # optional area argument, e.g. tt02
-```
-
-Controls:
-- **WASD:** run, relative to the camera. Hold **Ctrl** to walk.
-- **Space:** jump.
-- **Left mouse button or J:** attack. Keep pressing to continue the combo; in the air it's the air combo.
-- **K or E:** guard. With a direction held, dodge roll.
-- **Q or Tab:** toggle lock-on.
-- **Right mouse drag or arrow keys:** orbit the camera. **Mouse wheel or PageUp/PageDown:** zoom.
-- **1–9, 0:** switch Twilight Town areas (tt01–tt09, tt00).
-- **F1:** motion viewer for every Sora motion; step with **[** and **]**.
-- **F3:** spawn an enemy wave.
-- **F4:** show hit volumes (red = live attacks, green = hurtboxes).
-
-Automated checks use these environment variables:
-- `KH2_SCREENSHOT=out.png`: save a frame at `KH2_SHOT_AT` seconds (default 8).
-- `KH2_KEYS=6:Q,6.5:J,6.8:J`: tap keys at given times.
-- `KH2_WALK=1`: hold W from 3 s to 6 s.
-- `KH2_YAW` / `KH2_DIST`: set the camera angle and distance.
-- `KH2_VIEW_SLOT=<slot>`: open the motion viewer on that slot.
-- `KH2_NO_ENEMIES=1`: disable enemy waves.
-- `KH2_FPS=1`: log the frame rate.
-- `KH2_FIELD_HZ=30|60`: field logic rate (default 60 for play, smooth; 30 is the original's cadence and the default for rig and turbo runs); Numpad + toggles in game.
-- `KH2_VSYNC=0`: uncapped rendering (vsync is the default); Numpad - toggles in game.
-
-## Tools
-
-```
-cargo run -p kh2 -- info
-cargo run -p kh2 -- table plrp 5
-cargo run -p kh2 -- model obj/P_EX100.mdlx --textures   # stats; PNGs go to local/tex/
-cargo run -p kh2 -- validate        # decodes every modelled table, ticks the sheets
-cargo run -p kh2 -- preflight
-```
-
-Only the USA release is supported. Other discs are refused, because table layouts differ between editions.
-
-## Layout
-
-| Path | Role |
+| Key | Action |
 |---|---|
-| `sheets/` | **Source of truth.** JSON spreadsheets: `systems.json` (game systems), `tables.json` (binary layouts). They hold structure and status only, never game values. |
-| `crates/kh2-iso` | ISO9660 reader |
-| `crates/kh2-archive` | IDX/IMG + overlays: name hashes, LZ decompression |
-| `crates/kh2-bar` | BAR container |
-| `crates/kh2-sheets` | Spreadsheet method: preflight checklist and struts (rows → Rust) |
-| `crates/kh2-tables` | Gameplay tables. Their structs are generated from `sheets/tables.json` by `build.rs`, which runs preflight first. |
-| `crates/kh2-ps2` | PS2 hardware behaviour needed for assets: VIF1 unpacking into VU1 memory, DMA chains, VPU packets, GS swizzling |
-| `crates/kh2-model` | Map and skeletal models, plus model textures, decoded into plain meshes and RGBA images |
-| `crates/kh2-anim` | Motion sets, ANB motions and triggers, pose evaluation |
-| `crates/kh2-app` | The game (`kh2-game`, Bevy 0.19) as a library plus a thin binary, with plugins in domain bundles: areas, skinned characters, Sora, Heartless, combat, camera, HUD |
-| `crates/kh2` | Command-line tool |
-| `crates/kh2-looprec` | Loopback recorder: what the machine plays, as a wav (reference recordings for loudness comparisons) |
-| `docs/` | `README.md` (index of the system docs), `METHOD.md` (how we work), `systems/foundations/research.md` (sources), `changelog/` |
-| `tools/` | Process scripts: gate (`verify.ps1`), acceptance (`accept.ps1`), review, merge, PCSX2 and research helpers. Machine paths come from the untracked `local/machine.ps1` (template `tools/machine.example.ps1`) |
-| `agents/` | How the project is worked on: the user's rules, the orchestrator and worker guides, recipes, the user's reported differences, brief templates |
-| `scenarios/` | Diff-rig scenarios (original versus port): save-state names, pad scripts, checkpoints, tolerances; no game data |
-| `.cargo/` | Shared build settings (debug info, profiles) |
-| `local/` | Your machine only (git-ignored): machine paths, ISO path, downloaded name list, extracted files, handoff and live briefs |
+| **W A S D** | Run (hold **Ctrl** to walk) |
+| **Space** | Jump |
+| **Left mouse button** or **J** | Attack (keep pressing for combos) |
+| **K** or **E** | Guard |
+| **Q** or **Tab** | Lock on |
+| **Right mouse drag** or **arrow keys** | Turn the camera |
+| **Mouse wheel** or **PageUp / PageDown** | Zoom |
+| **1 to 9, 0** | Switch Twilight Town areas |
+| **F11** or **Alt+Enter** | Fullscreen |
+| **Numpad +** / **Numpad -** | Smooth 60 Hz or original 30 Hz game speed / vsync on or off |
 
-## How it is built
+## Is it the real game?
 
-See [docs/METHOD.md](docs/METHOD.md). In short:
-- Every system and binary layout is a row in a sheet. Every row generates code.
-- A `null` cell is an unchecked box, and a row is done only when every cell is checked.
-- `cargo build` runs a preflight checklist that overlaps all sheets, before compiling.
+No. It is a re-creation. It aims to behave like the original, and it is checked against the original game's own code, but it is not finished and it is not an official product.
+
+## For developers
+
+The detailed status list, the developer commands, the project layout and how the work is done are in these files:
+- [docs/TECHNICAL-STATUS.md](docs/TECHNICAL-STATUS.md): the full feature list, what is not done, developer controls and environment variables, tools and crate layout
+- [docs/METHOD.md](docs/METHOD.md): how the project is built
+- [docs/README.md](docs/README.md): index of the system documents
+
+Quick developer start: `cargo run -p kh2 -- set-iso "path\to\Kingdom Hearts II (USA).iso"` then `cargo run --release -p kh2-app`.
 
 ## Credits and licenses
 

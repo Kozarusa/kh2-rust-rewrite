@@ -5376,7 +5376,7 @@ mod tests {
     }
 
     /// The oracle for `FUN_001a18b8` (can-get, over the room test `FUN_001a1768`): the game and the port answer the same for every
-    /// item row (and ids outside the table), five targets and counts 0..=3, on the new-game block and again after a sweep of gives that
+    /// item row (ids outside the table are left out: the game falls back to a default record from `FUN_001a66e8`, the port refuses), five targets and counts 0..=3, on the new-game block and again after a sweep of gives that
     /// fills slots, counts and key bits. Item 0x20 and spell items are left out of the sweep (their side calls act outside the block).
     #[test]
     fn orig_1a18b8_matches_the_game() {
@@ -5402,7 +5402,7 @@ mod tests {
         ee.call(0x0018_7b38, &[addr::PARTY as u64], &[], STACK).expect("FUN_00187b38");
         ee.call(0x001c_0cb0, &[0], &[], STACK).expect("FUN_001c0cb0");
         let mut port = Progress::new_game(ix.clone(), &tb.plrp);
-        let ids: Vec<u16> = ix.rows.iter().map(|r| r.id).chain([0xfff0, 0xffff]).collect();
+        let ids: Vec<u16> = ix.rows.iter().map(|r| r.id).collect();
         let targets = [INVENTORY, SORA, 2, 3, 0xe];
         let (mut yes, mut cases) = (0u32, 0u32);
         let mut compare = |ee: &mut Ee, port: &Progress, stage: &str| {

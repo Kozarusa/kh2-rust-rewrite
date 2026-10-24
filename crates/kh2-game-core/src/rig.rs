@@ -303,7 +303,8 @@ fn rig_trace(
     area: Option<Res<AreaRecord>>,
     progress: Option<Res<Progress>>,
     cam: Query<&Transform, With<crate::camera::OrbitCamera>>,
-    (phase, menu, anims, frame): (Option<Res<MenuPhase>>, Option<Res<RigMenu>>, Query<&crate::skel::Animator>, Option<Res<crate::schedule::FrameClock>>),
+    (phase, menu, anims): (Option<Res<MenuPhase>>, Option<Res<RigMenu>>, Query<&crate::skel::Animator>),
+    frame: Option<Res<crate::schedule::FrameClock>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if !clock.started {

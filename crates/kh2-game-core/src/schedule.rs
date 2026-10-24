@@ -338,10 +338,10 @@ impl Plugin for SchedulePlugin {
             .add_systems(Vblank, vblank_step)
             .add_systems(FixedLast, hold_messages);
         // `FixedUpdate` leaves the fixed order: `Vblank` runs it (absent in a bare test app without the main schedules).
-        if let Some(mut order) = app.world_mut().get_resource_mut::<bevy::app::FixedMainScheduleOrder>() {
-            if let Some(i) = order.labels.iter().position(|l| (**l).eq(&FixedUpdate)) {
-                order.labels[i] = Vblank.intern();
-            }
+        if let Some(mut order) = app.world_mut().get_resource_mut::<bevy::app::FixedMainScheduleOrder>()
+            && let Some(i) = order.labels.iter().position(|l| (**l).eq(&FixedUpdate))
+        {
+            order.labels[i] = Vblank.intern();
         }
         app
             .configure_sets(

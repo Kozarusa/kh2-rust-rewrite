@@ -1386,4 +1386,35 @@ mod tests {
         let off = Ring { centre: Vec3::new(500.0, 0.5, 500.0), ..ring };
         assert_eq!(ring_place_in(&mut rng, &off, &col), off.centre);
     }
+
+    /// WP-FIX-GUARD: the wired path of a mission's bonus reward. The disc's TT32_MS302 (header +0xd = 54) and TT34_MS304 (33)
+    /// end through `Active::end_through` (`FUN_001b95a0`, which loads the byte and calls `FUN_001be6b8` with it); the
+    /// `ProgressPlugin`'s `pay_mission_bonus` in FixedUpdate then gives Aerial Recovery (158) and Guard (82) into Sora's list,
+    /// once: a second end of the same mission (and the manager's end, `Mission::end`) gives nothing more.
+    #[test]
+    fn a_mission_end_pays_its_header_reward_once_through_the_progress_plugin() {
+        let Some(disc) = disc() else { return };
+        let mut app = App::new();
+        app.insert_resource(self::disc().expect("disc"))
+            .init_resource::<crate::shared::prize::ObtainedLog>()
+            .add_message::<crate::fx::StartBoundSystemEffect>()
+            .add_plugins(crate::progress::ProgressPlugin);
+        let count = |app: &App, id: u16| app.world().resource::<crate::progress::Progress>().sora().abilities.iter().filter(|&&(a, _)| a == id).count();
+        assert_eq!((count(&app, 82), count(&app, 158)), (0, 0), "the new game has neither");
+        for (name, item, level) in [("TT32_MS302", 158u16, 1u8), ("TT34_MS304", 82, 2)] {
+            let file = disc.read(&format!("msn/us/{name}.bar")).expect("mission file");
+            let mut a = build(0x128, name, file, false, None).expect("mission");
+            a.end_through(7, 0);
+            assert!(a.bonus.is_some(), "{name}: the end keeps the header byte");
+            app.insert_resource(Mission { m: Some(Box::new(a)), ..Default::default() });
+            app.world_mut().run_schedule(FixedUpdate);
+            assert_eq!(count(&app, item), 1, "{name}: item {item} given once");
+            // The same end again, and the manager's own end: nothing more.
+            app.world_mut().resource_mut::<Mission>().m.as_deref_mut().unwrap().end_through(7, 0);
+            app.world_mut().resource_mut::<Mission>().end();
+            app.world_mut().run_schedule(FixedUpdate);
+            assert_eq!(count(&app, item), 1, "{name}: a reward is given once");
+            assert_eq!(app.world().resource::<crate::progress::Progress>().bonus_level(), level);
+        }
+    }
 }

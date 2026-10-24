@@ -96,6 +96,13 @@ Recovery (158) are **bonus rewards** (`bons`), given at the end of two missions 
   calls: `trap_item_get` (host 0.63, `FUN_0016e0e8`, table slot `0x35bba8` in the image) and `trap_bonuslevel_up` (host 2.73,
   `FUN_0018eb90`) have no call site in any of the 1,244 scripts on the disc. The other bonus paths: an `enmp` BonusLevel
   (`FUN_001b25d0`, 0 on this disc) and `FUN_001c46a8`.
+- The argument [V, assembly of `FUN_001b95a0` at 0x1b95c0..0x1b95d0, not the decompiled text, which drops it]: `lw t7, 8(a0)`
+  (the header pointer at manager `+8`), `lbu a0, 0xd(t7)`, `beqz a0` over the call, `jal 0x1be6b8`: the header byte is the
+  reward id.
+- The port pays every mission's header reward this way, as the original does, not only these two. The other Twilight Town
+  missions with one (rows read from the disc by the test): `TT14_MS001` reward 56 (Sora HP +5, Donald item 407, Goofy HP +5),
+  `TT20_MS603` reward 34 (Roxas HP +5), `TT40_MS003` reward 63 (Sora MP +10). On the whole disc 50 mission headers carry a
+  reward (45 outside Twilight Town); each is paid when the port runs that mission to its end.
 - Area names [inferred, community naming]: tt32 and tt34 are rooms of the dream sequence of Roxas's prologue (the Station
   platforms); the disc fact is only the area number and the mission.
 - Port: `Active::end_through` (`shared/struggle.rs`) keeps the header byte as `Active::bonus`; `progress::pay_mission_bonus` gives

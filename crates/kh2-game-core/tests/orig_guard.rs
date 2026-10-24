@@ -92,6 +92,12 @@ fn guard_and_aerial_recovery_are_the_tt32_and_tt34_mission_rewards() {
     assert_eq!(reward(&d.bons, 33), vec![(ROXAS as u8, GUARD, 0, 5)]);
     // No other reward, no level-up row and no treasure row gives either.
     assert!(d.bons.iter().filter(|b| [b.bonus_item1, b.bonus_item2].iter().any(|&i| i == GUARD || i == AERIAL_RECOVERY)).count() == 2);
+    // The other Twilight Town missions with a header reward (the port pays them too, as the original does).
+    for (name, id) in [("TT14_MS001", 56u8), ("TT20_MS603", 34), ("TT40_MS003", 63)] {
+        assert_eq!(mission_bonus(&mut d.archive, name).1, id, "{name}");
+        eprintln!("{name}: reward {id}: {:?}", d.bons.iter().filter(|b| b.reward_id == id).collect::<Vec<_>>());
+        assert!(!reward(&d.bons, id).is_empty());
+    }
     // The areas' battle programs start those missions (area-script opcode 0x15).
     for (area, name) in [("tt32", "TT32_MS302"), ("tt34", "TT34_MS304")] {
         let file = read(&mut d.archive, &format!("ard/{area}.ard"));

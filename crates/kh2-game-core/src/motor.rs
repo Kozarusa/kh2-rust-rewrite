@@ -410,6 +410,335 @@ pub fn turn_vec(a: [f32; 4], b: [f32; 4], rate: f32) -> [f32; 4] {
     [r[0], r[1], r[2], 0.0]
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The ground mover (mover 0) and the mover table (WP-L2-P3). The mover is a shared descriptor, not a per-actor block: all its state lives
+// in the actor block (+0x10 the move vector with the speed in its fourth word, +0x20 the velocity, +0x140 the motion controller). The
+// functions below take the actor fields they read as plain values and answer what the original writes or calls, so the oracle tests
+// (`tests/orig_l2_p3.rs`) can run the original on the same inputs and compare. Callees that are other systems (the footstep sound
+// `FUN_0016baa0`, the dust `FUN_001b1c90`, the motion request `FUN_0017e2d8`, the jump launches `FUN_0017b278` / `FUN_0017b1e0`, the
+// action change `FUN_0016b698`, the jump mover step `FUN_001832b8`) are not run: the result names the call and its arguments.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/// The constants the ground mover reads from the executable (`DAT_0037a4e4` .. `DAT_0037a4ec`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundConsts {
+    /// 0x37a4e4: the first argument of the motion request (the blend time).
+    pub request_blend: f32,
+    /// 0x37a4e8: the factor on walk plus run speed that splits walk from run.
+    pub class_split: f32,
+    /// 0x37a4ec: the fourth word of the displacement vector.
+    pub out_w: f32,
+}
+
+impl GroundConsts {
+    /// The values the USA executable holds (checked against it by `orig_l2_p3::the_ground_constants_are_the_ports`).
+    pub const USA: GroundConsts = GroundConsts { request_blend: 8.0, class_split: 0.5, out_w: 1.0 };
+
+    /// Reads the three words from the USA executable (`None` for another file).
+    pub fn from_exe(elf: &[u8]) -> Option<GroundConsts> {
+        use crate::reaction_rules::exe_f32;
+        Some(GroundConsts { request_blend: exe_f32(elf, 0x37a4e4)?, class_split: exe_f32(elf, 0x37a4e8)?, out_w: exe_f32(elf, 0x37a4ec)? })
+    }
+}
+
+/// What `FUN_0017af10` reads of the actor.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroundMotionIn {
+    /// Actor +0x1c: the speed word of the move vector.
+    pub speed: f32,
+    /// Actor +0x110 and +0x114: walk and run speed.
+    pub walk: f32,
+    pub run: f32,
+    /// Actor +0x588: class flags (bit 0x80: a player class).
+    pub class_flags: u32,
+    /// Actor +0x154: the motion id last requested (motion controller +0x14).
+    pub motion_id: i32,
+    /// Actor +0x164: motion flags 2 (bit 1: range trigger 42 open).
+    pub flags2: u32,
+    /// Actor +0x160: motion flags (range triggers; bit 4 and 0x10 let a requested motion through).
+    pub flags: u32,
+    /// The object entry's part number (`FUN_001699a8`, entry +0x4c); 0xe means no foot effects.
+    pub part_num: i16,
+}
+
+/// The foot effects `FUN_0017af10` starts before it requests the motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FootCues {
+    /// The footstep sound of kind 8 (`FUN_0016baa0`), played on the stop.
+    pub stop_sound: bool,
+    /// The dust kinds `FUN_001b1c90` is asked for, in order (10 and 11 on the first step, 8 and 9 on the stop).
+    pub dust: Option<[u16; 2]>,
+}
+
+/// The result of `FUN_0017af10`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GroundMotion {
+    /// Motion class: 0 idle, 1 walk, 2 run (also the id requested).
+    pub class: u8,
+    pub foot: FootCues,
+    /// `FUN_0017aeb8`: the class asked of `FUN_0017e2d8`, or `None` when the gate keeps the motion.
+    pub request: Option<u8>,
+}
+
+/// orig 0x17aeb8: the gate of the motion request: motion flags bit 4 always lets it through, bit 0x10 only for a class that is not 0.
+pub fn motion_request_gate(flags: u32, class: u8) -> bool {
+    flags & 4 != 0 || (flags & 0x10 != 0 && class != 0)
+}
+
+/// orig 0x17af10: the ground mover's tick slot. The class comes from the speed word: 0 when it is not above 0, else 1, or 2 when it
+/// reaches `(walk + run) * class_split`. A player class (+0x588 bit 0x80) with the motion last requested idle starts the dust 10 and 11
+/// on the first moving tick, and one in walk or run (motion 1 or 2) whose range trigger 42 is closed (+0x164 bit 1) plays the stop
+/// sound and the dust 8 and 9 on the first tick without speed; the part number 0xe skips the dust. Then the motion request of
+/// `FUN_0017aeb8`.
+pub fn ground_motion(a: &GroundMotionIn, k: &GroundConsts) -> GroundMotion {
+    let mut out = GroundMotion::default();
+    let player = a.class_flags & 0x80 != 0;
+    if 0.0 < a.speed {
+        out.class = if a.speed < (a.walk + a.run) * k.class_split { 1 } else { 2 };
+        if player && a.motion_id == 0 && a.part_num != 0xe {
+            out.foot.dust = Some([10, 11]);
+        }
+    } else if player && a.flags2 & 1 == 0 && (a.motion_id as u32).wrapping_sub(1) < 2 {
+        out.foot.stop_sound = true;
+        if a.part_num != 0xe {
+            out.foot.dust = Some([8, 9]);
+        }
+    }
+    out.request = motion_request_gate(a.flags, out.class).then_some(out.class);
+    out
+}
+
+/// What `FUN_0017b040` reads of the actor.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroundStepIn {
+    /// Actor +0x10: the move vector (direction in xyz, speed in w).
+    pub dir: [f32; 4],
+    /// Actor +0x160 (bit 0x40: the step is the jump mover's with +0xf0) and +0x164 (bit 1: the step is the jump mover's with the row).
+    pub flags: u32,
+    pub flags2: u32,
+    /// Actor +0xf0.
+    pub f0: f32,
+    /// The row behind actor +0x12c: the words at +0x28 and +0x2c.
+    pub row_28: f32,
+    pub row_2c: f32,
+    /// Actor +0x810 (non-zero: the row's +0x28 is used twice).
+    pub w810: u32,
+}
+
+/// The result of `FUN_0017b040`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GroundStep {
+    /// The jump mover's step `FUN_001832b8(a, b, out)` answers.
+    Jump(f32, f32),
+    /// The displacement written to the result (xyz as `step`, the fourth word `out_w`) and the velocity written to actor +0x20.
+    Walk { out: [f32; 4], velocity: [f32; 4] },
+}
+
+/// orig 0x17b040: the ground mover's displacement slot. Unless the flags hand the step to the jump mover, a speed above 0 gives the
+/// displacement `normalise(xyz) * speed * frame_step` and the velocity (the displacement times the speed again; the fourth word is the
+/// speed word carried through the same multiplies); no speed gives zeros for both.
+pub fn ground_step(a: &GroundStepIn, k: &GroundConsts, frame_step: f32) -> GroundStep {
+    if a.flags & 0x40 != 0 {
+        return GroundStep::Jump(a.f0, a.f0);
+    }
+    if a.flags2 & 1 != 0 {
+        return GroundStep::Jump(a.row_28, if a.w810 == 0 { a.row_2c } else { a.row_28 });
+    }
+    let w = a.dir[3];
+    if 0.0 < w {
+        let len = (a.dir[0] * a.dir[0] + a.dir[1] * a.dir[1] + a.dir[2] * a.dir[2]).sqrt();
+        let q = 1.0 / len;
+        let unit = [a.dir[0] * q, a.dir[1] * q, a.dir[2] * q];
+        let s = w * frame_step;
+        GroundStep::Walk { out: [unit[0] * s, unit[1] * s, unit[2] * s, k.out_w], velocity: [unit[0] * s * w, unit[1] * s * w, unit[2] * s * w, w * s * w] }
+    } else {
+        GroundStep::Walk { out: [0.0, 0.0, 0.0, k.out_w], velocity: [0.0; 4] }
+    }
+}
+
+/// orig 0x17ade0: the launch vector of a jump: the actor's move vector (+0x10) with its second word replaced by the jump height the
+/// ability lookup `FUN_0016bd98` answers; with `set_release_watch` the actor's flags +0x108 also get bit 0x10000 (the jump button can
+/// cut the rise, `FUN_0017b328` turns it into the release-watch bit). Returns the vector and the new flags.
+pub fn launch_vector(dir: [f32; 4], height: f32, set_release_watch: bool, flags108: u32) -> ([f32; 4], u32) {
+    ([dir[0], height, dir[2], dir[3]], if set_release_watch { flags108 | 0x10000 } else { flags108 })
+}
+
+/// The calls `FUN_0017ae50` makes after the launch vector is built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JumpStart {
+    /// The vector handed to the jump mover's launch `FUN_0017b278`.
+    pub vector: [f32; 4],
+    /// Actor +0x108 after the launch vector (bit 0x10000 when the release watch was asked for).
+    pub flags108: u32,
+    /// The motion request `FUN_0017e220(0.0, 0.0, motion controller, id)`: the id the ability lookup answered (3, or 0xc9 for High Jump).
+    pub motion_id: i32,
+    /// Actor +0x100 and +0x104 as the function leaves them (4 and 5: the state the jump leaves the actor in [inferred: group time and a step counter]).
+    pub w100: u32,
+    pub w104: u32,
+}
+
+/// orig 0x17ae50: starts a jump from the move vector: the launch vector (`launch_vector`), the jump mover's launch with it, the motion
+/// request for the id the ability lookup gave (blend 0.0), and actor +0x104 = 5, +0x100 = 4.
+pub fn jump_start(dir: [f32; 4], height: f32, motion_id: i32, set_release_watch: bool, flags108: u32) -> JumpStart {
+    let (vector, flags108) = launch_vector(dir, height, set_release_watch, flags108);
+    JumpStart { vector, flags108, motion_id, w100: 4, w104: 5 }
+}
+
+/// How the jump mover's enter slots launch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MoverLaunch {
+    /// `FUN_0017b278` with a vector.
+    Vector([f32; 4]),
+    /// `FUN_0017b1e0` with the height in the float argument register.
+    Height(f32),
+}
+
+/// What an enter slot of the jump mover does: a launch, then `FUN_0016b698(actor, action)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoverEnter {
+    pub launch: MoverLaunch,
+    pub action: u32,
+}
+
+/// orig 0x1796a8: the jump mover's method with a vector: launches with a copy of it, then changes the action to 1.
+pub fn enter_with_vector(v: [f32; 4]) -> MoverEnter {
+    MoverEnter { launch: MoverLaunch::Vector(v), action: 1 }
+}
+
+/// orig 0x1796e8: the jump mover's method without a vector: launches by height (the float argument the caller left), then action 1.
+pub fn enter_with_height(height: f32) -> MoverEnter {
+    MoverEnter { launch: MoverLaunch::Height(height), action: 1 }
+}
+
+/// orig 0x179718: the shared zero vector. The first call clears its four words, sets the flag and registers the exit handler
+/// (`FUN_0030fe80(0x17aca8)`); the answer is always four zero words. Returns the vector and the handler registered by this call.
+pub fn shared_zero_vector(ready: &mut bool) -> ([f32; 4], Option<u32>) {
+    let registered = if *ready {
+        None
+    } else {
+        *ready = true;
+        Some(0x17aca8)
+    };
+    ([0.0; 4], registered)
+}
+
+/// The pointer table of the mover descriptors in the executable (`0x35ca48`, ids 0 to 0x3f).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoverTable {
+    pointers: Vec<u32>,
+}
+
+impl MoverTable {
+    /// Reads the 64 pointers from the USA executable (`None` for another file).
+    pub fn from_exe(elf: &[u8]) -> Option<MoverTable> {
+        use crate::reaction_rules::exe_f32;
+        let pointers = (0..MOVER_COUNT as u32).map(|i| exe_f32(elf, 0x35ca48 + 4 * i).map(f32::to_bits)).collect::<Option<Vec<_>>>()?;
+        Some(MoverTable { pointers })
+    }
+
+    /// orig 0x179868: the descriptor address of mover `id`.
+    pub fn descriptor(&self, id: usize) -> Option<u32> {
+        self.pointers.get(id).copied()
+    }
+}
+
+/// Number of entries in the pointer table.
+pub const MOVER_COUNT: usize = 0x40;
+
+/// One mover descriptor record: the vtable of the mover class (+0), the id (+4) and the flag word (+8; the ground mover has 0x180, the
+/// jump mover 0x181: `FUN_00174c28` reads bit 0x100 of it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MoverDescriptor {
+    /// Address of the record in the static table at 0x1c88eb0.
+    pub addr: u32,
+    pub vtable: u32,
+    pub id: u32,
+    pub flags: u32,
+}
+
+/// orig 0x179880: the mover descriptor records the static initialiser writes at start-up (its construct call, arguments 1 and 0xffff):
+/// each record's vtable, id and flag word (the flag word starts at 0 and gets the bits shown; the four records built by the base
+/// constructors `FUN_002e6650`, `FUN_002e5540` and `FUN_002f0a78` carry the values those constructors write). The exit call (argument 0)
+/// only puts the base vtables back and runs the destructors of the four constructor-built records; it is not ported.
+pub fn mover_descriptors() -> &'static [MoverDescriptor] {
+    const ROWS: [(u32, u32, u32, u32); 64] = [
+    (0x01c88eb0, 0x35cbb0, 0x0, 0x180),
+    (0x01c88ec0, 0x35cbe0, 0x1, 0x181),
+    (0x01c88ed0, 0x35e2d0, 0x2, 0x105),
+    (0x01c88ee0, 0x35cb80, 0x3, 0x100),
+    (0x01c88ef0, 0x35e4a8, 0x4, 0x1c1),
+    (0x01c88f00, 0x35e4d8, 0x5, 0x102),
+    (0x01c88f10, 0x35e6d0, 0x6, 0x100),
+    (0x01c88f20, 0x35e700, 0x7, 0x101),
+    (0x01c88f30, 0x35e730, 0x8, 0x142),
+    (0x01c88f40, 0x35efc0, 0x9, 0x101),
+    (0x01c88f50, 0x35f050, 0xa, 0x4012a),
+    (0x01c88f60, 0x35f1a0, 0xb, 0x103),
+    (0x01c88f70, 0x35f2b8, 0xc, 0x101),
+    (0x01c88f80, 0x35f288, 0xd, 0x102),
+    (0x01c88f90, 0x35f378, 0xe, 0x311),
+    (0x01c88fa0, 0x35f348, 0xf, 0x112),
+    (0x01c88fb0, 0x35f4f0, 0x10, 0x100),
+    (0x01c88fc0, 0x35f520, 0x11, 0x4101),
+    (0x01c88fd0, 0x35f550, 0x12, 0x4101),
+    (0x01c88fe0, 0x35eff0, 0x13, 0x902),
+    (0x01c88ff0, 0x35f020, 0x14, 0x40123),
+    (0x01c89000, 0x35fed8, 0x15, 0x16b),
+    (0x01c89010, 0x35ff08, 0x16, 0x100),
+    (0x01c89020, 0x35ff40, 0x17, 0x20000),
+    (0x01c89030, 0x370c30, 0x18, 0x12902),
+    (0x01c89040, 0x370c00, 0x18, 0x102),
+    (0x01c89050, 0x3601a8, 0x1a, 0x101),
+    (0x01c89060, 0x3716f8, 0x1f, 0x502),
+    (0x01c89070, 0x3711b0, 0xd, 0x102),
+    (0x01c89080, 0x360330, 0x1c, 0x0),
+    (0x01c89090, 0x360610, 0x1d, 0x18a),
+    (0x01c890a0, 0x370a18, 0x1e, 0x900),
+    (0x01c89120, 0x371728, 0x20, 0x502),
+    (0x01c89130, 0x371758, 0x21, 0x542),
+    (0x01c89140, 0x370ac8, 0x1e, 0x100),
+    (0x01c89180, 0x370a70, 0x1e, 0x100),
+    (0x01c891c0, 0x3711e8, 0x1, 0x181),
+    (0x01c891d0, 0x370348, 0x25, 0x102),
+    (0x01c891e0, 0x3702b8, 0x26, 0x102),
+    (0x01c891f0, 0x360640, 0x27, 0x102),
+    (0x01c89200, 0x360710, 0x28, 0x102),
+    (0x01c89210, 0x3606e0, 0x29, 0x102),
+    (0x01c89220, 0x371430, 0x2a, 0x100),
+    (0x01c89230, 0x371298, 0x2b, 0x1900),
+    (0x01c89240, 0x371268, 0x2c, 0x1901),
+    (0x01c89250, 0x371238, 0x2d, 0x1941),
+    (0x01c89260, 0x3712e8, 0x2e, 0x902),
+    (0x01c89270, 0x36f750, 0x2f, 0x900),
+    (0x01c89280, 0x3713d8, 0x30, 0x100),
+    (0x01c89290, 0x3713a8, 0x31, 0x101),
+    (0x01c892a0, 0x3714c0, 0x32, 0x10a),
+    (0x01c892b0, 0x371378, 0x33, 0x101),
+    (0x01c892c0, 0x371460, 0x34, 0x10a),
+    (0x01c892d0, 0x370d20, 0x35, 0x50902),
+    (0x01c892e0, 0x370cf0, 0x18, 0x102),
+    (0x01c892f0, 0x370318, 0x37, 0x102),
+    (0x01c89300, 0x3702e8, 0x38, 0x102),
+    (0x01c89310, 0x371490, 0x39, 0x10a),
+    (0x01c89320, 0x36f8c0, 0x3a, 0x802),
+    (0x01c89330, 0x36f8f0, 0x3b, 0x8900),
+    (0x01c89340, 0x371788, 0x3c, 0x900),
+    (0x01c89350, 0x371348, 0x3d, 0x2101),
+    (0x01c89360, 0x3717e8, 0x3e, 0x900),
+    (0x01c89370, 0x3717b8, 0x3f, 0x901),
+    ];
+    const TABLE: [MoverDescriptor; 64] = {
+        let mut t = [MoverDescriptor { addr: 0, vtable: 0, id: 0, flags: 0 }; 64];
+        let mut i = 0;
+        while i < 64 {
+            t[i] = MoverDescriptor { addr: ROWS[i].0, vtable: ROWS[i].1, id: ROWS[i].2, flags: ROWS[i].3 };
+            i += 1;
+        }
+        t
+    };
+    &TABLE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

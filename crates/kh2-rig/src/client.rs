@@ -349,6 +349,10 @@ impl Emulator {
         Ok(Emulator { child })
     }
 
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn exited(&mut self) -> bool {
         self.child.try_wait().ok().flatten().is_some()
     }
@@ -396,11 +400,13 @@ pub struct Options {
     pub ram_hash: bool,
     pub out: Option<PathBuf>,
     pub lock_wait: Duration,
+    /// Skip the scenario's `[[shot]]` captures (`--no-shots`).
+    pub no_shots: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { unlimited: false, attach: Attach::BreakFirst, ram_hash: false, out: None, lock_wait: Duration::from_secs(1800) }
+        Options { unlimited: false, attach: Attach::BreakFirst, ram_hash: false, out: None, lock_wait: Duration::from_secs(1800), no_shots: false }
     }
 }
 
@@ -424,6 +430,23 @@ pub fn fnv1a(b: &[u8], mut h: u64) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+/// Captures the client area of the emulator's window into `out` (`tools/pcsx2_shot.py --pid`): the raw picture, before `frames` crops
+/// and scales it. The script is `KH2_PCSX2_SHOT`, else `tools/pcsx2_shot.py` found above the current directory or next to `local`; the
+/// interpreter is `KH2_PYTHON` (default `python`).
+pub fn capture_window(cfg: &Config, pid: u32, out: &Path) -> Result<(), String> {
+    let script = std::env::var_os("KH2_PCSX2_SHOT")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok().and_then(|c| c.ancestors().map(|d| d.join("tools/pcsx2_shot.py")).find(|p| p.is_file())))
+        .or_else(|| cfg.local.parent().map(|r| r.join("tools/pcsx2_shot.py")).filter(|p| p.is_file()))
+        .ok_or("tools/pcsx2_shot.py not found (set KH2_PCSX2_SHOT)")?;
+    let python = std::env::var("KH2_PYTHON").unwrap_or_else(|_| "python".into());
+    let res = std::process::Command::new(&python).arg(&script).arg(out).arg("--pid").arg(pid.to_string()).output().map_err(|e| format!("{python}: {e}"))?;
+    if !res.status.success() || !out.is_file() {
+        return Err(format!("window capture failed: {}{}", String::from_utf8_lossy(&res.stdout), String::from_utf8_lossy(&res.stderr)));
+    }
+    Ok(())
 }
 
 /// A checkpoint waiting for its stop.
@@ -456,6 +479,13 @@ pub fn run_original(cfg: &Config, sc: &Scenario, values: &Values, pad: Option<&P
     let t0 = Extract::read(&state.ee)?.vsync;
     drop(state);
     let mut due = dues(sc);
+    // Screenshot checkpoints by k, taken at the first stop at or after `at` (the game is stopped there, the window shows the last frame).
+    let mut shots: Vec<(u32, String)> = sc.shots.iter().filter(|_| !opt.no_shots).map(|s| (s.at, s.name.clone())).collect();
+    shots.sort();
+    let shot_dir = opt.out.clone().unwrap_or_else(|| cfg.local.join("rig").join(&sc.name));
+    if !shots.is_empty() {
+        std::fs::create_dir_all(&shot_dir).map_err(|e| format!("{}: {e}", shot_dir.display()))?;
+    }
 
     let _lock = Lock::acquire(&cfg.local, &cfg.id, opt.lock_wait)?;
     install_slot0(cfg, &state_path)?;
@@ -523,6 +553,10 @@ pub fn run_original(cfg: &Config, sc: &Scenario, values: &Values, pad: Option<&P
             let v = values.get(&name)?.read(&mut |a, n| dbg.mem(a, n))?;
             trace.push(at, &name, v, k);
         }
+        while shots.first().is_some_and(|(at, _)| *at <= k) {
+            let (_, name) = shots.remove(0);
+            capture_window(cfg, emu.pid(), &shot_dir.join(crate::frames::orig_shot_name(&name)))?;
+        }
         if k >= sc.frames {
             if opt.ram_hash {
                 let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -538,6 +572,9 @@ pub fn run_original(cfg: &Config, sc: &Scenario, values: &Values, pad: Option<&P
     let seconds = started.elapsed().as_secs_f64();
     let _ = dbg.clear_breakpoints();
     let _ = dbg.resume();
+    if let Some((at, name)) = shots.first() {
+        return Err(format!("screenshot '{name}' at {at} was never reached (the run ended at k = {last_k})"));
+    }
     if let Some(d) = due.first() {
         return Err(format!("checkpoint {} was never reached (the run ended at k = {last_k})", d.at));
     }

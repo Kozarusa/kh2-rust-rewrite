@@ -3602,6 +3602,7 @@ version = "0.1.0"
 name = "kh2-rig"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ruzstd",
  "serde_json",
  "toml_edit",

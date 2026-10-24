@@ -26,8 +26,11 @@
 //! informational = false              # true: reported, never fails the scenario
 //! note = "free text"
 //!
-//! [[shot]]                           # screenshots (later, informational in v1)
+//! [[shot]]                           # a screenshot of both sides at k, compared by `frames` (see there)
 //! at = 320
+//! name = "sky"                       # optional label, default "shot-<at>"
+//! mask = [[0, 0, 640, 40], [250, 150, 140, 200]]   # regions left out; one rectangle may be written [x, y, w, h]
+//! tol = { ssim = 0.90, mad = 12.0 }  # SSIM at least, mean absolute luma difference at most
 //! ```
 //!
 //! `k` is the vsync counter minus its value in the state (60 per second also in menus; the field runs one game frame every 2).
@@ -221,10 +224,26 @@ pub struct Check {
     pub note: String,
 }
 
+/// A rectangle `[x, y, w, h]` in the 640x448 rig frame (see `frames`).
+pub type Rect = [u32; 4];
+
+/// One screenshot checkpoint (`[[shot]]`): both sides capture at `at`, the images are compared by `frames`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shot {
     pub at: u32,
+    /// File-name safe label of the shot; default `shot-<at>`.
+    pub name: String,
+    /// Regions left out of both scores (Sora, HUD, OSD text).
+    pub mask: Vec<Rect>,
+    /// Smallest SSIM (luma, 0..1) that passes.
+    pub ssim_min: f64,
+    /// Largest mean absolute luma difference (0..255) that passes.
+    pub mad_max: f64,
 }
+
+/// Defaults of a shot's `tol`.
+pub const SHOT_SSIM_MIN: f64 = 0.90;
+pub const SHOT_MAD_MAX: f64 = 12.0;
 
 /// A parsed scenario file.
 #[derive(Clone, Debug, PartialEq)]
@@ -283,8 +302,7 @@ impl Scenario {
         let mut shots = Vec::new();
         if let Some(arr) = doc.get("shot").and_then(Item::as_array_of_tables) {
             for c in arr.iter() {
-                let at = int(c.get("at").ok_or("shot: missing at")?, "shot.at")?;
-                shots.push(Shot { at: u32::try_from(at).map_err(|_| "shot.at is out of range".to_string())? });
+                shots.push(parse_shot(c)?);
             }
         }
         Ok(Scenario { name: req("name")?, state: req("state")?, port_area: opt("port_area"), pad: opt("pad"), frames, seeds, every, trace_values, checks, shots, dir: dir.to_path_buf() })
@@ -316,6 +334,24 @@ impl Scenario {
                 return Err(format!("tol names '{t}' which this check does not read"));
             }
         }
+        let mut names = std::collections::BTreeSet::new();
+        for sh in &self.shots {
+            if sh.at > self.frames {
+                return Err(format!("shot at {} is past frames = {}", sh.at, self.frames));
+            }
+            if sh.name.is_empty() || !sh.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err(format!("shot name '{}': use letters, digits, '-' and '_'", sh.name));
+            }
+            if !names.insert(sh.name.as_str()) {
+                return Err(format!("shot name '{}' is used twice", sh.name));
+            }
+            if let Some(r) = sh.mask.iter().find(|r| r[2] == 0 || r[3] == 0 || r[0] + r[2] > 640 || r[1] + r[3] > 448) {
+                return Err(format!("shot '{}': mask {r:?} is empty or outside the 640x448 frame", sh.name));
+            }
+            if !(0.0..=1.0).contains(&sh.ssim_min) || sh.mad_max < 0.0 {
+                return Err(format!("shot '{}': tol ssim must be 0..1 and mad >= 0", sh.name));
+            }
+        }
         if self.checks.is_empty() && self.every == 0 {
             return Err("the scenario reads nothing (no [[check]], no trace.every)".into());
         }
@@ -326,6 +362,48 @@ impl Scenario {
     pub fn pad_path(&self) -> Option<PathBuf> {
         self.pad.as_ref().map(|p| self.dir.join(p))
     }
+}
+
+fn parse_rect(item: &toml_edit::Value) -> Result<Rect, String> {
+    let a = item.as_array().ok_or("shot.mask: expected [x, y, w, h]")?;
+    let v: Vec<u32> = a.iter().map(|n| n.as_integer().and_then(|i| u32::try_from(i).ok()).ok_or("shot.mask: expected four non-negative integers")).collect::<Result<_, _>>()?;
+    <Rect>::try_from(v).map_err(|_| "shot.mask: a rectangle has four numbers [x, y, w, h]".to_string())
+}
+
+fn parse_shot(c: &Table) -> Result<Shot, String> {
+    let at = int(c.get("at").ok_or("shot: missing at")?, "shot.at")?;
+    let at = u32::try_from(at).map_err(|_| "shot.at is out of range".to_string())?;
+    let name = c.get("name").and_then(Item::as_str).map_or_else(|| format!("shot-{at}"), str::to_string);
+    // `mask = [x, y, w, h]` is one rectangle, `mask = [[x, y, w, h], ...]` a list of them.
+    let mut mask = Vec::new();
+    if let Some(m) = c.get("mask") {
+        let arr = m.as_array().ok_or("shot.mask: expected an array")?;
+        if arr.iter().all(toml_edit::Value::is_integer) {
+            if !arr.is_empty() {
+                mask.push(parse_rect(m.as_value().ok_or("shot.mask")?)?);
+            }
+        } else {
+            for r in arr.iter() {
+                mask.push(parse_rect(r)?);
+            }
+        }
+    }
+    // `tol = { ssim = 0.9, mad = 12 }` or a bare number (the SSIM minimum).
+    let (mut ssim_min, mut mad_max) = (SHOT_SSIM_MIN, SHOT_MAD_MAX);
+    if let Some(t) = c.get("tol") {
+        if let Some(tt) = t.as_table_like() {
+            for (k, v) in tt.iter() {
+                match k {
+                    "ssim" => ssim_min = float(v, "shot.tol.ssim")?,
+                    "mad" => mad_max = float(v, "shot.tol.mad")?,
+                    _ => return Err(format!("shot.tol: unknown key '{k}' (ssim, mad)")),
+                }
+            }
+        } else {
+            ssim_min = float(t, "shot.tol")?;
+        }
+    }
+    Ok(Shot { at, name, mask, ssim_min, mad_max })
 }
 
 fn parse_check(c: &Table, i: usize) -> Result<Check, String> {
@@ -439,6 +517,18 @@ informational = true
 
 [[shot]]
 at = 90
+
+[[shot]]
+at = 100
+name = "sky"
+mask = [[0, 0, 640, 40], [10, 20, 30, 40]]
+tol = { ssim = 0.8, mad = 20 }
+
+[[shot]]
+at = 50
+name = "one-rect"
+mask = [1, 2, 3, 4]
+tol = 0.5
 "#;
 
     #[test]
@@ -451,7 +541,10 @@ at = 90
         assert_eq!(s.checks[0].at, vec![40, 42]);
         assert_eq!(s.checks[0].tol["sora.pos"], 2.0);
         assert!(s.checks[1].informational && !s.checks[0].informational);
-        assert_eq!(s.shots, vec![Shot { at: 90 }]);
+        assert_eq!(s.shots.len(), 3);
+        assert_eq!(s.shots[0], Shot { at: 90, name: "shot-90".into(), mask: vec![], ssim_min: SHOT_SSIM_MIN, mad_max: SHOT_MAD_MAX });
+        assert_eq!(s.shots[1], Shot { at: 100, name: "sky".into(), mask: vec![[0, 0, 640, 40], [10, 20, 30, 40]], ssim_min: 0.8, mad_max: 20.0 });
+        assert_eq!((s.shots[2].mask.clone(), s.shots[2].ssim_min, s.shots[2].mad_max), (vec![[1, 2, 3, 4]], 0.5, SHOT_MAD_MAX));
         assert_eq!(s.value_names(), vec!["frame.step", "sora.pos"]);
         assert_eq!(s.pad_path().unwrap(), Path::new("scenarios/demo").join("demo.pad"));
         s.validate(&Values::parse(VALUES).unwrap()).unwrap();
@@ -470,6 +563,15 @@ at = 90
         let mut s = base.clone();
         s.checks[0].tol.insert("frame.step".into(), 1.0);
         assert!(s.validate(&v).unwrap_err().contains("does not read"));
+        let mut s = base.clone();
+        s.shots[1].mask = vec![[600, 0, 100, 10]];
+        assert!(s.validate(&v).unwrap_err().contains("outside the 640x448"));
+        let mut s = base.clone();
+        s.shots[2].name = "sky".into();
+        assert!(s.validate(&v).unwrap_err().contains("used twice"));
+        let mut s = base.clone();
+        s.shots[0].at = 101;
+        assert!(s.validate(&v).unwrap_err().contains("past frames"));
         let mut s = base;
         s.checks.clear();
         s.every = 0;

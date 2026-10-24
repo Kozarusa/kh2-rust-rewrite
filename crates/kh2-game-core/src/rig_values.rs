@@ -6,7 +6,6 @@
 //! Names of `values.toml` the port has no field for, and why:
 //! * `sora.object`: the original's player object pointer; the port has no address space.
 //! * `place.battle`: the original's battle mode word; the port's `Battle` is a tick count, not the same word [no mapping known].
-//! * `cam.look`: the camera's look-at point is private to the camera system (`camera::CamState`), not exposed.
 //! * `menu.word_354f70`: 0 at every stop of the original's menu runs (RIG-4); not a menu value, kept for the old traces.
 //!
 //! `menu.scene` (7 while a menu is up, -1 otherwise) and `menu.next_page` (-1) are constants the port derives from its phase [inferred]:
@@ -36,6 +35,8 @@ pub struct Ctx<'a> {
     pub progress: Option<&'a Progress>,
     /// The camera's transform (metres, the app's axes).
     pub cam: Option<&'a Transform>,
+    /// The camera object's wanted position and look-at point (`0x355840 + 0x60` / `+ 0x80`, game units, map-model axes).
+    pub cam_wanted: Option<(Vec3, Vec3)>,
     /// The camp's phase and the page and cursor mirror (`shared::ui`).
     pub menu: Option<(&'a MenuPhase, &'a RigMenu)>,
     /// Sora's playing motion: the id (slot / 4) and the animator's frame.
@@ -62,6 +63,7 @@ pub const GETTERS: &[(&str, Getter)] = &[
     ("save.sora_hp", |c| c.progress.map(|p| p.sora().hp.to_string())),
     ("save.sora_hp_max", |c| c.progress.map(|p| p.sora().hp_max.to_string())),
     ("cam.pos", cam_pos),
+    ("cam.look", cam_look),
     ("rng.lo", |_| Some((crate::rng::state() as u32).to_string())),
     ("rng.hi", |_| Some(((crate::rng::state() >> 32) as u32).to_string())),
     ("sora.motion", |c| c.motion.map(|m| m.0.to_string())),
@@ -80,7 +82,6 @@ pub const GETTERS: &[(&str, Getter)] = &[
 pub const MISSING: &[&str] = &[
     "sora.object",
     "place.battle",
-    "cam.look",
     "menu.word_354f70",
 ];
 
@@ -124,8 +125,17 @@ fn sora_facing(c: &Ctx) -> Option<String> {
     Some([yaw.sin(), 0.0, -yaw.cos()].map(f).join(";"))
 }
 
+/// The camera object's wanted position (`+0x60`, the value `values.toml` names); the drawn transform when the camera has not run yet.
 fn cam_pos(c: &Ctx) -> Option<String> {
-    Some(game_vec(c.cam?.translation / SCALE))
+    match c.cam_wanted {
+        Some((pos, _)) => Some(game_vec(pos)),
+        None => Some(game_vec(c.cam?.translation / SCALE)),
+    }
+}
+
+/// The camera object's wanted look-at point (`+0x80`).
+fn cam_look(c: &Ctx) -> Option<String> {
+    c.cam_wanted.map(|(_, look)| game_vec(look))
 }
 
 #[cfg(test)]
@@ -166,7 +176,7 @@ mod tests {
         vs.set_step(2.0);
         vs.set_vblanks(7);
         vs.set_since_step(1);
-        let c = Ctx { k: 42, sora: Some(&s), area: Some(&area), progress: Some(&p), cam: Some(&cam), menu: None, motion: None, vsync: Some(&vs) };
+        let c = Ctx { k: 42, sora: Some(&s), area: Some(&area), progress: Some(&p), cam: Some(&cam), cam_wanted: None, menu: None, motion: None, vsync: Some(&vs) };
         let r = |n: &str| read(n, &c).unwrap_or_else(|| panic!("{n}"));
         assert_eq!(r("sora.pos"), "650;0;250", "the app's z is mirrored and a negative zero is printed as 0");
         assert_eq!(r("sora.facing"), "0;0;-1", "yaw 0 is app +z, game -z");
@@ -183,7 +193,7 @@ mod tests {
         let facing: Vec<f32> = read("sora.facing", &c).unwrap().split(';').map(|v| v.parse().unwrap()).collect();
         assert!((facing[0] - 1.0).abs() < 1e-6 && facing[2].abs() < 1e-6, "{facing:?}");
         // No objects: no values; a name the port lacks stays None.
-        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: None, vsync: None };
+        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, cam_wanted: None, menu: None, motion: None, vsync: None };
         assert!(GETTERS.iter().filter(|(n, _)| !matches!(*n, "rng.lo" | "rng.hi")).all(|(_, g)| g(&none).is_none()));
         assert_eq!(read("menu.word_354f70", &c), None);
     }
@@ -193,11 +203,11 @@ mod tests {
         let rig = |page, cursor| RigMenu { page, cursor, scroll: 0 };
         let at = |phase: Phase, mirror: RigMenu, names: &[&str]| -> Vec<Option<String>> {
             let phase = MenuPhase(phase);
-            let c = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: Some((&phase, &mirror)), motion: None, vsync: None };
+            let c = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, cam_wanted: None, menu: Some((&phase, &mirror)), motion: None, vsync: None };
             names.iter().map(|n| read(n, &c)).collect()
         };
         let s = |v: &str| Some(v.to_string());
-        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: Some((2, 38.0)), vsync: None };
+        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, cam_wanted: None, menu: None, motion: Some((2, 38.0)), vsync: None };
         assert_eq!((read("sora.motion", &none), read("sora.motion_frame", &none)), (s("2"), s("38")));
         assert_eq!(read("menu.scene_state", &none), None, "no menu resources: no value");
         let names = ["menu.scene_state", "menu.scene", "menu.closing", "menu.page", "menu.cursor"];

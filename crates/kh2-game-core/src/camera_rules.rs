@@ -248,19 +248,25 @@ pub fn behind_yaw(facing: Vec3) -> f32 {
     (-facing.x).atan2(-facing.z)
 }
 
-/// The spring used for the look-at point, the position and the field of view (`FUN_0013f600`).
-/// `cur` is the smoothed value, `new` this tick's wanted value, `prev` last tick's wanted value:
-/// it moves along the line from `new` to `cur` by `t * (k * (l - len) + c * u.d)`, where `len` is
-/// their distance, `u` the unit vector from `new` to `cur` and `d = (prev - new) * t`.
+/// orig 0x13f740. The look-at point of the follow camera: the player's position raised by `LOOK_HEIGHT`.
+pub fn look_point(pos: Vec3) -> Vec3 {
+    pos + Vec3::Y * LOOK_HEIGHT
+}
+
+/// orig 0x13f600. The spring used for the look-at point, the position and the field of view and roll. `cur` is the smoothed value, `new` this tick's wanted
+/// value, `prev` last tick's wanted value: with `d1 = cur - new`, `len = |d1|` and `d2 = (prev - new) * t` it moves `cur` along `d1` by
+/// `t * (k * (l - len) + c * (d1.d2 / len)) / len`, and leaves it alone when the two coincide. The vector products are summed in the order
+/// x, y, z.
 pub fn spring(cur: Vec3, new: Vec3, prev: Vec3, t: f32, k: f32, c: f32, l: f32) -> Vec3 {
     let d1 = cur - new;
-    let len = d1.length();
+    let d2 = (prev - new) * t;
+    let len = ((d1.x * d1.x + d1.y * d1.y) + d1.z * d1.z).sqrt();
     if len == 0.0 {
         return cur;
     }
-    let u = d1 / len;
-    let d2 = (prev - new) * t;
-    cur + u * ((k * (l - len) + c * u.dot(d2)) * t)
+    let dot = (d1.x * d2.x + d1.y * d2.y) + d1.z * d2.z;
+    let u = d1 * (1.0 / len);
+    cur + u * ((k * (l - len) + c * (dot / len)) * t)
 }
 
 /// Where the camera wants to be: on a circle of `radius` around the look-at point, at a height
@@ -272,9 +278,10 @@ pub fn wanted_position(look: Vec3, radius: f32, yaw: f32, min_radius: f32, heigh
 
 /// Auto-camera: yaw step per tick while the character runs (`FUN_00140128`). `left` is the left
 /// stick direction (x right, y down like the pad), `mag` its magnitude.
-pub fn auto_turn_step(p: &Params, left: Vec2, mag: f32, run_speed: f32) -> f32 {
+/// `step` is the frame step (`DAT_00356f40`: 2.0 in the field at 30 Hz, else 1.0), the last factor.
+pub fn auto_turn_step(p: &Params, left: Vec2, mag: f32, run_speed: f32, step: f32) -> f32 {
     let rate = p.auto_base + p.auto_per_speed * (run_speed - 8.0);
-    (left.y.abs() + 1.0) * (2.0 * (left.x.abs() + 1.0)) * mag * rate
+    (left.y.abs() + 1.0) * (2.0 * (left.x.abs() + 1.0)) * mag * rate * step
 }
 
 /// The player's turn this tick while the look-around runs (`FUN_001779e8`, the player's update,
@@ -487,6 +494,9 @@ pub struct TickIn<'a> {
     pub auto: bool,
     /// The character jumped to a new place: skip smoothing.
     pub warp: bool,
+    /// The frame step `DAT_00356f40` (2.0 for a field frame at 30 Hz, else 1.0): the original multiplies every per-frame camera rate
+    /// (stick yaw, zoom, the auto-camera, the radius drift, the yaw swing limit) by it; the springs do not take it.
+    pub step: f32,
     pub cast: Cast<'a>,
     /// Dynamic blockers registered this tick (`FUN_0015a3e8` rebuilds the list every call).
     pub blockers: &'a [Blocker],
@@ -695,12 +705,13 @@ pub struct Rig {
     warp_next: bool,
     /// A dynamic blocker clipped one of this tick's collided positions (output, for the log).
     pub blocked: bool,
-    wanted_look: Vec3,
-    prev_wanted_look: Vec3,
-    wanted_pos: Vec3,
-    prev_wanted_pos: Vec3,
-    wanted_fov: f32,
-    prev_wanted_fov: f32,
+    /// The wanted values of this tick and of the last one (`+0x80`, `+0x90`; `+0x60`, `+0x70`; `+0xa0`, `+0xb0`).
+    pub wanted_look: Vec3,
+    pub prev_wanted_look: Vec3,
+    pub wanted_pos: Vec3,
+    pub prev_wanted_pos: Vec3,
+    pub wanted_fov: f32,
+    pub prev_wanted_fov: f32,
 }
 
 impl Rig {
@@ -817,28 +828,93 @@ impl Rig {
         }
     }
 
+    /// orig 0x140768. Keeps this tick's wanted values as last tick's (the position, the look-at point and the field of view).
+    pub fn remember_wanted(&mut self) {
+        self.prev_wanted_look = self.wanted_look;
+        self.prev_wanted_pos = self.wanted_pos;
+        self.prev_wanted_fov = self.wanted_fov;
+    }
+
+    /// orig 0x13f7a0. The wanted position: the yaw swings toward its target by at most the yaw limit times the frame step (or takes it at
+    /// once with `snap`, `warp` being the port's own warp, which snaps the yaw without touching the smoothed values), then the camera sits
+    /// on the circle of the radius around `look`, at the height of the parabola of the radius. With `snap` the smoothed values are set to
+    /// the wanted ones as well (`FUN_0013f560`: look-at point, position and field of view; the roll stays, the port has no wanted roll).
+    /// Returns the position, also stored as the wanted position.
+    pub fn place_wanted(&mut self, p: &Params, look: Vec3, snap: bool, warp: bool, step: f32) -> Vec3 {
+        self.yaw = if snap || warp { self.target_yaw } else { approach_angle(self.yaw, self.target_yaw, p.yaw_step * step) };
+        let wp = wanted_position(look, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
+        self.wanted_pos = wp;
+        if snap {
+            self.prev_wanted_pos = wp;
+            self.pos = wp;
+            self.prev_wanted_look = self.wanted_look;
+            self.look = self.wanted_look;
+            self.prev_wanted_fov = self.wanted_fov;
+            self.fov = self.wanted_fov;
+        }
+        wp
+    }
+
+    /// orig 0x140128. The auto-camera: while the player moved horizontally since the last tick, the left stick is held and the right
+    /// one is not, and the left stick does not pull straight back (its y under 0.9), the yaw turns toward behind the player by
+    /// `auto_turn_step` and the radius drifts back to its default.
+    pub fn auto_camera(&mut self, p: &Params, sticks: &Sticks, facing: Vec3, moved: bool, run_speed: f32, step: f32) {
+        if moved && sticks.left_mag != 0.0 && sticks.right_mag == 0.0 && sticks.left.y < 0.9 {
+            let turn = auto_turn_step(p, sticks.left, sticks.left_mag, run_speed, step);
+            self.yaw = approach_angle(self.yaw, behind_yaw(facing), turn);
+            self.target_yaw = self.yaw;
+            self.relax_radius(self.row.radius, step);
+        }
+    }
+
+    /// One tick of the follow camera (`FUN_001402c8`, no `orig` mark: the collision of the wanted position is the caller's) up to the collision of the wanted position (`FUN_0013fbc0`), which the caller runs:
+    /// the stick turn and zoom or the reset (`FUN_0013fe20`), the auto-camera, the look-at point and the wanted position. The look-around
+    /// (Select) is the caller's. The mouse and keys' direct zoom is the port's own and runs with the stick zoom. Returns the wanted position.
+    pub fn follow_tick(&mut self, p: &Params, i: &TickIn) -> Vec3 {
+        let sub = &i.subject;
+        // `FUN_0013f508` resets the tick's field of view to the row's before anything else.
+        self.wanted_fov = self.row.fov;
+        let mut snap = false;
+        if i.reset {
+            self.target_yaw = behind_yaw(sub.facing);
+            self.radius = self.row.radius;
+            self.pos = self.wanted_pos;
+            snap = i.sticks.left_mag != 0.0;
+        } else {
+            self.stick_turn(p, &i.sticks, i.step);
+        }
+        // Zoom runs whether or not the camera was reset.
+        self.stick_zoom(&i.sticks, i.step);
+        self.direct_zoom(i.zoom);
+        if !snap && i.auto {
+            self.auto_camera(p, &i.sticks, sub.facing, sub.moved, sub.run_speed, i.step);
+        }
+        self.wanted_look = look_point(sub.pos);
+        self.place_wanted(p, self.wanted_look, snap, i.warp, i.step)
+    }
+
     fn clamp_radius(&mut self) {
         self.radius = self.radius.clamp(self.row.min_radius, self.row.max_radius);
     }
 
     /// Right stick horizontal turns the camera, at `stick_yaw` per tick times the stick's
     /// magnitude (`FUN_0013fe20`). Stick left moves the camera to its left.
-    fn stick_turn(&mut self, p: &Params, s: &Sticks) {
+    fn stick_turn(&mut self, p: &Params, s: &Sticks, step: f32) {
         if s.right_mag > 0.0 && s.right.x != 0.0 {
             let dir = s.right.x.signum();
-            self.yaw = wrap(self.yaw + dir * p.stick_yaw * s.right_mag);
+            self.yaw = wrap(self.yaw + dir * (p.stick_yaw * s.right_mag * step));
             self.target_yaw = self.yaw;
         }
     }
 
-    /// Right stick vertical zooms, up in and down out, `ZOOM_RATE` per tick at full tilt, inside
-    /// the row's range (`FUN_0013fd08`).
-    fn stick_zoom(&mut self, s: &Sticks) {
+    /// orig 0x13fd08. Right stick vertical zooms, up in and down out, `ZOOM_RATE` per tick at full tilt, inside
+    /// the row's range.
+    pub fn stick_zoom(&mut self, s: &Sticks, step: f32) {
         if s.right_mag > 0.0 {
             if s.right.y < 0.0 {
-                self.radius = (self.radius - s.right_mag * ZOOM_RATE).max(self.row.min_radius);
+                self.radius = (self.radius - s.right_mag * ZOOM_RATE * step).max(self.row.min_radius);
             } else if s.right.y > 0.0 {
-                self.radius = (self.radius + s.right_mag * ZOOM_RATE).min(self.row.max_radius);
+                self.radius = (self.radius + s.right_mag * ZOOM_RATE * step).min(self.row.max_radius);
             }
         }
     }
@@ -851,15 +927,15 @@ impl Rig {
         }
     }
 
-    /// Radius drifts back to its default while the auto-camera turns (`FUN_00140068`).
-    fn relax_radius(&mut self, to: f32) {
+    /// orig 0x140068. Radius drifts back to its default while the auto-camera turns.
+    pub fn relax_radius(&mut self, to: f32, step: f32) {
         if (self.radius - to).abs() < 1.0 {
             return;
         }
         if self.radius <= to {
-            self.radius = (self.radius + 0.5).min(self.row.max_radius);
+            self.radius = (self.radius + step * 0.5).min(self.row.max_radius);
         } else {
-            self.radius = (self.radius - 0.5).max(self.row.min_radius);
+            self.radius = (self.radius - step * 0.5).max(self.row.min_radius);
         }
     }
 
@@ -951,15 +1027,12 @@ impl Rig {
         } else {
             i
         };
-        self.prev_wanted_look = self.wanted_look;
-        self.prev_wanted_pos = self.wanted_pos;
-        self.prev_wanted_fov = self.wanted_fov;
+        self.remember_wanted();
         self.fade.advance();
         let sub = &i.subject;
         // Where the camera looked last tick, for the lock-on screen tests.
         let (view_pos, view_look, view_fov) = (self.pos, self.look, self.fov);
         let chest = sub.pos + Vec3::Y * LOOK_HEIGHT;
-        let mut snap_yaw = false;
         if self.mode == Mode::Overhead {
             self.overhead_tick(p, i);
             return;
@@ -994,7 +1067,7 @@ impl Rig {
                         if i.reset {
                             self.radius = self.row.radius;
                         } else {
-                            self.stick_zoom(&i.sticks);
+                            self.stick_zoom(&i.sticks, i.step);
                         }
                         self.direct_zoom(i.zoom);
                         self.target_yaw = behind_yaw(sub.facing);
@@ -1007,23 +1080,16 @@ impl Rig {
                             self.smooth_and_collide(p, i, chest, false);
                             return;
                         }
-                        if i.reset {
-                            self.target_yaw = behind_yaw(sub.facing);
-                            self.radius = self.row.radius;
-                            self.pos = self.wanted_pos;
-                            snap_yaw = i.sticks.left_mag != 0.0;
-                        } else {
-                            self.stick_turn(p, &i.sticks);
+                        let wp = self.follow_tick(p, i);
+                        self.wanted_fov = self.row.fov;
+                        self.wanted_pos = wp;
+                        // The wanted position is tested with the blockers (`FUN_0013fbc0` passes 1).
+                        self.blocked |= blockers_clip(i.blockers, chest, wp).is_some();
+                        if let Some(c) = collide(p, chest, wp, i.cast, Some(i.blockers), false) {
+                            self.wanted_pos = c;
                         }
-                        // Zoom runs whether or not the camera was reset.
-                        self.stick_zoom(&i.sticks);
-                        self.direct_zoom(i.zoom);
-                        if !snap_yaw && i.auto && sub.moved && i.sticks.left_mag != 0.0 && i.sticks.right_mag == 0.0 && i.sticks.left.y < 0.9 {
-                            let step = auto_turn_step(p, i.sticks.left, i.sticks.left_mag, sub.run_speed);
-                            self.yaw = approach_angle(self.yaw, behind_yaw(sub.facing), step);
-                            self.target_yaw = self.yaw;
-                            self.relax_radius(self.row.radius);
-                        }
+                        self.smooth_and_collide(p, i, chest, false);
+                        return;
                     }
                     self.wanted_look = chest;
                 }
@@ -1035,17 +1101,15 @@ impl Rig {
                         self.target_yaw = d.x.atan2(d.z);
                         self.radius = self.row.lock_radius;
                     } else {
-                        self.stick_turn(p, &i.sticks);
+                        self.stick_turn(p, &i.sticks, i.step);
                     }
-                    self.stick_zoom(&i.sticks);
+                    self.stick_zoom(&i.sticks, i.step);
                     self.direct_zoom(i.zoom);
                     self.lock_frame(i, target, chest, (view_pos, view_look, view_fov));
                 }
             }
             self.wanted_fov = self.row.fov;
-            // Wanted position (`FUN_0013f7a0`): the yaw swings toward its target, then the circle.
-            self.yaw = if snap_yaw || i.warp { self.target_yaw } else { approach_angle(self.yaw, self.target_yaw, p.yaw_step) };
-            let mut wp = wanted_position(chest, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
+            let mut wp = self.place_wanted(p, chest, false, i.warp, i.step);
             // The wanted position is tested with the blockers (`FUN_0013fbc0` passes 1).
             self.blocked |= blockers_clip(i.blockers, chest, wp).is_some();
             if let Some(c) = collide(p, chest, wp, i.cast, Some(i.blockers), false) {
@@ -1054,6 +1118,24 @@ impl Rig {
             self.wanted_pos = wp;
         }
         self.smooth_and_collide(p, i, chest, i.lock.is_some());
+    }
+
+    /// The smoothing of `FUN_001407b8` (no `orig` mark: its collisions and the hand-off to the view are `smooth_and_collide`'s): the
+    /// look-at point springs toward the wanted one with `t + 0.03`, the position with `t`, and the field of view and roll (the roll
+    /// has no wanted value of its own here and stays) with `t` and the rest length 0.001.
+    pub fn smooth(&mut self, t: f32) {
+        self.look = spring(self.look, self.wanted_look, self.prev_wanted_look, t + 0.03, 2.5, 0.5, 1.0);
+        self.pos = spring(self.pos, self.wanted_pos, self.prev_wanted_pos, t, 2.5, 0.5, 1.0);
+        let fr = spring(
+            Vec3::new(self.fov, self.roll, 0.0),
+            Vec3::new(self.wanted_fov, self.roll, 0.0),
+            Vec3::new(self.prev_wanted_fov, self.roll, 0.0),
+            t,
+            2.5,
+            0.5,
+            0.001,
+        );
+        (self.fov, self.roll) = (fr.x, fr.y);
     }
 
     /// The common tail (`FUN_001407b8`): smoothing, then the mode's collision of the smoothed
@@ -1067,10 +1149,7 @@ impl Rig {
             self.prev_wanted_look = self.wanted_look;
             self.prev_wanted_pos = self.wanted_pos;
         }
-        let t = smoothing_time(i.subject.run_speed, i.warp);
-        self.look = spring(self.look, self.wanted_look, self.prev_wanted_look, t + 0.03, 2.5, 0.5, 1.0);
-        self.pos = spring(self.pos, self.wanted_pos, self.prev_wanted_pos, t, 2.5, 0.5, 1.0);
-        self.fov = spring(Vec3::new(self.fov, 0.0, 0.0), Vec3::new(self.wanted_fov, 0.0, 0.0), Vec3::new(self.prev_wanted_fov, 0.0, 0.0), t, 2.5, 0.5, 0.001).x;
+        self.smooth(smoothing_time(i.subject.run_speed, i.warp));
         if self.mode == Mode::Look {
             // `FUN_00140398`: a wall between the eye and the look-at point pulls the look-at point
             // to it. The cast's direction (eye to look-at) is inferred: the decompiled call's end
@@ -1210,7 +1289,7 @@ mod tests {
     }
 
     fn input<'a>(s: Subject, cast: Cast<'a>) -> TickIn<'a> {
-        TickIn { sticks: Sticks::default(), reset: false, select: false, subject: s, lock: None, zoom: 0.0, auto: true, warp: false, cast, blockers: &[] }
+        TickIn { sticks: Sticks::default(), reset: false, select: false, subject: s, lock: None, zoom: 0.0, auto: true, warp: false, step: 1.0, cast, blockers: &[] }
     }
 
     #[test]

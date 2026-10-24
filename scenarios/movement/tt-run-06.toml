@@ -27,8 +27,7 @@ values = ["frame.step"]
 tol = { "frame.step" = 0.0 }
 
 [[check]]
-at = [80, 160, 320]
+at = [40, 60, 80, 120, 160, 200, 320]
 values = ["cam.pos", "cam.look"]
 tol = { "cam.pos" = 5.0, "cam.look" = 5.0 }
-informational = true
-note = "the port's camera is a stand-in in places (docs/camera.md)"
+note = "the camera object's wanted position (+0x60) and look-at point (+0x80); the pad's sticks drive the auto-camera since L2-P2"

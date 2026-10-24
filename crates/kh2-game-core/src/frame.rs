@@ -13,7 +13,7 @@
 //!
 //! The waits are the one part that is not data: [`Vsync::step_frame`] takes the wait (`FUN_0014d1a8`, block until the next vblank)
 //! as a closure. A host that drives the port at 60 Hz passes [`Vsync::vblank`] (one vblank per wait), which gives the original's
-//! counts when no vblank is missed. Nothing in the app drives this module yet (the frame-order package L1-P4 does).
+//! counts when no vblank is missed. The app drives it once per fixed step through `schedule::FrameClock` (WP-L1-P4).
 
 /// Address of the block in the original.
 pub const BASE: u32 = 0x0035_6f18;

@@ -20,11 +20,11 @@ values = ["sora.pos", "sora.facing"]
 tol = { "sora.pos" = 2.0, "sora.facing" = 0.02 }
 note = "the turn at 120 takes about 7 frames; facing differences show at 130"
 
-# The original's frame step is 2.0; the port reports its own (1.0) until the frame step is ported (L1-P5).
+# The field's frame step is 2.0 (limit 1); the port runs the original's cadence since L1-P4 (schedule::FrameClock).
 [[check]]
 at = [40, 120, 320]
 values = ["frame.step"]
-informational = true
+tol = { "frame.step" = 0.0 }
 
 [[check]]
 at = [80, 160, 320]

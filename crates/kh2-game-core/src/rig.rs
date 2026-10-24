@@ -223,7 +223,8 @@ fn place_sora(progress: Option<Res<Progress>>, rec: Option<Res<AreaRecord>>, mut
     clock.placed = true;
 }
 
-/// FixedUpdate, first: starts the clock on the first tick after the area stands, then counts every tick.
+/// FixedFirst (once per vblank, before the logic of `schedule::Vblank`): starts the clock on the first vblank after the area stands,
+/// then counts every vblank.
 fn rig_clock(mut clock: ResMut<RigClock>, rec: Option<Res<AreaRecord>>, sora: Query<(), With<Sora>>) {
     if clock.started {
         clock.ticks += 1;
@@ -303,6 +304,7 @@ fn rig_trace(
     progress: Option<Res<Progress>>,
     cam: Query<&Transform, With<crate::camera::OrbitCamera>>,
     (phase, menu, anims): (Option<Res<MenuPhase>>, Option<Res<RigMenu>>, Query<&crate::skel::Animator>),
+    frame: Option<Res<crate::schedule::FrameClock>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if !clock.started {
@@ -314,7 +316,7 @@ fn rig_trace(
         // The playing motion: the slot is `id * 4 + variant` (contract.md, the controller's +0x14 holds the id), the frame is the animator's.
         let motion = sora.and_then(|s| anims.get(s.body).ok()).and_then(|a| Some((i32::try_from(a.slot? / 4).ok()?, a.frame)));
         let menu = phase.as_deref().zip(menu.as_deref());
-        let ctx = Ctx { k, sora, area: area.as_deref(), progress: progress.as_deref(), cam: cam.single().ok(), menu, motion };
+        let ctx = Ctx { k, sora, area: area.as_deref(), progress: progress.as_deref(), cam: cam.single().ok(), menu, motion, step: frame.map(|f| f.step()) };
         trace.record(k, &ctx);
     }
     if trace.end.is_some_and(|e| k >= e) {
@@ -374,7 +376,7 @@ impl Plugin for RigPlugin {
             return;
         }
         let script = script.map(|p| load_script(&p).unwrap_or_else(|e| fail(&e)));
-        app.add_systems(FixedUpdate, rig_clock.before(crate::schedule::Sim::Weapon));
+        app.add_systems(FixedFirst, rig_clock);
         if let Some(s) = &script {
             if !s.odd_changes().is_empty() {
                 warn!("rig: the pad script changes at odd k {:?}; the original's field reads the pad every second vsync", s.odd_changes());
@@ -387,7 +389,7 @@ impl Plugin for RigPlugin {
             let end = std::env::var("KH2_TRACE_END").ok().and_then(|v| v.parse().ok()).or_else(|| script.as_ref().map(PadScript::last_k)).or_else(|| at.last());
             let file = std::env::var("KH2_TRACE_FILE").unwrap_or_else(|_| "trace-port.csv".into());
             let trace = RigTrace::create(&file, names, at, end).unwrap_or_else(|e| fail(&e));
-            app.insert_resource(trace).add_systems(FixedUpdate, rig_trace.after(rig_clock).before(crate::schedule::Sim::Weapon));
+            app.insert_resource(trace).add_systems(FixedFirst, rig_trace.after(rig_clock));
         }
     }
 }
@@ -462,7 +464,7 @@ mod tests {
         let mut t = RigTrace::create(path.to_str().unwrap(), vec!["clock.vsync".into(), "place.world".into(), "nope".into()], TraceAt::parse("3,5"), Some(5)).unwrap();
         let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         p.rig.vsync = Some(1000);
-        let ctx = Ctx { k: 3, sora: None, area: None, progress: Some(&p), cam: None, menu: None, motion: None };
+        let ctx = Ctx { k: 3, sora: None, area: None, progress: Some(&p), cam: None, menu: None, motion: None, step: None };
         for k in 0..=5 {
             if t.at.wants(k) {
                 t.record(k, &Ctx { k, ..ctx });

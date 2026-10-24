@@ -517,6 +517,92 @@ impl Tasks {
     }
 }
 
+/// Which manager a creation site puts its task on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum On {
+    /// The root manager `DAT_0033e69c` (the boot thread's, every pass of the main loop).
+    Root,
+    /// The field manager `DAT_0033e6e4`.
+    Field,
+    /// Another global manager word (the address of the word).
+    Global(u32),
+    /// A manager read from an object or a pointer at run time.
+    Dynamic,
+}
+
+/// One call of the task creator `FUN_00102778(manager, bits, priority, function)` with constant arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Site {
+    /// The function that makes the call.
+    pub caller: u32,
+    pub on: On,
+    pub bits: u32,
+    pub priority: i32,
+    /// The task's function.
+    pub function: u32,
+}
+
+const fn site(caller: u32, on: On, bits: u32, priority: i32, function: u32) -> Site {
+    Site { caller, on, bits, priority, function }
+}
+
+/// The frame task `FUN_0014ccf8` and its priority, the highest number of any task: it runs last in every pass of the root manager and
+/// ends the game frame with the frame step (`frame::Vsync::step_frame`).
+pub const FRAME_TASK: u32 = 0x14ccf8;
+pub const FRAME_PRIORITY: i32 = 800_000;
+
+/// Every call of `FUN_00102778` whose bits, priority and function are constants in the executable, in address order (WP-L1-P4).
+/// `tests/orig_task_sites.rs` reads each from the call's argument registers in the user's executable. The calls that pass the
+/// priority through (the wrappers `FUN_00102808`, `FUN_00102bc8`, `FUN_00102e78`, `FUN_001039e0`, `FUN_00104420`, and the callers
+/// `FUN_001394e8`, `FUN_0013a140`, `FUN_00160588`, `FUN_001db278`, `FUN_001dbf60`, `FUN_001ddd10`,
+/// `FUN_002248f0`, `FUN_002d58f8`, `FUN_002f5fe8`) are not in the table: their priority is an argument of their own callers.
+///
+/// What the root manager's tasks are, where known: `0x14c560` the count-down timer (priority 1, first), `0x14dc70` the screen clear
+/// (100000) [inferred: it calls the GS clear helpers], `0x167038` the pad read (110000) [inferred: its unit holds the stick scale
+/// `FUN_00167198`], the field tasks at 300000 and 330000, `0x2c4958` and `0x2c0e90` (380000, 500010) [not identified], `0x168010`
+/// (400000) [not identified], the game-speed task `0x14cb08` and the frame task `0x14ccf8` (800000, last). In the app the same order
+/// stands as: the pad (`Update`, before the next vblank's logic), the logic (`FixedUpdate` inside `schedule::Vblank`), then the frame step
+/// that ends it (`schedule::FrameClock`).
+pub const SITES: &[Site] = &[
+    site(0x103678, On::Root, 0, 330_000, 0x1036b8),
+    site(0x104e18, On::Field, 0, 300_000, 0x104d58),
+    site(0x112168, On::Global(0x35f224), 0, 4, 0x111d18),
+    site(0x112168, On::Global(0x35f224), 0, 6, 0x112018),
+    site(0x112168, On::Dynamic, 1, 0x5014, 0x112100),
+    site(0x13a068, On::Dynamic, 0, 0x19258, 0x139570),
+    site(0x13ef00, On::Field, 0, 300_000, 0x13eea8),
+    site(0x13f148, On::Dynamic, 0, 300_000, 0x13f0b0),
+    site(0x13f1a0, On::Dynamic, 1, 300_000, 0x13f100),
+    site(0x13f290, On::Dynamic, 0, 300_000, 0x13f1f8),
+    site(0x13f2e8, On::Dynamic, 1, 300_000, 0x13f248),
+    site(0x13f3b0, On::Dynamic, 0, 300_000, 0x13f340),
+    site(0x140c00, On::Dynamic, 1, 26_000, 0x140be0),
+    site(0x14a1e0, On::Root, 0, 0x1c908, 0x14a080),
+    site(0x14aa90, On::Root, 0, 330_000, 0x14a988),
+    site(0x14c678, On::Root, 0, 1, 0x14c560),
+    site(0x14cb50, On::Root, 0, 800_000, 0x14cb08),
+    site(0x14cd78, On::Root, 0, FRAME_PRIORITY, FRAME_TASK),
+    site(0x14dcd0, On::Root, 0, 100_000, 0x14dc70),
+    site(0x15d1a8, On::Dynamic, 1, 120_000, 0x15d0e8),
+    // The sub-manager `DAT_00520a30` of 0x160d80 gets 0x1605d8 at 28000 on the straight path; the other branch passes 44000.
+    site(0x160d80, On::Global(0x520a30), 0, 28_000, 0x1605d8),
+    site(0x160d80, On::Dynamic, 0, 44_000, 0x160650),
+    site(0x160d80, On::Dynamic, 0, 71_000, 0x1606a0),
+    site(0x166fd0, On::Root, 0, 110_000, 0x167038),
+    site(0x1681a0, On::Root, 0, 400_000, 0x168010),
+    site(0x187370, On::Global(0x35f224), 0, 0, 0x187250),
+    site(0x1b4360, On::Global(0x35f224), 0, 1, 0x1b4b68),
+    site(0x1b44c8, On::Global(0x35f224), 0, 1, 0x1b4b68),
+    site(0x1b72f0, On::Dynamic, 0, 5, 0x1b7730),
+    site(0x1dfff8, On::Dynamic, 1, 0x5014, 0x1dff50),
+    site(0x239950, On::Dynamic, 0, 15_000, 0x239ac8),
+    site(0x2c0e00, On::Root, 0, 0x7a12a, 0x2c0e90),
+    site(0x2c4870, On::Root, 0, 380_000, 0x2c4958),
+    site(0x2cc468, On::Field, 0, 300_000, 0x2cc418),
+    site(0x2f4930, On::Dynamic, 0, 2000, 0x2f4ba8),
+    site(0x2f49e0, On::Dynamic, 0, 2000, 0x2f4ba8),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

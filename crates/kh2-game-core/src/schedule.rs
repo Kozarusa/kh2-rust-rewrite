@@ -7,6 +7,7 @@
 //! systems of one feature, chained in the order the feature's plugin lists them.
 //! `Frame` is the per-frame order in `Update` that follows `sora::read_pad`.
 
+use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
 use crate::{assets, data};
@@ -77,12 +78,272 @@ pub fn sim_running(pause: Res<Pause>) -> bool {
     !pause.frozen()
 }
 
+/// The vblank clock and the frame step that drive the logic (WP-L1-P4; docs/systems/core-runtime/runtime.md "Frame step" and
+/// "Frame order in the app").
+///
+/// One fixed step of the app (`FixedMain`, 60 Hz) is one vblank of the original: `FixedFirst` and `FixedLast` run once per vblank, and
+/// [`Vblank`] (put where `FixedUpdate` stood in the fixed order) adds the vblank to the ported `frame::Vsync` block and runs the game
+/// logic, `FixedUpdate`, as many times as the completed frame's step says. The original's field runs limit 1 (`FUN_0014cd38`): a game
+/// frame every second vblank with step 2.0, so `FixedUpdate` runs twice on every second vblank and not at all in between; the menus run
+/// limit 0 (`FUN_00239e78`, restored by `FUN_00239ec0`): one frame per vblank, step 1.0.
+///
+/// Decided (RULES A20): every system of the app moves by a 60 Hz unit per `FixedUpdate`, so a step of 2.0 is two `FixedUpdate`
+/// runs back to back instead of one run with every speed doubled. Linear motion (a run at constant speed) is the same to the bit at
+/// every frame boundary; motion that integrates (gravity, a turn toward a target) takes two half steps where the original takes one
+/// [inferred: no oracle compares a double step]. Nothing that counts ticks changes its rate: still 60 logic ticks a second.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct FrameClock {
+    pub vsync: crate::frame::Vsync,
+    /// `FixedUpdate` runs of the vblank that ran last.
+    pub runs: u32,
+    /// The frame type and limit the menu saved when it opened (`DAT_0036ca40`, `DAT_0036ca44`); `None` while no menu is up.
+    saved: Option<(u8, u32)>,
+    /// The clock the logic sees as `Time` (see [`vblank_step`]).
+    logic_time: Time,
+    /// The app frame in which the logic ran last (see [`hold_messages`]).
+    logic_frame: Option<u32>,
+}
+
+impl FrameClock {
+    /// The clock after the frame init `FUN_0014cd38` (field cadence).
+    pub fn new() -> FrameClock {
+        let mut vsync = crate::frame::Vsync::default();
+        vsync.init();
+        FrameClock { vsync, runs: 0, saved: None, logic_time: Time::default(), logic_frame: None }
+    }
+
+    /// The step of the last completed frame (`0x356f40`).
+    pub fn step(&self) -> f32 {
+        self.vsync.frame_step()
+    }
+
+    /// The menu cadence: on open, save type and limit and run type 1, limit 0 (`FUN_00239e78`); on close, restore them
+    /// (`FUN_00239ec0`).
+    pub fn set_menu(&mut self, open: bool) {
+        match (open, self.saved) {
+            (true, None) => {
+                self.saved = Some((self.vsync.frame_type(), self.vsync.limit()));
+                self.vsync.set_frame_type(1);
+                self.vsync.set_frame_limit(0);
+            }
+            (false, Some((t, l))) => {
+                self.saved = None;
+                self.vsync.set_frame_type(t);
+                self.vsync.set_frame_limit(l);
+            }
+            _ => {}
+        }
+    }
+
+    /// One vblank: the handler's count (`FUN_0014cc88`), then, when the frame is complete (the counter has reached `limit + 1`), the
+    /// frame step `FUN_0014cdd0` with no wait left to do. Returns how many logic ticks the vblank runs: the step rounded (0 while the
+    /// frame is still waiting).
+    pub fn vblank(&mut self) -> u32 {
+        self.vsync.vblank();
+        self.runs = if self.vsync.since_step() >= self.vsync.limit().wrapping_add(1) {
+            self.vsync.step_frame(|_| {});
+            self.vsync.frame_step().round() as u32
+        } else {
+            0
+        };
+        self.runs
+    }
+}
+
+/// The button edges of the app frames since the last logic tick: the logic of a frame sees every press and release made since the
+/// frame before it, once, as the original's pad task reads the pad once per game frame (`0x167038`, priority 110000). Without it a
+/// press in a frame whose vblank runs no logic would be lost, and one in a logic frame would be seen by both of its ticks.
+#[derive(Clone, Debug)]
+struct Edges<T: Clone + Eq + std::hash::Hash + Send + Sync + 'static> {
+    pressed: Vec<T>,
+    released: Vec<T>,
+    /// The app frame whose edges were taken last (a frame can hold more than one vblank).
+    frame: Option<u32>,
+}
+
+impl<T: Copy + Eq + std::hash::Hash + Send + Sync + 'static> Edges<T> {
+    fn new() -> Self {
+        Edges { pressed: Vec::new(), released: Vec::new(), frame: None }
+    }
+
+    /// Adds the edges of `input` unless this frame's were taken already.
+    fn gather(&mut self, input: &ButtonInput<T>, frame: Option<u32>) {
+        if frame.is_some() && frame == self.frame {
+            return;
+        }
+        self.frame = frame;
+        for k in input.get_just_pressed() {
+            if !self.pressed.contains(k) {
+                self.pressed.push(*k);
+            }
+        }
+        for k in input.get_just_released() {
+            if !self.released.contains(k) {
+                self.released.push(*k);
+            }
+        }
+    }
+
+    /// The input the logic sees: the keys held now, with the gathered edges.
+    fn input(&self, now: &ButtonInput<T>) -> ButtonInput<T> {
+        let mut b = ButtonInput::default();
+        for k in now.get_pressed().chain(&self.pressed).chain(&self.released) {
+            b.press(*k);
+        }
+        b.clear();
+        for k in &self.pressed {
+            b.release(*k);
+            b.press(*k);
+            if !self.released.contains(k) {
+                b.clear_just_released(*k);
+            }
+        }
+        for k in &self.released {
+            if !now.pressed(*k) {
+                b.release(*k);
+            }
+        }
+        b
+    }
+
+    fn take(&mut self) {
+        self.pressed.clear();
+        self.released.clear();
+    }
+}
+
+/// Runs `FixedUpdate` `runs` times with the logic's clock and the gathered button edges in place of the frame's (see [`vblank_step`]).
+fn run_logic(world: &mut World, runs: u32) {
+    let frame = world.get_resource::<bevy::diagnostic::FrameCount>().map(|f| f.0);
+    let keys = world.remove_resource::<ButtonInput<KeyCode>>();
+    let mouse = world.remove_resource::<ButtonInput<MouseButton>>();
+    if runs > 0 {
+        world.resource_mut::<FrameClock>().logic_frame = frame;
+    }
+    let (logic_keys, logic_mouse) = {
+        let mut latch = world.get_resource_or_insert_with(InputLatch::default);
+        if let Some(k) = &keys {
+            latch.keys.gather(k, frame);
+        }
+        if let Some(m) = &mouse {
+            latch.mouse.gather(m, frame);
+        }
+        if runs == 0 {
+            (None, None)
+        } else {
+            let out = (keys.as_ref().map(|k| latch.keys.input(k)), mouse.as_ref().map(|m| latch.mouse.input(m)));
+            latch.keys.take();
+            latch.mouse.take();
+            out
+        }
+    };
+    if let Some(k) = logic_keys {
+        world.insert_resource(k);
+    }
+    if let Some(m) = logic_mouse {
+        world.insert_resource(m);
+    }
+    // The logic sees its own clock as `Time`: one fixed step per run, so the systems that fire when the elapsed time crosses a
+    // scripted second (`elapsed - delta < at <= elapsed`) see every step once, also the vblanks that ran no logic.
+    let vblank_time = world.get_resource::<Time>().cloned();
+    for i in 0..runs {
+        if let Some(v) = &vblank_time {
+            let mut clock = world.resource_mut::<FrameClock>();
+            clock.logic_time.advance_by(v.delta());
+            let t = clock.logic_time;
+            *world.resource_mut::<Time>() = t;
+        }
+        if i == 1 {
+            // The edges belong to the frame's first tick.
+            if let Some(mut k) = world.get_resource_mut::<ButtonInput<KeyCode>>() {
+                k.clear();
+            }
+            if let Some(mut m) = world.get_resource_mut::<ButtonInput<MouseButton>>() {
+                m.clear();
+            }
+        }
+        world.run_schedule(FixedUpdate);
+    }
+    if let Some(v) = vblank_time {
+        *world.resource_mut::<Time>() = v;
+    }
+    match keys {
+        Some(k) => world.insert_resource(k),
+        None => {
+            world.remove_resource::<ButtonInput<KeyCode>>();
+        }
+    }
+    match mouse {
+        Some(m) => world.insert_resource(m),
+        None => {
+            world.remove_resource::<ButtonInput<MouseButton>>();
+        }
+    }
+}
+
+/// `FixedLast`: Bevy ages the message buffers once in each frame after a fixed step (the signal of `FixedPostUpdate`), and a message
+/// lives for two agings. A message the logic writes for its next tick would be gone after the two frames without logic between two
+/// logic frames, so the aging waits for frames in which the logic ran.
+pub fn hold_messages(clock: Res<FrameClock>, frame: Option<Res<bevy::diagnostic::FrameCount>>, registry: Option<ResMut<bevy::ecs::message::MessageRegistry>>) {
+    use bevy::ecs::message::ShouldUpdateMessages;
+    let Some(mut registry) = registry else { return };
+    if matches!(registry.should_update, ShouldUpdateMessages::Ready) && clock.logic_frame != frame.map(|f| f.0) {
+        registry.should_update = ShouldUpdateMessages::Waiting;
+    }
+}
+
+#[derive(Resource)]
+struct InputLatch {
+    keys: Edges<KeyCode>,
+    mouse: Edges<MouseButton>,
+}
+
+impl Default for InputLatch {
+    fn default() -> Self {
+        InputLatch { keys: Edges::new(), mouse: Edges::new() }
+    }
+}
+
+/// The schedule that stands in `FixedMain` where `FixedUpdate` stood: one run per vblank (see [`FrameClock`]).
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Vblank;
+
+/// The one system of [`Vblank`]: the menu cadence, the vblank, then the logic ticks of a completed frame.
+///
+/// In a rig run the frame boundaries are put on the rig clock: the state was saved at a frame boundary (the original's field stops
+/// at even `k`), so the counter starts at 0 with `k = 0`. The logic of the frame that starts at an even `k` then runs at the odd vblank
+/// after it, which is the vblank whose pad the app has read by then (the pad is read in `Update`, one fixed step behind the script),
+/// and the frame's motion stands at the next even `k`, as in the original [inferred: the original reads the pad at the frame start].
+pub fn vblank_step(world: &mut World) {
+    let menu = world.get_resource::<Pause>().is_some_and(|p| p.menu);
+    let rig_start = world.get_resource::<crate::rig::RigClock>().is_some_and(|c| c.started && c.ticks == 0);
+    let runs = {
+        let mut clock = world.get_resource_or_init::<FrameClock>();
+        clock.set_menu(menu);
+        if rig_start {
+            clock.vsync.set_since_step(0);
+        }
+        clock.vblank()
+    };
+    run_logic(world, runs);
+}
+
 pub struct SchedulePlugin;
 
 impl Plugin for SchedulePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(data::LOGIC_HZ as f64))
             .init_resource::<Pause>()
+            .insert_resource(FrameClock::new())
+            .add_systems(Vblank, vblank_step)
+            .add_systems(FixedLast, hold_messages);
+        // `FixedUpdate` leaves the fixed order: `Vblank` runs it (absent in a bare test app without the main schedules).
+        if let Some(mut order) = app.world_mut().get_resource_mut::<bevy::app::FixedMainScheduleOrder>()
+            && let Some(i) = order.labels.iter().position(|l| (**l).eq(&FixedUpdate))
+        {
+            order.labels[i] = Vblank.intern();
+        }
+        app
             .configure_sets(
                 FixedUpdate,
                 (
@@ -140,6 +401,39 @@ mod tests {
         *app.world_mut().resource_mut::<Pause>() = Pause::default();
         app.world_mut().run_schedule(FixedUpdate);
         assert_eq!(app.world().resource::<Ran>().0.len(), 3, "resumed");
+    }
+
+    /// The field runs the logic twice on every second vblank (step 2.0), the menu once per vblank (step 1.0), and the field's
+    /// cadence comes back when the menu closes.
+    #[test]
+    fn the_field_runs_two_ticks_every_second_vblank_and_the_menu_one_per_vblank() {
+        let mut c = FrameClock::new();
+        let runs: Vec<u32> = (0..6).map(|_| c.vblank()).collect();
+        assert_eq!(runs, [0, 2, 0, 2, 0, 2]);
+        assert_eq!(c.step(), 2.0);
+        c.set_menu(true);
+        let runs: Vec<u32> = (0..4).map(|_| c.vblank()).collect();
+        assert_eq!((runs, c.step()), (vec![1, 1, 1, 1], 1.0));
+        c.set_menu(false);
+        let runs: Vec<u32> = (0..4).map(|_| c.vblank()).collect();
+        assert_eq!((runs, c.step()), (vec![0, 2, 0, 2], 2.0));
+    }
+
+    /// In the app the fixed order runs `Vblank` instead of `FixedUpdate`, and `FixedUpdate` runs as often as the step says.
+    #[test]
+    fn the_fixed_order_runs_the_logic_through_the_vblank() {
+        let mut app = App::new();
+        app.add_plugins(SchedulePlugin).init_resource::<Ran>();
+        app.add_systems(FixedUpdate, (|mut r: ResMut<Ran>| r.0.push("sora")).in_set(Sim::Sora));
+        let order = app.world().resource::<bevy::app::FixedMainScheduleOrder>();
+        assert!(order.labels.iter().any(|l| (**l).eq(&Vblank)) && !order.labels.iter().any(|l| (**l).eq(&FixedUpdate)));
+        let mut counts = Vec::new();
+        for _ in 0..4 {
+            app.world_mut().resource_mut::<Ran>().0.clear();
+            app.world_mut().run_schedule(bevy::app::FixedMain);
+            counts.push(app.world().resource::<Ran>().0.len());
+        }
+        assert_eq!(counts, [0, 2, 0, 2]);
     }
 
     #[test]

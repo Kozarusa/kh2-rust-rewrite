@@ -546,6 +546,15 @@ impl Mem {
     fn put(&mut self, a: u32, d: &[u8]) {
         self.slot(a, d.len()).copy_from_slice(d)
     }
+    fn get_image(&self, a: u32, n: usize) -> Vec<u8> {
+        for (base, d, _) in self.regs.iter() {
+            if a >= *base && (a - *base) as usize + n <= d.len() {
+                let o = (a - *base) as usize;
+                return d[o..o + n].to_vec();
+            }
+        }
+        panic!("no window at {a:#x}")
+    }
     fn get(&mut self, a: u32, n: usize) -> Vec<u8> {
         self.slot(a, n).to_vec()
     }
@@ -565,11 +574,13 @@ struct Cfg {
     /// Tags whose argument count varies between calls (a virtual method that some callers give one more argument): the original's log
     /// is cut to the port's count for them.
     flex: Vec<u32>,
+    /// Maps an address the port logs to the address the original shows for the same thing (object handles to block addresses).
+    xlate: fn(u32) -> u32,
 }
 
 impl Cfg {
     fn new(standins: &[(u32, usize)], ret: impl Fn(u32, u32, &[u64], u64) -> u64 + 'static) -> Cfg {
-        Cfg { standins: standins.to_vec(), vargs: vec![0; VSLOTS as usize], ret: Box::new(ret), deref: Vec::new(), floats: Vec::new(), flex: Vec::new() }
+        Cfg { standins: standins.to_vec(), vargs: vec![0; VSLOTS as usize], ret: Box::new(ret), deref: Vec::new(), floats: Vec::new(), flex: Vec::new(), xlate: |v| v }
     }
     fn v(mut self, slot: usize, extra: usize) -> Cfg {
         self.vargs[slot] = extra;
@@ -619,7 +630,7 @@ impl Port {
         } else {
             assert_eq!(args.len(), n, "the port passes {} words to {tag:#x}, the test expects {n}", args.len());
         }
-        let mut ev: Vec<u32> = args.iter().map(|a| norm(*a as u32)).collect();
+        let mut ev: Vec<u32> = args.iter().map(|a| (self.cfg.xlate)(norm(*a as u32))).collect();
         for &(t, i, w) in &self.cfg.deref {
             if t == tag {
                 let p = ev[i];
@@ -952,8 +963,12 @@ fn orig_1684c0_matches_the_game() {
         }
         let ty: i64 = if r.below(4) == 0 { -1 } else { [1i64, 2, 3, 0x17, 9][r.below(5) as usize] };
         let idx = r.below(4) as i32;
+        let image = m.get_image(BAR, 0x200);
         let (g, p) = d.run(&m, n, |ee| call(ee, 0x1684c0, &[BAR as u64, ty as u64, idx as u64]) as u32, |p| t::bar_nth_of_type(p, BAR, ty, idx));
         assert_eq!(g, p, "case {n}: entry address");
+        // The resident BAR helper of kh2-bar (the same original function) agrees too.
+        let res = kh2_bar::resident::nth_of_type(&image, BAR, BAR, ty as u32, idx).unwrap_or(0);
+        assert_eq!(g, res, "case {n}: kh2_bar::resident::nth_of_type");
     }
 }
 
@@ -974,8 +989,13 @@ fn orig_168510_matches_the_game() {
         let ty: i64 = if r.below(4) == 0 { -1 } else { [1i64, 2, 3, 0x17, 9][r.below(5) as usize] };
         let name: u64 = if r.below(5) == 0 { pool[r.below(4) as usize] as u64 } else { sx(pool[r.below(4) as usize]) };
         let idx = r.below(3) as i32;
+        let image = m.get_image(BAR, 0x200);
         let (g, p) = d.run(&m, n, |ee| call(ee, 0x168510, &[BAR as u64, ty as u64, name, idx as u64]) as u32, |p| t::bar_nth_of_name(p, BAR, ty, name, idx));
         assert_eq!(g, p, "case {n}: entry address");
+        let res = kh2_bar::resident::nth_of_name(&image, BAR, BAR, ty as u32, name as u32 as i32, idx).unwrap_or(0);
+        if name == sx(name as u32) {
+            assert_eq!(g, res, "case {n}: kh2_bar::resident::nth_of_name");
+        }
     }
 }
 
@@ -1508,3 +1528,392 @@ fn orig_181688_matches_the_game() {
     }
 }
 
+
+// ---- the base object constructor and its finishing pass ----------------------------------------------------------------------------
+
+/// Where the original's object blocks sit; slot `n` of the port's list is the handle `OBJ_BASE + n * 0x1000`.
+const OBJW: u32 = 0x0190_0000;
+const SPEC_E: u32 = 0x0185_0000;
+const POS: u32 = 0x0186_0000;
+const KNM: u32 = 0x0187_0000;
+const FILE_A: u32 = 0x0188_8000;
+const OBJ_SPAN: u32 = 0x0001_0000;
+
+/// A handle of the port's list as the address of the same block in kh2-ee (any other value is left alone).
+fn to_game(v: u32) -> u32 {
+    if (OBJ_BASE..OBJ_BASE + OBJ_SPAN).contains(&v) { OBJW + (v - OBJ_BASE) } else { v }
+}
+
+use kh2_game_core::objlist::{CtorArgs, ObjList, OBJ_BASE, OFF_LINK, OFF_PRIORITY};
+
+fn ctor_cfg() -> Cfg {
+    let mut standins = vec![
+        (0x1db410, 1),
+        (0x1943c8, 1),
+        (0x17d768, 2),
+        (0x32f6a0, 1),
+        (0x330d38, 1),
+        (0x32e458, 1),
+        (0x330bd0, 1),
+        (0x330ce0, 1),
+        (0x1934c0, 0),
+        (0x16b648, 2),
+        (0x1a79d8, 1),
+        (0x104f98, 0),
+        (0x1a7a10, 1),
+        (0x11e018, 2),
+        (0x11c268, 1),
+        (0x193048, 1),
+        (0x169af0, 2),
+        (0x1ae998, 2),
+        (0x16a7f0, 2),
+        (0x16a700, 2),
+        (0x1921e8, 1),
+        (0x169be8, 1),
+        (0x1a7b50, 4),
+        (0x16ed08, 2),
+        (0x16fd18, 2),
+        (0x16ef80, 1),
+        (0x16efd8, 1),
+        (0x16ed50, 2),
+        (0x16eda8, 3),
+        (0x1a7940, 1),
+        (0x16e208, 1),
+        (0x1a7d48, 2),
+        (0x1700e0, 0),
+    ];
+    standins.sort();
+    let mut cfg = Cfg::new(&standins, |tag, k, _, h| match tag {
+        0x16fd18 if k == 0 => FILE_A as u64,
+        0x1a79d8 => {
+            if h & 3 == 0 {
+                0
+            } else {
+                KNM as u64
+            }
+        }
+        0x1a7a10 => h & 1,
+        0x1934c0 => (h >> 4) & 1,
+        0x16ef80 | 0x16efd8 => (h >> 3) & 1,
+        0x16eda8 => {
+            if h & 1 == 0 {
+                0
+            } else {
+                h
+            }
+        }
+        0x16e208 => {
+            if h & 3 == 0 {
+                0
+            } else {
+                (SPEC_E + 0x100) as u64
+            }
+        }
+        0x1a7d48 => h & 1,
+        _ => h,
+    })
+    .v(9, 1)
+    .deref(0x16a700, 1, 4);
+    cfg.floats.push(0x16a7f0);
+    cfg.xlate = to_game;
+    cfg
+}
+
+/// The memory a constructor case reads: the entry, the start position, the constants and flag, the cost words, the data cache's entry,
+/// the model file and the knm object.
+fn ctor_mem(r: &mut Rng) -> Mem {
+    let mut m = Mem::new();
+    m.win(r, SPEC_E, 0x100).win(r, SPEC_E + 0x100, 0x100).win(r, POS, 0x20).win(r, 0x37a180, 0x10).win(r, 0x35d268, 4).win(r, 0x1c893b8, 8);
+    m.win(r, KNM, 0x100).win(r, 0, 0x100).scratch(SCRATCH, 0x20);
+    vt(&mut m, KNM);
+    // The model file behind the object's +0x7ac word: a BAR with entries of type 0x17 (or without).
+    m.win(r, FILE_A, 0x100);
+    let n = r.below(5) as u32;
+    m.w32(FILE_A + 4, n);
+    for e in 0..4u32 {
+        m.w16(FILE_A + 0x10 + 0x10 * e, [0x17u16, 1, 0x17, 2][r.below(4) as usize]);
+        m.w32(FILE_A + 0x18 + 0x10 * e, if r.below(3) == 0 { 0 } else { r.word() as u32 });
+    }
+    m
+}
+
+/// Inserts `pre` random objects in both lists, then returns the port's list, the pre-existing handles and the new object's handle.
+fn ctor_lists(d: &mut Dual, r: &mut Rng, pre: usize) -> (ObjList, u32) {
+    let mut list = ObjList::new();
+    d.ee.w32(0x01d5_d7a0, 0);
+    d.ee.w32(0x01d5_d7a4, 0);
+    for k in 0..=pre {
+        let h = list.alloc();
+        assert_eq!(h, ObjList::handle_of(k));
+        let a = OBJW + k as u32 * 0x1000;
+        let bytes: Vec<u8> = (0..0x1000).map(|_| r.word() as u8).collect();
+        list.get_mut(h).unwrap().0.copy_from_slice(&bytes);
+        d.ee.write(a, &bytes);
+        if k < pre {
+            // Priorities drawn from a small set so that ties happen.
+            let p = [1u8, 5, 5, 9, 0x80][r.below(5) as usize];
+            list.get_mut(h).unwrap().set_priority(p);
+            d.ee.write(a + OFF_PRIORITY as u32, &[p]);
+            list.insert(h);
+            call(&mut d.ee, 0x1b7440, &[a as u64]);
+        }
+    }
+    (list, ObjList::handle_of(pre))
+}
+
+fn compare_objects(d: &mut Dual, list: &ObjList, this: u32, what: &str, n: u64) {
+    assert_eq!(d.ee.r32(0x01d5_d7a0), to_game(list.head), "{what} case {n}: list head");
+    assert_eq!(d.ee.r32(0x01d5_d7a4), to_game(list.tail), "{what} case {n}: list tail");
+    for h in list.live() {
+        let a = to_game(h);
+        let mut mine = list.get(h).unwrap().0.to_vec();
+        let link = to_game(list.get(h).unwrap().link());
+        mine[OFF_LINK..OFF_LINK + 4].copy_from_slice(&link.to_le_bytes());
+        if h == this {
+            mine[4..8].copy_from_slice(&to_game(this).to_le_bytes());
+        }
+        let game: Vec<u8> = (0..0x1000u32).map(|i| d.ee.r8(a + i)).collect();
+        if let Some(o) = (0..0x1000).find(|&o| game[o] != mine[o]) {
+            panic!("{what} case {n}: object {a:#x} byte +{o:#x}: game {:02x} port {:02x}", game[o], mine[o]);
+        }
+    }
+}
+
+/// The base constructor, whole-block compare: the object block is random before the call, so every byte the constructor does not set
+/// stays random and equal, and every byte it sets must match. The call log covers the 33 callees (stand-ins: the part constructors
+/// 0x1db410, 0x1943c8, 0x17d768, 0x32f6a0, 0x330d38, 0x32e458, 0x330bd0, 0x330ce0, the area and model queries 0x1934c0, 0x1a79d8,
+/// 0x104f98, 0x1a7a10, 0x11c268, 0x11e018, the set-ups 0x16b648, 0x193048, 0x169af0, 0x1ae998, 0x16a7f0 (with its float argument),
+/// 0x16a700, 0x1921e8, 0x169be8, 0x1a7b50, the data cache callees and virtual method 9 of the knm object). The list insert, the flag
+/// tables, the data cache record reset, the BAR lookup and the cost add run for real in the original.
+#[test]
+fn orig_168d30_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_168d30", ctor_cfg()) else { return };
+    let mut r = Rng::new(0x168d30);
+    let (mut knm_cases, mut shadow, mut timer, mut file_hit) = (0, 0, 0, 0);
+    for n in 0..800u64 {
+        let pre = r.below(4) as usize;
+        let (mut list, this) = ctor_lists(&mut d, &mut r, pre);
+        let m = ctor_mem(&mut r);
+        let entry = if r.below(8) == 0 { SPEC_E + 0x100 } else { SPEC_E };
+        let args = CtorArgs {
+            id: sx(r.word() as u32),
+            entry,
+            priority: [1u32, 5, 9, 0x80, r.word() as u32][r.below(5) as usize],
+            pos: POS,
+            rot: f32::from_bits(r.word() as u32),
+        };
+        let args = CtorArgs { rot: if args.rot.is_finite() { args.rot } else { 0.5 }, ..args };
+        let a_game = [to_game(this) as u64, args.id, args.entry as u64, args.priority as u64, args.pos as u64];
+        let (_, cost) = d.run_cost(&m, n, &a_game, args.rot, &mut list, this, args);
+        compare_objects(&mut d, &list, this, "orig_168d30", n);
+        let log = d.sh.borrow().log.clone();
+        knm_cases += log.iter().any(|e| e.0 == VTAG | 9) as u32;
+        timer += log.iter().any(|e| e.0 == 0x11e018) as u32;
+        shadow += log.iter().any(|e| e.0 == 0x1934c0) as u32;
+        file_hit += log.iter().any(|e| e.0 == 0x169af0) as u32;
+        let _ = cost;
+    }
+    assert!(knm_cases > 200 && timer > 50 && shadow > 400 && file_hit > 50, "branches: {knm_cases} with a model object, {timer} with a timer entry, {shadow} shadow queries, {file_hit} file passes");
+}
+
+impl Dual {
+    /// The constructor case: `a` are the original's argument registers (this, id, entry, priority, position), `rot` the float argument.
+    #[allow(clippy::too_many_arguments)]
+    fn run_cost(&mut self, mem: &Mem, seed: u64, a: &[u64; 5], rot: f32, list: &mut ObjList, this: u32, args: CtorArgs) -> ((), ()) {
+        let a = *a;
+        let (g, p) = self.run(
+            mem,
+            seed,
+            |ee| {
+                // The fifth integer argument goes in t0, the float argument in f12.
+                ee.call(0x168d30, &a, &[rot], STACK).unwrap_or_else(|f| panic!("the constructor faulted: {f:?}"));
+            },
+            |p| {
+                let mut cost = p.mem.get(0x1c893b8, 8);
+                list.construct(p, &mut cost, this, args, SCRATCH);
+                p.mem.put(0x1c893b8, &cost);
+            },
+        );
+        (g, p)
+    }
+}
+
+/// The pass after a build: the type-3 entry of the model file (the word at +0x7ac), the word 0x52217c, the file pass, and the position
+/// and flag copies. Stand-in: 0x169a90.
+#[test]
+fn orig_1698d0_matches_the_game() {
+    let cfg = Cfg::new(&[(0x169a90, 2)], |_, _, _, h| h);
+    let mut cfg = cfg;
+    cfg.xlate = to_game;
+    let Some(mut d) = Dual::new("orig_1698d0", cfg) else { return };
+    let mut r = Rng::new(0x1698d0);
+    let (mut told, mut no_entry, mut skipped) = (0, 0, 0);
+    for n in 0..1500u64 {
+        d.ee.w32(0x01d5_d7a0, 0);
+        d.ee.w32(0x01d5_d7a4, 0);
+        let mut list = ObjList::new();
+        let h = list.alloc();
+        let a = to_game(h);
+        let bytes: Vec<u8> = (0..0x1000).map(|_| r.word() as u8).collect();
+        list.get_mut(h).unwrap().0.copy_from_slice(&bytes);
+        d.ee.write(a, &bytes);
+        let flags = if r.below(2) == 0 { 0x20 } else { 0 } | r.word() as u32 & 0xff00;
+        d.ee.w32(a + 0x588, flags);
+        d.ee.w32(a + 0x7ac, FILE_A);
+        let b = list.get_mut(h).unwrap();
+        b.0[0x588..0x58c].copy_from_slice(&flags.to_le_bytes());
+        b.0[0x7ac..0x7b0].copy_from_slice(&FILE_A.to_le_bytes());
+        let mut m = Mem::new();
+        m.win(&mut r, FILE_A, 0x100).win(&mut r, 0x52217c, 4);
+        let count = r.below(5) as u32;
+        m.w32(FILE_A + 4, count);
+        let mut has3 = false;
+        for e in 0..4u32 {
+            let ty = [3u16, 1, 3, 2][r.below(4) as usize];
+            m.w16(FILE_A + 0x10 + 0x10 * e, ty);
+            m.w32(FILE_A + 0x18 + 0x10 * e, if r.below(3) == 0 { 0 } else { r.word() as u32 });
+            has3 |= e < count && ty == 3;
+        }
+        if flags & 0x20 != 0 {
+            skipped += 1;
+        } else if !has3 {
+            no_entry += 1;
+        }
+        d.run(&m, n, |ee| call(ee, 0x1698d0, &[a as u64]), |p| {
+            list.finish_construct(p, h);
+            0
+        });
+        compare_objects(&mut d, &list, 0, "orig_1698d0", n);
+        told += d.sh.borrow().log.iter().any(|e| e.0 == 0x169a90) as u32;
+    }
+    assert!(told > 100 && no_entry > 100 && skipped > 400, "branches: {told} file passes, {no_entry} without an entry, {skipped} with bit 0x20");
+}
+
+const REQ: u32 = 0x0181_0000;
+const POOL: u32 = 0x0182_0000;
+const CB1: u32 = 0x0188_1000;
+const CB2: u32 = 0x0188_1010;
+
+/// Adapter: the port's host as the file unit's.
+struct Q<'a>(&'a mut Port);
+
+impl kh2_bar::request::QueueHost for Q<'_> {
+    fn read32(&mut self, a: u32) -> u32 {
+        self.0.mem.r32(a)
+    }
+    fn write32(&mut self, a: u32, v: u32) {
+        self.0.mem.w32(a, v)
+    }
+    fn call(&mut self, callee: u32, args: &[u64]) -> u64 {
+        AreaHost::call(self.0, callee, args)
+    }
+    fn vcall(&mut self, obj: u32, slot: u32, args: &[u64]) -> u64 {
+        AreaHost::vcall(self.0, obj, slot, args)
+    }
+}
+
+/// The file completion pass: finished requests are completed by kind (callback with destination, result and argument; BAR fix-up; the
+/// special-read hook), unlinked from the list (head, middle and tail) and handed back to the pool. Stand-ins: 0x318620, 0x168570,
+/// 0x1f1801c, the two callbacks (one or three arguments by kind) and virtual method 1 of the pool object.
+#[test]
+fn orig_168010_matches_the_game() {
+    let cfg = Cfg::new(&[(0x318620, 1), (0x168570, 1), (0x1f1801c, 0), (CB1, 3), (CB2, 3)], |_, _, _, h| h).v(1, 1).flex(CB1).flex(CB2);
+    let Some(mut d) = Dual::new("orig_168010", cfg) else { return };
+    let mut r = Rng::new(0x168010);
+    let (mut done, mut by_kind, mut tails) = (0, [0u32; 5], 0);
+    for n in 0..2500u64 {
+        let mut m = Mem::new();
+        m.win(&mut r, REQ, 0x600).win(&mut r, 0x35b940, 8).win(&mut r, 0x33e69c, 4).win(&mut r, POOL, 0x20);
+        m.w32(0x33e69c, POOL);
+        vt(&mut m, POOL);
+        let count = r.below(7) as u32;
+        let rec = |k: u32| REQ + k * 0x80;
+        for k in 0..count {
+            let a = rec(k);
+            m.w32(a, if k + 1 < count { rec(k + 1) } else { 0 });
+            let state = [0u32, 1, 2, 2, 2, 3][r.below(6) as usize];
+            m.w32(a + 4, state);
+            let kind = [0u32, 1, 2, 0xffff_ffff, 3, 7][r.below(6) as usize];
+            m.w32(a + 0x30, kind);
+            m.w32(a + 0x38, [0, CB1, CB2][r.below(3) as usize]);
+            if r.below(3) == 0 {
+                m.w32(a + 0x40, 0);
+            }
+            if state == 2 {
+                done += 1;
+                by_kind[match kind {
+                    0 => 0,
+                    1 => 1,
+                    2 => 2,
+                    _ => 3,
+                }] += 1;
+            }
+        }
+        let (head, tail) = if count == 0 { (0, 0) } else { (rec(0), rec(count - 1)) };
+        m.w32(0x35b940, head);
+        m.w32(0x35b944, tail);
+        d.run(&m, n, |ee| call(ee, 0x168010, &[]), |p| {
+            let mut q = kh2_bar::request::Queue { head: p.mem.r32(0x35b940), tail: p.mem.r32(0x35b944) };
+            kh2_bar::request::completion_pass(&mut q, &mut Q(p));
+            p.mem.w32(0x35b940, q.head);
+            p.mem.w32(0x35b944, q.tail);
+            0
+        });
+        tails += (count > 0 && d.ee.r32(0x35b944) != tail) as u32;
+    }
+    assert!(done > 3000 && by_kind[0] > 500 && by_kind[1] > 500 && by_kind[2] > 500 && tails > 100, "branches: {done} done, {by_kind:?} by kind, {tails} tail moves");
+}
+
+const CH: u32 = 0x0181_0000;
+
+/// The program search of the area script runner: a chain of records (signed halfword id, signed halfword offset of the next, program
+/// from +4) ended by id -1; the id is compared as the whole register against the sign-extended halfword. Stand-in: the parser 0x180ad8
+/// (its tail call receives the chain start and the matching record's program).
+#[test]
+fn orig_180a68_matches_the_game() {
+    let Some(mut d) = Dual::new("orig_180a68", Cfg::new(&[(0x180ad8, 2)], |_, _, _, h| h)) else { return };
+    let mut r = Rng::new(0x180a68);
+    let (mut hit, mut miss, mut empty, mut wide) = (0, 0, 0, 0);
+    for n in 0..3000u64 {
+        let mut m = Mem::new();
+        m.win(&mut r, CH, 0x400);
+        let count = r.below(6) as u32;
+        let ids: Vec<u16> = (0..count).map(|_| [0u16, 1, 2, 3, 0x8001, 0xfffe][r.below(6) as usize]).collect();
+        let mut at = 0u32;
+        for (k, id) in ids.iter().enumerate() {
+            let step = 8 + r.below(5) as u32 * 4;
+            m.w16(CH + at, *id);
+            m.w16(CH + at + 2, step as u16);
+            at += step;
+            let _ = k;
+        }
+        m.w16(CH + at, 0xffff);
+        let id: u64 = match r.below(6) {
+            0 => 0x8001,
+            1 => 0xffff_ffff_ffff_8001,
+            2 => 0xffff_ffff_ffff_fffe,
+            3 => 0xfffe,
+            _ => r.below(5),
+        };
+        let want = ids.iter().any(|&x| x as i16 as i64 as u64 == id);
+        if count == 0 {
+            empty += 1;
+        } else if want {
+            hit += 1;
+        } else {
+            miss += 1;
+        }
+        wide += (id == 0x8001 || id == 0xfffe) as u32;
+        d.run(&m, n, |ee| call(ee, 0x180a68, &[CH as u64, id]), |p| {
+            let mut found = None;
+            let ok = kh2_ard::run::find_program(&mut |a| p.mem.r16(a), CH, id, &mut |s, rec| found = Some((s, rec)));
+            if let Some((s, rec)) = found {
+                AreaHost::call(p, 0x180ad8, &[s as u64, rec as u64]);
+            }
+            assert_eq!(ok, found.is_some());
+            0
+        });
+        assert_eq!(d.sh.borrow().log.len(), want as usize, "case {n}: the parser is called once for a match and never otherwise");
+    }
+    assert!(hit > 600 && miss > 600 && empty > 200 && wide > 400, "outcomes: {hit} found, {miss} missed, {empty} empty, {wide} with a wide id");
+}

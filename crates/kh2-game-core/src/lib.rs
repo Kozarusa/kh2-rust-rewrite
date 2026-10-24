@@ -17,6 +17,7 @@ pub mod hud_text;
 pub mod leaves_b;
 pub mod leaves_a;
 pub mod leaves_c;
+pub mod leaves_d;
 pub mod magic_rules;
 pub mod motor;
 pub mod objlist;

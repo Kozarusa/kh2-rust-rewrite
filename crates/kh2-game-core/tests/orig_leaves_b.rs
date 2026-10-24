@@ -918,3 +918,41 @@ fn orig_15db30_matches_the_game() {
         });
     }
 }
+
+/// The boundaries of the code ranges: 0 (the zero code), 0xdf (the last single byte, 0xff), 0xe0 (the first two-byte code, bytes 0x19
+/// and 0x00), 0xe1, 0xff, 0x100 and 0x1df/0x1e0 (the high byte steps) and the largest codes. Each case places one to four of them (so a
+/// boundary also follows a two-byte code) and compares the whole destination; hand harness because the codes must be set before the
+/// original runs.
+#[test]
+fn orig_1919c8_matches_the_game_at_the_range_boundaries() {
+    const EDGES: [u16; 14] = [0, 1, 0xde, 0xdf, 0xe0, 0xe1, 0xff, 0x100, 0x1df, 0x1e0, 0x1e1, 0x7fff, 0x8000, 0xffff];
+    let Some(mut ee) = game("orig_1919c8 boundaries") else { return };
+    let mut r = Rng::new(0x1919c9);
+    let (src, dst) = (0x0180_0000u32, 0x0181_0000u32);
+    let mut seen = [false; 14];
+    for n in 0..3000u32 {
+        let count = 1 + r.below(4) as i32;
+        let codes: Vec<u16> = (0..4).map(|_| EDGES[r.below(14) as usize]).collect();
+        for (k, u) in codes.iter().enumerate() {
+            ee.write(src + 2 * k as u32, &u.to_le_bytes());
+            if k < count as usize {
+                seen[EDGES.iter().position(|e| e == u).unwrap()] = true;
+            }
+        }
+        ee.write(dst, &[0xa5; 0x40]);
+        ee.call(0x1919c8, &[src as u64, count as u64, dst as u64], &[], STACK).expect("original");
+        let got: Vec<u8> = (0..0x40).map(|i| ee.r8(dst + i)).collect();
+        let mut mine = vec![0xa5u8; 0x40];
+        text_codes_to_bytes(&codes, count, &mut mine);
+        assert_eq!(got, mine, "case {n}: codes {codes:x?}, count {count}");
+    }
+    assert!(seen.iter().all(|&s| s), "every boundary code was used");
+    // The documented values at the boundaries.
+    let mut d = [0u8; 8];
+    assert_eq!(text_codes_to_bytes(&[0xdf], 1, &mut d), 1);
+    assert_eq!(&d[..2], &[0xff, 0]);
+    assert_eq!(text_codes_to_bytes(&[0xe0], 1, &mut d), 2);
+    assert_eq!(&d[..3], &[0x19, 0x00, 0]);
+    assert_eq!(text_codes_to_bytes(&[0x1e0], 1, &mut d), 2);
+    assert_eq!(&d[..3], &[0x1a, 0x00, 0]);
+}

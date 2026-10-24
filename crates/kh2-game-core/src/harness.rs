@@ -13,7 +13,7 @@ pub fn turbo() -> bool {
     std::env::var_os("KH2_TURBO").is_some_and(|v| v != "0")
 }
 
-/// Fixed ticks run so far (counted in `FixedUpdate`, only when turbo is on).
+/// Fixed steps (vblanks) run so far (counted in `FixedFirst`, only when turbo is on).
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurboTicks(pub u64);
 
@@ -24,7 +24,7 @@ pub fn configure_turbo(app: &mut App) {
     app.insert_resource(bevy::time::TimeUpdateStrategy::FixedTimesteps(1))
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .init_resource::<TurboTicks>()
-        .add_systems(FixedUpdate, count_turbo_ticks);
+        .add_systems(FixedFirst, count_turbo_ticks);
 }
 
 fn count_turbo_ticks(mut ticks: ResMut<TurboTicks>) {

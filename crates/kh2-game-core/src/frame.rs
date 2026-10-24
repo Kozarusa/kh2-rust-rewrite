@@ -418,12 +418,12 @@ impl Ramp {
         reached
     }
 
-    /// One advance of a ramp: the value goes up by the change twice (added one at a time), then [`Ramp::check`] answers.
+    /// One advance of a ramp: the value goes up by twice the change (the change doubled first, then added), then [`Ramp::check`] answers.
     ///
     /// orig 0x14ed20
     pub fn advance(&mut self) -> bool {
         use crate::pad::ee::add;
-        self.0[0] = add(add(self.0[0], self.0[1]), self.0[1]);
+        self.0[0] = add(self.0[0], add(self.0[1], self.0[1]));
         self.check()
     }
 

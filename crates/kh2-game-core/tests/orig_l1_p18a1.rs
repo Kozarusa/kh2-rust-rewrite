@@ -124,7 +124,6 @@ fn orig_102bc8_matches_the_game() {
 }
 
 fn random_ramp(ee: &mut Ee, r: &mut Rng) -> Ramp {
-    // Moderate magnitudes: the end test sits on a rounding boundary only by chance, and the EE's sums can differ from the host's in the last bit.
     let mut ramp = Ramp([r.float(), r.float(), r.float()]);
     // Make "reached" and "not reached" both common: the end near the start, the change of either sign.
     match r.below(4) {
@@ -144,9 +143,7 @@ fn game_ramp(ee: &mut Ee) -> Ramp {
 
 fn same_ramp(game: &Ramp, port: &Ramp, n: u32, what: &str) {
     for i in 0..3 {
-        // The EE's float unit rounds toward zero, the host's to nearest: a sum may differ in the last bit.
-        let (g, p) = (game.0[i], port.0[i]);
-        assert!(g.to_bits() == p.to_bits() || (g - p).abs() <= 1e-5 * (1.0 + g.abs().max(p.abs())), "{what} case {n}: word {i}: game {g} port {p}");
+        assert_eq!(game.0[i].to_bits(), port.0[i].to_bits(), "{what} case {n}: word {i}: game {} port {}", game.0[i], port.0[i]);
     }
 }
 
@@ -217,8 +214,6 @@ fn orig_14cb08_matches_the_game() {
         frame::game_speed_task(&mut ramp, &mut v, &mut host, arg);
         same_ramp(&game_ramp(&mut ee), &ramp, n, "0x14cb08");
         let gv = game_vsync(&mut ee);
-        assert!((gv.speed() - v.speed()).abs() <= 1e-5 * (1.0 + gv.speed().abs()), "case {n}: speed game {} port {}", gv.speed(), v.speed());
-        v.set_speed(gv.speed());
         assert_eq!(gv, v, "case {n}: the frame block");
         assert_eq!(*log.borrow(), host.0, "case {n}: the print call");
         tally[host.0.len()] += 1;

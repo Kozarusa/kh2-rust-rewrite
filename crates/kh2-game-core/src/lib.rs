@@ -14,6 +14,7 @@ pub mod fx;
 pub mod harness;
 pub mod hud_gfx;
 pub mod hud_text;
+pub mod leaves_a;
 pub mod magic_rules;
 pub mod motor;
 pub mod objlist;

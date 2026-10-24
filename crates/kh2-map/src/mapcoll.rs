@@ -275,6 +275,11 @@ impl MapCollision {
         self.pick(secondary).map(|o| o.attr(poly))
     }
 
+    /// orig 0x143e40: the kind nibble (low four bits) of the attribute word 0x143e00 gives. Added by WP-L1-P27b as the wrapper.
+    pub fn attr_kind(&self, poly: u16, secondary: bool) -> Option<u32> {
+        self.attr(poly, secondary).map(|a| a & 0xf)
+    }
+
     /// orig 0x1439f8: the segment cast against the walking map with the empty attribute filter and the
     /// accept-everything handler of the caller's `kind` (0x141f08). Returns the hit and polygon (0xffff when none).
     pub fn ray(&self, seg: &[V4; 2], kind: u32) -> Option<(Option<V4>, u16)> {

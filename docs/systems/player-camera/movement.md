@@ -113,6 +113,11 @@ motions 0xc9..0xcc and turns 0x97 / 0x98: a special non-drive mode, not a roll),
   floats: the 17th column the sheet calls `DodgeRollStarTime` shows the next row's HighJumpHeight
   (310, 385, 585, 585). Dodge Roll is a Final Mix addition.
 
+**Scrapped by default (user, 2026-10-24: the roll was Final Mix content).** Without `KH2_FM_ROLL=1` a Square press while moving is the USA
+rule above whatever the Dodge Roll level (`sora::fm_roll`, `sora::square_ground_for`): Quick Run at the press when learned
+(`FUN_00178108`), else the guard (`FUN_00178080`, no stick test); a tap does nothing special. `KH2_FM_ROLL=1` keeps the Final Mix
+code below, including the A180 lookup (`dodge_roll_slot`). The section below is the kept FM-only gap (RULES A3).
+
 ### The Final Mix rules (WP-FIX-10b; `docs/systems/foundations/final-mix.md` "Player controls")
 The user's rule (guard only when still, tap while moving = roll, hold while moving = Quick Run) is the
 Final Mix behaviour. Its numbers were read from the Final Mix executable; only the small rule constants
@@ -123,8 +128,8 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
 * Dodge Roll is the **fifth growth kind** (growth slot 4 in FM; the USA table at 0x37bda0 has four).
   The app's `sora::Growth.dodge_roll` is read from `Progress::dodge_roll` (`abilities::Abilities::growth(4)`),
   `KH2_GROWTH=a,b,c,d,e` (fifth value) or F6; hidden in a drive form [inferred: a form's growth is its
-  own ability]. The baseline gives Sora Dodge Roll level 1 (the user's wish, docs/systems/core-runtime/progress.md);
-  `KH2_ABILITY_START=data` drops it with the Guard so the USA rules stay reachable.
+  own ability]. Sora starts without Dodge Roll (WP-FIX-BASE); `KH2_ABILITY_START=baseline` gives level 1 with the Guard
+  (docs/systems/core-runtime/progress.md).
 * **Where the levels come from (WP-G8).** High Jump, Quick Run, Aerial Dodge and Glide are the growth
   ability items 94..109 in Sora's ability list; the level `FUN_001c13b8` returns is the highest *equipped*
   level of the group (`FUN_001c0e50` applies only slots with bit 15, `FUN_001c1340` takes the highest bit
@@ -173,7 +178,7 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
   * `KH2_GROWTH=0,1,0,0` (USA rules, no roll): `sora square: moving ... quick run at the press (USA
     rule)` at every press; the tap stops with `sora dash stop: Run after 3 ticks`, the hold after 14.
   * `KH2_GROWTH=0,0,0,0`: `sora guard A322 (... stick pushed, neither learned ...)` at both moving presses.
-  * `KH2_ABILITY_START=data`: no guard and no dash at all (no Guard ability, no Dodge Roll, Quick Run 0).
+  * default (`KH2_ABILITY_START` unset; `baseline` gives the old start): no guard and no dash at all (no Guard ability, no Dodge Roll, Quick Run 0).
 
 ## 3. The wall test of a swing (WP-F2 item A; user report 2026-10-10: a lag after every aerial attack)
 

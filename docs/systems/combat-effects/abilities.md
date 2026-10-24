@@ -63,8 +63,8 @@ controller's view (`sora::Abilities`, `sora::Growth`) in step with the block (`s
 
 The data gives Sora nothing learned at the start of the story: only the Kingdom Key and the ability it
 grants. The app, though, has always started Sora with Guard so the guard motion works (`start_abilities`
-in `sora.rs`). To keep behaviour, the default adds Guard (id 82, bit 1) as equipped and says so: it is an
-**app baseline, not a data fact**. `KH2_ABILITY_START=data` drops it. Where the real game gives Sora
+in `sora.rs`). The old default added Guard (id 82, bit 1) as equipped and says so: it is an
+**app baseline, not a data fact** (the Dodge Roll level, an FM-only growth kind, only acts with `KH2_FM_ROLL=1`); since WP-FIX-BASE it is off by default and only `KH2_ABILITY_START=baseline` adds it. Where the real game gives Sora
 Guard and the other early abilities (a story script, the unreached `Id` 1 rows, or a save default) was not
 found [GAP].
 

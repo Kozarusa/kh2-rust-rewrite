@@ -24,6 +24,7 @@ use kh2_model::collision::kind as shape_kind;
 use crate::assets::Disc;
 use crate::camera::OrbitCamera;
 use crate::combat::{Fighter, Hit, IneffectiveHit, ReactionData, ReactionStatus, Team, WallHit};
+use crate::controller_rules::{stick_through_view, view_matrix};
 use crate::data::GameData;
 use crate::enemy::Enemy;
 use crate::motor::{wrap_angle, Jump, Motor};
@@ -80,6 +81,14 @@ mod mid {
 /// tagged `A180`. `None` when the motion set has no such motion (the USA disc's has none [FM-only]): the caller then shows the Quick
 /// Run start motion.
 pub const DODGE_ROLL_ID: usize = 209;
+
+/// The dodge roll is Final Mix content (the USA executable has no roll branch and no motion 209, docs/systems/foundations/final-mix.md):
+/// scrapped by default (user, 2026-10-24); `KH2_FM_ROLL=1` keeps the code reachable. Without it a Square press while moving is the USA
+/// rule: Quick Run at the press when learned, else the guard (FUN_00178108, FUN_00178080), whatever the Dodge Roll level.
+pub fn fm_roll() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KH2_FM_ROLL").as_deref() == Ok("1"))
+}
 pub const DODGE_ROLL_TAG: &str = "A180";
 
 pub fn dodge_roll_slot(mset: &kh2_anim::Mset, state: PlayerState) -> Option<usize> {
@@ -235,6 +244,11 @@ pub fn square_ground(moving: bool, dodge_roll: u8, quick_run: u8) -> SquareGroun
     }
 }
 
+/// `square_ground` with the roll switch: without `KH2_FM_ROLL=1` the Dodge Roll level is ignored (the USA rule).
+pub fn square_ground_for(fm_roll: bool, moving: bool, dodge_roll: u8, quick_run: u8) -> SquareGround {
+    square_ground(moving, if fm_roll { dodge_roll } else { 0 }, quick_run)
+}
+
 /// One tick of a Square dash: `held` is the button, `ticks` the ticks since the press, `quick_run`
 /// the Quick Run level and `run_left` its clock (`AirSlideTime`, counted down while held). Returns
 /// the new phase and whether the dash stops now (the stop brake starts).
@@ -265,6 +279,8 @@ const BLEND_GLIDE: f32 = 16.0;
 const BLEND_ATTACK: f32 = 0.0;
 /// Stick magnitude below which Sora walks.
 const WALK_STICK: f32 = 0.8;
+/// The frame step of one tick (`DAT_00356f40` per vblank run, see `schedule::FrameClock::vblank`).
+const TICK_STEP: f32 = 1.0;
 
 /// Growth-ability levels (0 = not learned, 5 = MAX). Written from the ability block's growth
 /// levels (`FUN_001c1340`) whenever the abilities change (`abilities::sync_controller`); in a form
@@ -823,27 +839,32 @@ pub fn read_pad(
     mut pad_state: ResMut<crate::rig::PadState>,
     scale: Res<crate::rig::StickScale>,
 ) {
-    let mut v = Vec2::ZERO;
-    for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
-        if keys.pressed(k) {
-            v += d;
-        }
-    }
-    let yaw = cam.single().map_or(0.0, |c| c.yaw);
-    let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    let right = Vec3::new(-fwd.z, 0.0, fwd.x);
-    pad.dir = (fwd * v.y + right * v.x).normalize_or_zero();
-    pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 };
-    if pad_state.scripted {
+    // The left stick as the original's record: unit direction (x right, y up here) and magnitude. The keyboard is one pad view.
+    let (stick_dir, stick_mag) = if pad_state.scripted {
         // A rig pad script is running: the left stick drives Sora through the original's dead zone and scale (`FUN_00167198`). The
         // buttons already arrived as the keys the script mirrors (`rig::BUTTON_KEYS`).
-        let (d, m) = crate::rig::stick_vector(pad_state.lx, pad_state.ly, &scale);
-        pad.dir = (fwd * d.y + right * d.x).normalize_or_zero();
-        pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else { m };
+        crate::rig::stick_vector(pad_state.lx, pad_state.ly, &scale)
     } else {
-        // The keyboard as one pad view.
+        let mut v = Vec2::ZERO;
+        for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
+            if keys.pressed(k) {
+                v += d;
+            }
+        }
         *pad_state = crate::rig::PadState::from_keyboard(&keys);
-    }
+        let v = v.normalize_or_zero();
+        (v, if v == Vec2::ZERO { 0.0 } else if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 })
+    };
+    // FUN_001774d8 -> FUN_00177360: the stick goes through the DRAWN view (the camera's smoothed position and look-at point,
+    // FUN_00106f78), not through the camera's orbit yaw: where the camera collision holds the camera the two differ. The orbit yaw
+    // (a camera at (sin yaw, ., cos yaw) from the player looking at him) is the fallback before the camera has run.
+    let view = match cam.single() {
+        Ok(c) => c.drawn.map_or_else(|| orbit_view(c.yaw), |(eye, look)| view_matrix(eye.to_array(), look.to_array(), Vec3::Y.to_array())),
+        Err(_) => orbit_view(0.0),
+    };
+    let heading = stick_through_view(&view, [stick_dir.x, -stick_dir.y, 0.0, stick_mag]);
+    pad.dir = Vec3::new(heading[0], 0.0, heading[2]);
+    pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else { stick_mag };
     pad.jump_held = keys.pressed(KeyCode::Space);
     pad.square_held = keys.pressed(KeyCode::KeyK) || keys.pressed(KeyCode::KeyE);
     let bump = |n: &mut u8, p: bool| {
@@ -863,6 +884,11 @@ pub fn read_pad(
         *growth = Growth { high_jump: l, quick_run: l, aerial_dodge: l, glide: l, dodge_roll: l };
         info!("growth abilities: level {l}");
     }
+}
+
+/// The view matrix of a camera orbiting the player at `yaw` (the camera at (sin yaw, ., cos yaw) from him, looking at him).
+fn orbit_view(yaw: f32) -> [f32; 16] {
+    view_matrix([yaw.sin(), 0.0, yaw.cos()], [0.0; 3], Vec3::Y.to_array())
 }
 
 /// FUN_00184498 (the weapon object's update) calls FUN_0019afe8 on the owner and skips the update when it returns 1. Of that
@@ -1321,7 +1347,9 @@ pub fn tick(
             s.finishers = 1;
             s.motor.ground_velocity(dir, move_speed);
             if move_speed > 0.0 {
-                s.motor.turn_to(dir, prty.turn_speed);
+                // FUN_0016a2f0: the facing turns by the turn speed times the frame step. The app runs one tick per vblank of the
+                // frame, so a frame of step 2 is two ticks of step 1.0: the same turn per frame.
+                s.motor.turn_to_step(dir, prty.turn_speed, TICK_STEP);
             }
             let landing = body.slot == motion(id::LAND) && !body.finished;
             if move_speed > 0.0 || !landing {
@@ -1340,7 +1368,7 @@ pub fn tick(
                 // Dodge Roll learned = the roll (a hold of `TAP_TICKS` ticks becomes the Quick Run when
                 // that is learned); moving with only Quick Run learned = Quick Run at the press (USA
                 // FUN_00178108); moving with neither = the guard (USA FUN_00178080, no stick test).
-                let act = square_ground(move_speed > 0.0, growth.dodge_roll, growth.quick_run);
+                let act = square_ground_for(fm_roll(), move_speed > 0.0, growth.dodge_roll, growth.quick_run);
                 if square_explicit(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false) {
                     // An explicit action started.
                 } else if act != SquareGround::Guard
@@ -1439,7 +1467,7 @@ pub fn tick(
             let stopping = body.slot == motion(mid::QUICK_RUN_END);
             // The roll plays A180 (dodge_roll_slot): a tap lets it play out; a hold past the tap window turns it into the Quick Run
             // (the original's frame trigger 34 at tick 10 starts the Quick Run from the roll).
-            let roll_slot = dodge_roll_slot(&rig.mset, pstate);
+            let roll_slot = if fm_roll() { dodge_roll_slot(&rig.mset, pstate) } else { None };
             let rolling = roll_slot.is_some() && body.slot == roll_slot;
             if !stopping {
                 let (phase, stop) = dash_step(s.dash, pad.square_held, s.timer, growth.quick_run, s.dash_time);
@@ -2359,6 +2387,18 @@ mod tests {
         assert_eq!(dodge_roll_slot(&m, PlayerState::FieldNoWeapon), Some(1200));
         // No A180 (the USA disc): none, the caller keeps the Quick Run start motion.
         assert_eq!(dodge_roll_slot(&mset_with(&[(203 * 4 + 2, "A150")]), PlayerState::FieldNoWeapon), None);
+    }
+
+    #[test]
+    fn a_tap_while_moving_never_rolls_by_default() {
+        use SquareGround::{Guard, QuickRun, Roll};
+        for roll in [0u8, 1, 5] {
+            assert_eq!(square_ground_for(false, true, roll, 0), Guard, "roll level {roll}: the USA guard");
+            assert_eq!(square_ground_for(false, true, roll, 1), QuickRun, "roll level {roll}: Quick Run at the press");
+            assert_eq!(square_ground_for(false, false, roll, 1), Guard, "still: the guard");
+        }
+        assert_eq!(square_ground_for(true, true, 1, 0), Roll, "KH2_FM_ROLL=1 keeps the roll");
+        assert_eq!(square_ground_for(true, true, 1, 1), Roll);
     }
 
     #[test]

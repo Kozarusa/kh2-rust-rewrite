@@ -321,10 +321,11 @@ impl JumpExtras {
         e
     }
 
-    /// Ticks the jump task waits before its fade-out (a local of `FUN_0019d9d8`): 2 when the "menu before" code
-    /// is 1 or 2 (and the party word is 0 or more); other codes leave it 0 (`LAB_0019db28`) [inferred: the wait is a parameter of `FUN_00104e18`, in ticks], else 0.
+    /// Ticks the jump task waits before its fade-out (a local of `FUN_0019d9d8`): 2 for every non-zero "menu before" code
+    /// while the party word is 0 or more (the oracle showed that codes other than 1 and 2 also give 2: they open no menu but
+    /// still wait) [inferred: the wait is a parameter of `FUN_00104e18`, in ticks], else 0.
     pub fn delay_ticks(&self) -> u32 {
-        if self.party >= 0 && matches!(self.menu_before, 1 | 2) { 2 } else { 0 }
+        if self.party >= 0 && self.menu_before != 0 { 2 } else { 0 }
     }
 
     /// The argument of the menu kind 5 opened before the jump: `Some(0)` for code 1, `Some(2)` for code 2
@@ -388,7 +389,7 @@ pub type MapEntrances = [(u32, u32); 15];
 
 /// `FUN_00149db8`: the world map entrance for the world a type-4 jump leaves (0 when the world is not in the table).
 pub fn map_entrance(table: &MapEntrances, world: u8) -> u8 {
-    table.iter().find(|(_, w)| *w == u32::from(world)).map_or(0, |(e, _)| *e as u8)
+    area::ctl::world_map_entrance(table, u32::from(world)) as u8
 }
 
 /// What a type-4 record decides (`FUN_0019d9d8` case 4, `FUN_00149df0`) from the story flags (`flag`), the record's
@@ -396,15 +397,17 @@ pub fn map_entrance(table: &MapEntrances, world: u8) -> u8 {
 /// start). Returns the destination and the new memory. The fade kind is always 1 (a local set to 1).
 /// 1. Flag 0x1071 set and 0x1072 clear, and one of 0x140f, 0x1822, 0x200b set: remember `rec`; go to world 4, area 0,
 ///    entrance 0, programs kept.
-/// 2. Else one of 0x8cd, 0x3834, 0x1c1c set: remember `rec`; go to `FUN_00198080(0x40, 0x12)`: world 0x12, the first
-///    area the table lists for key 0x40, entrance 0, programs 0x40 (unknown key: every byte kept).
+/// 2. Else flag 0x8cd clear and one of 0x3834, 0x1c1c set: remember `rec`; go to `FUN_00198080(0x40, 0x12)`: world 0x12, the
+///    first area the table lists for key 0x40, entrance 0, programs 0x40 (unknown key: every byte kept). A set 0x8cd sends
+///    the record to the world map instead (the oracle `orig_19d9d8_matches_the_game` showed the old reading, "one of the three
+///    set", wrong).
 /// 3. Else the world map: the remembered byte replaces `rec` if there is one (and is forgotten); jump to world 0xf,
 ///    area 0, entrance `FUN_00149db8(byte)`, programs kept, at once (`FUN_00149df0`).
 pub fn type4_dest(flag: impl Fn(u16) -> bool, rec: u8, memory: Option<u8>, table: &MapEntrances, localset: impl Fn(u8, u16) -> Option<u8>) -> (Dest, Option<u8>) {
     if flag(0x1071) && !flag(0x1072) && (flag(0x140f) || flag(0x1822) || flag(0x200b)) {
         return (Dest { world: 4, area: 0, entrance: 0, programs: [KEEP; 3] }, Some(rec));
     }
-    if flag(0x8cd) || flag(0x3834) || flag(0x1c1c) {
+    if !flag(0x8cd) && (flag(0x3834) || flag(0x1c1c)) {
         let dest = match localset(TYPE4_STORY_WORLD, TYPE4_STORY_KEY) {
             Some(area) => Dest { world: TYPE4_STORY_WORLD, area, entrance: 0, programs: [TYPE4_STORY_KEY as u8; 3] },
             None => Dest::new(KEEP, KEEP, 0),
@@ -415,8 +418,22 @@ pub fn type4_dest(flag: impl Fn(u16) -> bool, rec: u8, memory: Option<u8>, table
     (Dest { world: WORLD_MAP, area: 0, entrance: map_entrance(table, from), programs: [KEEP; 3] }, None)
 }
 
+/// The story override at the end of `FUN_0019d9d8` (found by the oracle; the app had none): when flag 0x872 is clear and
+/// 0x86e, 0x86f, 0x870 and 0x871 are all set, every jump that has a destination goes to `FUN_00198080(0x7a, 2)` instead:
+/// world 2, the first area the table lists for key 0x7a, entrance 0, programs 0x7a (unknown key: every byte kept).
+pub fn story_override(flag: impl Fn(u16) -> bool, dest: Dest, localset: impl Fn(u8, u16) -> Option<u8>) -> Dest {
+    if !flag(0x872) && flag(0x86e) && flag(0x86f) && flag(0x870) && flag(0x871) {
+        return match localset(2, 0x7a) {
+            Some(area) => Dest { world: 2, area, entrance: 0, programs: [0x7a; 3] },
+            None => Dest::new(KEEP, KEEP, KEEP),
+        };
+    }
+    dest
+}
+
 /// `FUN_0019d9d8` for every type: types 1 to 3 as `resolve_jump`; 4 as `type4_dest` (always a destination: world 4,
-/// 0x12 or 0xf, none of them in the app, so the caller stays); 5 and 6 as `Outcome`. `memory` is `DAT_01c8bd90`.
+/// 0x12 or 0xf, none of them in the app, so the caller stays); 5 and 6 as `Outcome`. `memory` is `DAT_01c8bd90`. A destination
+/// of types 1 to 3 and of the first two cases of type 4 goes through [`story_override`].
 pub fn resolve_record(
     j: &Jump,
     cur: (u8, u8, u8),
@@ -428,13 +445,15 @@ pub fn resolve_record(
 ) -> Result<Outcome, String> {
     match j.kind {
         4 => {
-            let (dest, m) = type4_dest(flag, j.world as u8, *memory, table, &localset);
+            let (dest, m) = type4_dest(&flag, j.world as u8, *memory, table, &localset);
             *memory = m;
+            // The world-map case (no memory kept) has no destination in the record, so the override does not apply to it.
+            let dest = if m.is_some() { story_override(&flag, dest, &localset) } else { dest };
             Ok(Outcome::Go(dest.apply(cur)))
         }
         5 => Ok(Outcome::OpenMenu { kind: 0xe, arg: -1 }),
         6 => Ok(Outcome::FreezeFade),
-        _ => resolve_jump(j, cur, last, localset).map(Outcome::Go),
+        _ => resolve_jump(j, cur, last, &localset).map(|d| Outcome::Go(story_override(&flag, d, &localset).apply(cur))),
     }
 }
 
@@ -1609,10 +1628,14 @@ mod tests {
         let (d, m) = type4_dest(with(&[0x1071, 0x140f]), 7, None, &table(), none);
         assert_eq!((d.world, d.area, d.entrance), (4, 0, 0));
         assert_eq!(m, Some(7));
-        // 0x1072 set blocks the first case; 0x8cd then takes the second: world 0x12, programs 0x40.
-        let (d, m) = type4_dest(with(&[0x1071, 0x1072, 0x140f, 0x8cd]), 7, None, &table(), |w, k| (w == 0x12 && k == 0x40).then_some(3));
+        // 0x1072 set blocks the first case; 0x3834 (with 0x8cd clear) then takes the second: world 0x12, programs 0x40.
+        let (d, m) = type4_dest(with(&[0x1071, 0x1072, 0x140f, 0x3834]), 7, None, &table(), |w, k| (w == 0x12 && k == 0x40).then_some(3));
         assert_eq!((d.world, d.area, d.entrance, d.programs), (0x12, 3, 0, [0x40; 3]));
         assert_eq!(m, Some(7));
+        // 0x8cd set vetoes the second case (the oracle finding): the world map, memory cleared.
+        let (d, m) = type4_dest(with(&[0x8cd, 0x3834, 0x1c1c]), 3, None, &table(), |w, k| (w == 0x12 && k == 0x40).then_some(3));
+        assert_eq!((d.world, d.area, d.entrance), (WORLD_MAP, 0, 102));
+        assert_eq!(m, None);
         // Without the key the second case keeps every byte.
         let (d, _) = type4_dest(with(&[0x1c1c]), 7, None, &table(), none);
         assert_eq!((d.world, d.area), (KEEP, KEEP));
@@ -1667,10 +1690,31 @@ mod tests {
         // A negative party word skips both the delay and the menu.
         let n = JumpExtras { party: -1, menu_before: 1, ..d };
         assert_eq!((n.delay_ticks(), n.menu_before_arg()), (0, None));
-        // Other non-zero codes neither open the menu nor delay (FUN_0019d9d8 jumps to LAB_0019db28).
+        // Other non-zero codes open no menu but still wait 2 ticks (the oracle finding: FUN_0019d9d8 sets the wait before it
+        // tests the code for 2).
         let c3 = JumpExtras { menu_before: 3, ..d };
-        assert_eq!((c3.delay_ticks(), c3.menu_before_arg()), (0, None));
+        assert_eq!((c3.delay_ticks(), c3.menu_before_arg()), (2, None));
         assert!(!e.text().is_empty());
+    }
+
+    #[test]
+    fn the_story_override_replaces_the_destination_when_the_flags_say_so() {
+        let with = |ids: &'static [u16]| move |f: u16| ids.contains(&f);
+        let key7a = |w: u8, k: u16| (w == 2 && k == 0x7a).then_some(9);
+        let before = Dest::new(2, 4, 1);
+        assert_eq!(story_override(with(&[0x86e, 0x86f, 0x870, 0x871]), before, key7a), Dest { world: 2, area: 9, entrance: 0, programs: [0x7a; 3] });
+        // One flag of the four missing, or 0x872 set: the destination stays.
+        assert_eq!(story_override(with(&[0x86e, 0x86f, 0x870]), before, key7a), before);
+        assert_eq!(story_override(with(&[0x86e, 0x86f, 0x870, 0x871, 0x872]), before, key7a), before);
+        // An unknown key keeps every byte.
+        assert_eq!(story_override(with(&[0x86e, 0x86f, 0x870, 0x871]), before, |_, _| None), Dest::new(KEEP, KEEP, KEEP));
+        // A type-1 record is overridden, the world-map case of type 4 is not.
+        let mut mem = None;
+        let flags = with(&[0x86e, 0x86f, 0x870, 0x871]);
+        let Outcome::Go(d) = resolve_record(&jump(1, 4, 1, 0, 0), (2, 4, 0), None, key7a, flags, &table(), &mut mem).unwrap() else { panic!("type 1 goes") };
+        assert_eq!((d.world, d.area, d.entrance, d.programs), (2, 9, 0, [0x7a; 3]));
+        let Outcome::Go(d) = resolve_record(&jump(4, 3, 0, 0, 0), (2, 4, 0), None, key7a, flags, &table(), &mut mem).unwrap() else { panic!("type 4 goes") };
+        assert_eq!((d.world, d.area), (WORLD_MAP, 0));
     }
 
     #[test]

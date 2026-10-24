@@ -179,11 +179,7 @@ pub fn run_area_script(
         // FUN_00104bd0 then FUN_00104b90: the destination's program bytes (not 0xff) replace the table's.
         let from_jump = rec.dest_programs != [0xff; 3];
         let mut table = from_table;
-        for (t, d) in table.iter_mut().zip(rec.dest_programs) {
-            if d != 0xff {
-                *t = d;
-            }
-        }
+        ctl::merge_programs(&mut table, &rec.dest_programs);
         rec.dest_programs = [0xff; 3];
         rec.programs = rec.programs_override.unwrap_or(table);
         let ard = disc.read(&format!("ard/{loaded}.ard")).and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a);

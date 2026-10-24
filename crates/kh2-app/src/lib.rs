@@ -66,8 +66,8 @@ pub fn run() {
     app.add_plugins(plugins::GamePlugins { iso, start }).run();
 }
 
-/// End toggles uncapped rendering (`KH2_VSYNC=0` starts it). One title state machine: the title names the vsync mode while it is off
-/// and the field rate for 2 seconds after Home (Home is `schedule::toggle_field_hz`; no other handler reads either key).
+/// Numpad - toggles uncapped rendering (`KH2_VSYNC=0` starts it). One title state machine: the title names the vsync mode while it is off
+/// and the field rate for 2 seconds after Numpad + (Numpad + is `schedule::toggle_field_hz`; no other handler reads either key).
 fn window_modes(
     keys: Res<ButtonInput<KeyCode>>,
     clock: Res<kh2_game_core::schedule::FrameClock>,
@@ -76,7 +76,7 @@ fn window_modes(
 ) {
     use bevy::window::PresentMode::{AutoNoVsync, AutoVsync};
     let Ok(mut w) = windows.single_mut() else { return };
-    if keys.just_pressed(KeyCode::End) {
+    if keys.just_pressed(KeyCode::NumpadSubtract) {
         w.present_mode = if matches!(w.present_mode, AutoNoVsync) { AutoVsync } else { AutoNoVsync };
     }
     let mut title = String::from("kh2-rs");

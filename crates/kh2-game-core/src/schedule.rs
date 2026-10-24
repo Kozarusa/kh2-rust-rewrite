@@ -367,9 +367,9 @@ pub fn field_hz_from_env() -> u32 {
     field_hz_for(std::env::var("KH2_FIELD_HZ").ok().as_deref(), rig)
 }
 
-/// Home switches the field between 30 and 60 Hz (not in turbo runs).
+/// Numpad + switches the field between 30 and 60 Hz (not in turbo runs).
 pub fn toggle_field_hz(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<FrameClock>, mut shown: ResMut<FieldHzShown>) {
-    if keys.just_pressed(KeyCode::Home) && !crate::harness::turbo() {
+    if keys.just_pressed(KeyCode::NumpadAdd) && !crate::harness::turbo() {
         let hz = if clock.field_hz() == 60 { 30 } else { 60 };
         clock.set_field_hz(hz);
         shown.0 = 120;
@@ -377,7 +377,7 @@ pub fn toggle_field_hz(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<FrameC
     shown.0 = shown.0.saturating_sub(1);
 }
 
-/// Update frames left to show the field rate (about 2 seconds after Home).
+/// Update frames left to show the field rate (about 2 seconds after Numpad +).
 #[derive(Resource, Default)]
 pub struct FieldHzShown(pub u32);
 

@@ -14,7 +14,7 @@ cargo build -p kh2-app --bin kh2-game
 if not exist "local\play" mkdir "local\play"
 copy /y "target\debug\kh2-game.exe" "local\play\kh2-game.exe" >nul
 if "%AREA%"=="tt04" if "%KH2_WAVE_GROUP%"=="" set "KH2_WAVE_GROUP=b_44"
-echo Options: KH2_FIELD_HZ=30 for the original 30 Hz field (default 60, Home toggles); KH2_VSYNC=0 for uncapped rendering (End toggles).
+echo Options: KH2_FIELD_HZ=30 for the original 30 Hz field (default 60, Numpad + toggles); KH2_VSYNC=0 for uncapped rendering (Numpad - toggles).
 "local\play\kh2-game.exe" %AREA%
 echo.
 echo Game closed (exit code %errorlevel%). Press any key to close this window.

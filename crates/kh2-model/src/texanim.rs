@@ -173,6 +173,7 @@ impl Texa {
     /// Animation index for a request (FUN_001327f8): with `mask` 0, `value` is the index itself;
     /// otherwise `value & mask` is a slot looked up in the slot table (body +8 first slot, +0xa
     /// last slot, table at body +0x18, one u16 per slot holding index + 1, 0 = none).
+    /// orig 0x1327f8
     pub fn anim_index(&self, mask: u32, value: u32) -> Option<usize> {
         let b = &self.body;
         let count = u16_at(b, 0xc) as u32;
@@ -195,6 +196,7 @@ impl Texa {
     }
 
     /// The animation that plays unless the game asks for another (body +0x24, FUN_001328a8).
+    /// orig 0x1328a8
     pub fn default_anim(&self) -> Option<usize> {
         self.anim_index(0, u32_at(&self.body, 0x24))
     }
@@ -267,6 +269,7 @@ impl TexaPlayer {
     }
 
     /// FUN_00132950: start `anim` unless it already plays.
+    /// orig 0x132950
     pub fn start(&mut self, t: &Texa, anim: Option<usize>, rand: &mut impl FnMut() -> u32) {
         if self.anim == anim {
             return;
@@ -284,6 +287,7 @@ impl TexaPlayer {
     }
 
     /// FUN_00133058: play the animation a slot names (mask 0xffff), overriding the default this field.
+    /// orig 0x133058
     pub fn play_slot(&mut self, t: &Texa, slot: u32, rand: &mut impl FnMut() -> u32) {
         if let Some(a) = t.anim_index(0xffff, slot).and_then(|i| t.anim_start(i)) {
             self.flags |= 4;
@@ -347,6 +351,7 @@ impl TexaPlayer {
 
     /// FUN_00132fc0: the sprite to show now (the current entry's code is 0), if any. A sprite
     /// index beyond the TEXA's sprite count shows nothing (the game would read past the data).
+    /// orig 0x132fc0
     pub fn sprite(&self, t: &Texa) -> Option<usize> {
         let f = t.frame(self.frame?)?;
         (f.code() == 0 && (f.sprite as usize) < t.sprites.len()).then_some(f.sprite as usize)
@@ -383,6 +388,8 @@ impl UvscPlayer {
 
     /// FUN_00133628 / FUN_001336d8: the 12-bit texture-coordinate offset (4096 = one texture
     /// width) for an accumulator, a CLAMP span (`MINU + 1` or `MINV + 1`) and the texture size.
+    /// orig 0x133628
+    /// orig 0x1336d8
     pub fn offset(acc: i32, span: u32, size: u32) -> u32 {
         let k = span as f32 / size as f32;
         (fixuns(acc as u32 as f32 * k) >> 16) & 0xfff

@@ -199,6 +199,28 @@ impl Ram {
     }
 }
 
+/// The object pass of `kh2_model` reads and writes the game's memory through this view.
+impl kh2_model::draw::pass::Words for Ram {
+    fn r8(&self, a: u32) -> u8 {
+        Ram::r8(self, a)
+    }
+    fn w8(&mut self, a: u32, v: u8) {
+        Ram::w8(self, a, v)
+    }
+    fn r16(&self, a: u32) -> u16 {
+        Ram::r16(self, a)
+    }
+    fn w16(&mut self, a: u32, v: u16) {
+        Ram::w16(self, a, v)
+    }
+    fn r32(&self, a: u32) -> u32 {
+        Ram::r32(self, a)
+    }
+    fn w32(&mut self, a: u32, v: u32) {
+        Ram::w32(self, a, v)
+    }
+}
+
 /// What the original reaches through units outside this package. Every method has a no-op default.
 pub trait Host {
     /// `0x15dff8`: the constructor of the see-through effect at tree `+0x790`.
@@ -458,12 +480,9 @@ impl DrawTree {
         }
     }
 
-    /// The visible mark (the render pass's own function 0x148920, ported with that pass): the slot word of the object gets bit 0 and the
-    /// object's draw flags bit 1.
+    /// The visible mark, 0x148920, ported with the object pass in `kh2_model::draw::pass::mark_visible`.
     fn mark_visible(self, ram: &mut Ram, obj: u32) {
-        let slot = self.0 + 8 * ram.r16(obj + 0x11c) as u32;
-        set_flags(ram, slot + 0x4364, 1);
-        set_flags(ram, obj + 0xf8, 2);
+        kh2_model::draw::pass::mark_visible(ram, self.0, obj);
     }
 
     /// orig 0x1470f0: marks the object visible and clears bit 2 of its flag word `+0x08`.

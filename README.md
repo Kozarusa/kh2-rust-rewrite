@@ -54,7 +54,13 @@ The open rows of `sheets/systems.json` are the to-do list.
 
 `cargo run -p kh2 -- preflight` lists exactly what is done.
 
-## Play
+## Playing
+
+Build a player package with `powershell -NoProfile -ExecutionPolicy Bypass -File tools\package.ps1`; it assembles `dist\kh2-rs\` (`kh2-game.exe`, a player README and `Play kh2-rs.bat`). Double-click `kh2-game.exe`: the first run asks for your Kingdom Hearts II (USA) `.iso` in a file dialog and remembers it in `%APPDATA%\kh2-rs\config.toml`; later runs start straight away. The release build has no console; its log is `%APPDATA%\kh2-rs\kh2-rs.log`. Options: `--help`, `--choose-disc`, `--windowed`, `--fullscreen`, `--console`, and a start area (default `tt04`). F11 or Alt+Enter toggles borderless fullscreen. There is no title screen yet: the game starts in Twilight Town.
+
+Developers keep `KH2_ISO` and `local/iso.txt` (written by `kh2 set-iso`); the disc is taken from `KH2_ISO` first, then the config file, then `local/iso.txt`, then the dialog. `KH2_CONFIG_DIR` moves the config folder.
+
+## Play (developers)
 
 ```
 cargo run -p kh2 -- set-iso "path/to/Kingdom Hearts II (USA).iso"

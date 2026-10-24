@@ -175,6 +175,126 @@ pub fn fbox_to_qbox(b: &FBox, level: usize) -> QBox {
     o
 }
 
+/// 0x378fdc and 0x378fe4: the w lane of the box centre and of the corner list (1.0).
+const BOX_W: f32 = 1.0;
+/// 0x378fe0: the half factor of the box centre (0.5).
+const HALF: f32 = 0.5;
+/// 0x378fe8: the w lane of the negated corner list (1.0).
+const BOX_NEG_W: f32 = 1.0;
+
+/// orig 0x144368: the empty box (all six floats zero).
+pub fn fbox_clear() -> FBox {
+    [0.0; 6]
+}
+
+/// orig 0x1443e0: the box constructor taking two corners; it forwards its arguments to `fbox_corners` (0x1446f8).
+pub fn fbox_new(a: [f32; 3], b: [f32; 3]) -> FBox {
+    fbox_corners(a, b)
+}
+
+/// orig 0x144410: the box union wrapper; it forwards its arguments to `fbox_union` (0x144778).
+pub fn fbox_merge(a: &FBox, b: &FBox) -> FBox {
+    fbox_union(a, b)
+}
+
+/// orig 0x144500: the polygon bounds wrapper; it forwards its arguments to `fbox_of_polygon` (0x144548).
+pub fn fbox_around(v: &[V4; 4], n: usize) -> FBox {
+    fbox_of_polygon(v, n)
+}
+
+/// orig 0x144530: the box of two points stored one after the other (`fbox_corners` of the two).
+pub fn fbox_of_points(p: &[V4; 2]) -> FBox {
+    fbox_corners([p[0][0], p[0][1], p[0][2]], [p[1][0], p[1][1], p[1][2]])
+}
+
+/// orig 0x1446d8: the box set from six floats (the same store as `fbox`, 0x1443a8).
+pub fn fbox_set(x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32) -> FBox {
+    fbox(x0, y0, z0, x1, y1, z1)
+}
+
+/// orig 0x144820: the centre of a box, `min + (max - min) * 0.5` per axis (`vmulbc` by the half factor), with the
+/// w lane the constant 1.0.
+pub fn fbox_centre(b: &FBox) -> V4 {
+    let d = [b[3] - b[0], b[4] - b[1], b[5] - b[2]];
+    [b[0] + d[0] * HALF, b[1] + d[1] * HALF, b[2] + d[2] * HALF, BOX_W]
+}
+
+/// orig 0x144a50: the eight corners of a box as vectors (w lane 1.0): the low z face walking (min x, min y),
+/// (min x, max y), (max x, max y), (max x, min y), then the high z face in the same order.
+pub fn fbox_corners8(b: &FBox) -> [V4; 8] {
+    let (x0, y0, z0, x1, y1, z1) = (b[0], b[1], b[2], b[3], b[4], b[5]);
+    let w = BOX_W;
+    [
+        [x0, y0, z0, w],
+        [x0, y1, z0, w],
+        [x1, y1, z0, w],
+        [x1, y0, z0, w],
+        [x0, y0, z1, w],
+        [x0, y1, z1, w],
+        [x1, y1, z1, w],
+        [x1, y0, z1, w],
+    ]
+}
+
+/// orig 0x144af8: the same eight corners in the negated form the original writes next to them: x as is, and for y
+/// and z the negated value of the opposite end (the first corner is `(min x, -max y, -max z)`; the corners then walk
+/// like `fbox_corners8` over (-y, -z)); w lane 1.0 (0x378fe8).
+pub fn fbox_corners8_negated(b: &FBox) -> [V4; 8] {
+    let w = BOX_NEG_W;
+    [
+        [b[0], -b[4], -b[5], w],
+        [b[0], -b[1], -b[5], w],
+        [b[3], -b[1], -b[5], w],
+        [b[3], -b[4], -b[5], w],
+        [b[0], -b[4], -b[2], w],
+        [b[0], -b[1], -b[2], w],
+        [b[3], -b[1], -b[2], w],
+        [b[3], -b[4], -b[2], w],
+    ]
+}
+
+/// orig 0x1448c0: the box of the eight corners of `b` carried through the matrix `m` (the corners of
+/// `fbox_corners8`, each through `xf`): the per-axis minimum and maximum of the results, built with strict
+/// comparisons from the first corner, then handed to `fbox_corners`.
+pub fn fbox_transform(b: &FBox, m: &M4) -> FBox {
+    let mut lo = [0.0f32; 3];
+    let mut hi = [0.0f32; 3];
+    for (i, c) in fbox_corners8(b).iter().enumerate() {
+        let t = xf(m, *c);
+        for k in 0..3 {
+            if i == 0 {
+                lo[k] = t[k];
+                hi[k] = t[k];
+            } else if t[k] < lo[k] {
+                lo[k] = t[k];
+            } else if hi[k] < t[k] {
+                hi[k] = t[k];
+            }
+        }
+    }
+    fbox_corners(lo, hi)
+}
+
+/// orig 0x144ca8: does box `a` contain box `b` (closed intervals on all three axes)?
+pub fn fbox_contains(a: &FBox, b: &FBox) -> bool {
+    a[0] <= b[0] && b[3] <= a[3] && a[1] <= b[1] && b[4] <= a[4] && a[2] <= b[2] && b[5] <= a[5]
+}
+
+/// orig 0x144d48: the empty quantized box (six zero shorts).
+pub fn qbox_clear() -> QBox {
+    [0; 6]
+}
+
+/// orig 0x145000: the quantized box back to floats at `level` (0 to 3): the shorts as they are at level 0, else
+/// multiplied by the level's entry of the table at 0x355e60 (the same table `fbox_to_qbox` subtracts and adds).
+pub fn qbox_to_fbox(q: &QBox, level: usize) -> FBox {
+    if level == 0 {
+        return q.map(|v| v as f32);
+    }
+    let s = LEVEL_OFFSET[level];
+    q.map(|v| v as f32 * s)
+}
+
 /// orig 0x145498: do two quantized boxes overlap (closed intervals)?
 pub fn qbox_overlap(a: &QBox, b: &QBox) -> bool {
     b[0] <= a[3] && a[0] <= b[3] && b[1] <= a[4] && a[1] <= b[4] && b[2] <= a[5] && a[2] <= b[5]

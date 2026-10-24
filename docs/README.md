@@ -89,7 +89,7 @@ is open for code at a time.
 | `fx.lens` | Lens and distortion effect draw (fx_lens, wgsl shaders) | kh2-app | L3 `combat-effects` | [contract](systems/combat-effects/contract.md) | [effects-damage.md](systems/combat-effects/effects-damage.md) | `scenarios/combat-effects/` |
 | `game.jump` | Jump records: jump types 4 to 6, the party arrangement (word 4), the p... | kh2-app | L1 `core-runtime` | [contract](systems/core-runtime/contract.md) | [party-built.md](systems/party/party-built.md) | `scenarios/core-runtime/` |
 | `ui.battle_report` | BATTLE REPORT ending screen (menu kind 0xe) and its counters | kh2-app | L8 `ui` | [contract](systems/ui/contract.md) | [menus-shop.md](systems/ui/menus-shop.md) | `scenarios/ui/` |
-| `dev.assets` | Asset viewer (F11, KH2_ASSETS=1): models, motions, textures, effects, ... | kh2-app | L0 `foundations` | [contract](systems/foundations/contract.md) | [assets-viewer.md](systems/foundations/assets-viewer.md) | `scenarios/foundations/` |
+| `dev.assets` | Asset viewer (F12, KH2_ASSETS=1): models, motions, textures, effects, ... | kh2-app | L0 `foundations` | [contract](systems/foundations/contract.md) | [assets-viewer.md](systems/foundations/assets-viewer.md) | `scenarios/foundations/` |
 | `dev.sound` | Sound viewer (F10): steps through every sound and plays it through the... | kh2-app | L9 `audio` | [contract](systems/audio/contract.md) | [audio.md](systems/audio/audio.md) | `scenarios/audio/` |
 
 `game.sora.abilities` names drive forms, limits, summons and reaction commands as well; its detail lives in `combat-effects` (abilities, player data) and

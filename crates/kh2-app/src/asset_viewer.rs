@@ -5,7 +5,7 @@
 //! `Animator`, effects through `fx::start_placed`, sounds through the sound driver (`audio::play_se`,
 //! the voice bank cache, `audio::play_bgm`); there is no second renderer.
 //!
-//! Open and close with F11 (`KH2_ASSETS=1` starts open). Tab / Shift+Tab change the kind; Left /
+//! Open and close with F12 (`KH2_ASSETS=1` starts open). Tab / Shift+Tab change the kind; Left /
 //! Right step the item (Shift: 100), PageUp / PageDown step 10, Up / Down the group or sub-item
 //! (Shift: 10), Enter plays (restarts the motion or the effect, plays the sound), R turns the
 //! automatic orbit on and off, right mouse drag orbits and the wheel zooms. The game's keys are
@@ -302,7 +302,7 @@ const TAKEN: [KeyCode; 36] = [
 ];
 
 fn keys(mut keys: ResMut<ButtonInput<KeyCode>>, mut v: ResMut<AssetViewer>, st: Res<SoundTest>) {
-    if keys.just_pressed(KeyCode::F11) {
+    if keys.just_pressed(KeyCode::F12) {
         v.open = !v.open;
         info!("assets {}", if v.open { "open" } else { "closed" });
     }
@@ -862,7 +862,7 @@ fn show(
         _ => String::new(),
     };
     t.0 = format!(
-        "[ASSETS]  F11 close | Tab kind | {keys} | R auto-orbit, RMB drag, wheel zoom\n{}\n{}: {}{frame}{}",
+        "[ASSETS]  F12 close | Tab kind | {keys} | R auto-orbit, RMB drag, wheel zoom\n{}\n{}: {}{frame}{}",
         tabs.join("  "),
         v.nav.kind.word(),
         v.lines[i],

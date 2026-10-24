@@ -27,7 +27,7 @@ auto_limit = 1
 
 [trace]
 every = 2
-values = ["place.world", "place.area", "place.entrance"]
+values = ["place.world", "place.area", "place.entrance", "place.programs"]
 
 [[check]]
 at = [60, 100, 140, 160]
@@ -56,3 +56,8 @@ at = [364, 380, 420]
 values = ["sora.pos"]
 tol = { "sora.pos" = 4.0 }
 note = "the player stands at the entrance of area 17 and runs up (z falls 8 per vsync)"
+
+[[check]]
+at = [100, 140, 160, 164, 166, 168, 200, 300, 362, 364, 380, 420]
+values = ["place.programs"]
+note = "the three program ids of the area record (map, btl, evt) around the exit: the original copies them from the program table when the area is entered (FUN_00104bd0)"

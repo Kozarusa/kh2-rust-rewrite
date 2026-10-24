@@ -36,8 +36,13 @@ kh2-bdx.workspace = true
 kh2-image.workspace = true
 kh2-ard = { path = "../kh2-ard" }
 bevy = "0.19"
+rfd = { version = "0.17.2", default-features = false }
+kh2-iso.workspace = true
 
 [dev-dependencies]
 # The oracle test of progress.rs runs the game's own new-game routines (PLAYBOOK R2).
 kh2-ee.workspace = true
 kh2-rig.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }

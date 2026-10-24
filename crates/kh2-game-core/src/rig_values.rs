@@ -40,8 +40,8 @@ pub struct Ctx<'a> {
     pub menu: Option<(&'a MenuPhase, &'a RigMenu)>,
     /// Sora's playing motion: the id (slot / 4) and the animator's frame.
     pub motion: Option<(i32, f32)>,
-    /// The frame step of the last completed frame (`schedule::FrameClock`).
-    pub step: Option<f32>,
+    /// The vsync block of the frame clock (`schedule::FrameClock`): the frame step, the counters and the speed.
+    pub vsync: Option<&'a crate::frame::Vsync>,
 }
 
 type Getter = fn(&Ctx) -> Option<String>;
@@ -50,6 +50,10 @@ type Getter = fn(&Ctx) -> Option<String>;
 pub const GETTERS: &[(&str, Getter)] = &[
     ("clock.vsync", vsync),
     ("frame.step", frame_step),
+    ("frame.vblanks", |c| c.vsync.map(|v| v.vblanks().to_string())),
+    ("frame.since_step", |c| c.vsync.map(|v| v.since_step().to_string())),
+    ("frame.speed", |c| c.vsync.map(|v| f(v.speed()))),
+    ("place.programs", |c| c.area.map(|a| a.programs.map(|b| b.to_string()).join(";"))),
     ("place.world", |c| c.area.map(|a| a.world.to_string())),
     ("place.area", |c| c.area.map(|a| a.area.to_string())),
     ("place.entrance", |c| c.area.map(|a| a.entrance.to_string())),
@@ -107,7 +111,7 @@ fn vsync(c: &Ctx) -> Option<String> {
 /// The frame step `0x356f40` of the ported `frame::Vsync` that drives the app (`schedule::FrameClock`): 2.0 in the field (limit 1),
 /// 1.0 while a menu is up (limit 0).
 fn frame_step(c: &Ctx) -> Option<String> {
-    c.step.map(f)
+    c.vsync.map(|v| f(v.frame_step()))
 }
 
 fn sora_pos(c: &Ctx) -> Option<String> {
@@ -157,13 +161,20 @@ mod tests {
         p.rig.vsync = Some(495_135);
         let cam = Transform::from_translation(Vec3::new(5.2026, 2.2, -0.5676));
         let area = AreaRecord { world: 2, area: 21, entrance: 99, programs: [0; 3], programs_override: None, dest_programs: [0xff; 3], place_on_load: false, run: None, placed: None };
-        let c = Ctx { k: 42, sora: Some(&s), area: Some(&area), progress: Some(&p), cam: Some(&cam), menu: None, motion: None, step: Some(2.0) };
+        let mut vs = crate::frame::Vsync::default();
+        vs.init();
+        vs.set_step(2.0);
+        vs.set_vblanks(7);
+        vs.set_since_step(1);
+        let c = Ctx { k: 42, sora: Some(&s), area: Some(&area), progress: Some(&p), cam: Some(&cam), menu: None, motion: None, vsync: Some(&vs) };
         let r = |n: &str| read(n, &c).unwrap_or_else(|| panic!("{n}"));
         assert_eq!(r("sora.pos"), "650;0;250", "the app's z is mirrored and a negative zero is printed as 0");
         assert_eq!(r("sora.facing"), "0;0;-1", "yaw 0 is app +z, game -z");
         assert_eq!(r("clock.vsync"), "495177");
         assert_eq!((r("place.world"), r("place.area"), r("place.entrance")), ("2".into(), "21".into(), "99".into()));
         assert_eq!(r("frame.step"), "2");
+        assert_eq!((r("frame.vblanks"), r("frame.since_step"), r("frame.speed")), ("7".into(), "1".into(), "1".into()));
+        assert_eq!(r("place.programs"), "0;0;0", "the three program bytes of the area record, joined by ;");
         let cam_pos: Vec<f32> = r("cam.pos").split(';').map(|v| v.parse().unwrap()).collect();
         assert!((cam_pos[0] - 520.26).abs() < 0.01 && (cam_pos[1] + 220.0).abs() < 0.01 && (cam_pos[2] - 56.76).abs() < 0.01, "{cam_pos:?}");
         let mut turned = Sora::for_test(80, 80);
@@ -172,7 +183,7 @@ mod tests {
         let facing: Vec<f32> = read("sora.facing", &c).unwrap().split(';').map(|v| v.parse().unwrap()).collect();
         assert!((facing[0] - 1.0).abs() < 1e-6 && facing[2].abs() < 1e-6, "{facing:?}");
         // No objects: no values; a name the port lacks stays None.
-        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: None, step: None };
+        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: None, vsync: None };
         assert!(GETTERS.iter().filter(|(n, _)| !matches!(*n, "rng.lo" | "rng.hi")).all(|(_, g)| g(&none).is_none()));
         assert_eq!(read("menu.word_354f70", &c), None);
     }
@@ -182,11 +193,11 @@ mod tests {
         let rig = |page, cursor| RigMenu { page, cursor, scroll: 0 };
         let at = |phase: Phase, mirror: RigMenu, names: &[&str]| -> Vec<Option<String>> {
             let phase = MenuPhase(phase);
-            let c = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: Some((&phase, &mirror)), motion: None, step: None };
+            let c = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: Some((&phase, &mirror)), motion: None, vsync: None };
             names.iter().map(|n| read(n, &c)).collect()
         };
         let s = |v: &str| Some(v.to_string());
-        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: Some((2, 38.0)), step: None };
+        let none = Ctx { k: 0, sora: None, area: None, progress: None, cam: None, menu: None, motion: Some((2, 38.0)), vsync: None };
         assert_eq!((read("sora.motion", &none), read("sora.motion_frame", &none)), (s("2"), s("38")));
         assert_eq!(read("menu.scene_state", &none), None, "no menu resources: no value");
         let names = ["menu.scene_state", "menu.scene", "menu.closing", "menu.page", "menu.cursor"];

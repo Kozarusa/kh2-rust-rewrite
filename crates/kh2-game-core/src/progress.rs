@@ -1589,6 +1589,13 @@ impl Progress {
         if self.count_at(it.slot) as u32 + n as u32 > MAX_COUNT as u32 { 0 } else { INVENTORY }
     }
 
+    /// `FUN_001a18b8(id, to, n)`: whether `n` copies of an item would be taken, the answer of [`Progress::room`] tested against 0.
+    ///
+    /// orig 0x1a18b8
+    pub fn can_get(&self, id: u16, to: u16, n: u8) -> bool {
+        self.room(id, to, n) != 0
+    }
+
     /// `FUN_001a18d8(id, to, equipped)`: give one item to a party member or the inventory.
     /// Consumables fill the member's battle item slots first, abilities go into the member's
     /// list (`equipped` sets bit 15), everything else is counted in the inventory. Sets the
@@ -5439,6 +5446,65 @@ mod tests {
             tb.plrp.iter().filter(|r| r.id == 0).count(),
             ix.rows.len(),
         );
+    }
+
+    /// The oracle for `FUN_001a18b8` (can-get, over the room test `FUN_001a1768`): the game and the port answer the same for every
+    /// item row (ids outside the table are left out: gap: `FUN_001a66e8` returns a null pointer for an absent id and `FUN_001a1768` then reads bytes at addresses 3, 2 and 0x12, so the game's answer depends on low memory contents; the port refuses), five targets and counts 0..=3, on the new-game block and again after a sweep of gives that
+    /// fills slots, counts and key bits. Item 0x20 and spell items are left out of the sweep (their side calls act outside the block).
+    #[test]
+    fn orig_1a18b8_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        let Some(mut tb) = tables() else { return };
+        let ix = index(&tb);
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
+        let blob = |a: &mut kh2_archive::Archive, d: &kh2_tables::TableDef| kh2_tables::subfile(a, d).expect("table");
+        let tables = [
+            (0x01c9_5588u32, 0x0180_0000u32, blob(&mut tb.archive, &t::ITEM)),
+            (0x01d5_df5c, 0x0181_0000, blob(&mut tb.archive, &t::PLRP)),
+            (0x01d5_d798, 0x0182_0000, blob(&mut tb.archive, &t::CMD)),
+            (0x01c9_5520, 0x0183_0000, blob(&mut tb.archive, &t::MAGC)),
+        ];
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        for (ptr, at, data) in &tables {
+            ee.write(*at, data);
+            ee.w32(*ptr, *at);
+        }
+        ee.write(addr::SAVE, &vec![0u8; addr::SAVE_LEN as usize]);
+        ee.call(0x0018_7b38, &[addr::PARTY as u64], &[], STACK).expect("FUN_00187b38");
+        ee.call(0x001c_0cb0, &[0], &[], STACK).expect("FUN_001c0cb0");
+        let mut port = Progress::new_game(ix.clone(), &tb.plrp);
+        let ids: Vec<u16> = ix.rows.iter().map(|r| r.id).collect();
+        let targets = [INVENTORY, SORA, 2, 3, 0xe];
+        let (mut yes, mut cases) = (0u32, 0u32);
+        let mut compare = |ee: &mut Ee, port: &Progress, stage: &str| {
+            for &id in &ids {
+                for &to in &targets {
+                    for n in 0..=3u8 {
+                        let game = ee.call(0x001a_18b8, &[id as u64, to as u64, n as u64], &[], STACK).expect("FUN_001a18b8") as u32 & 0xff != 0;
+                        assert_eq!(port.can_get(id, to, n), game, "{stage}: can_get({id}, {to}, {n})");
+                        yes += game as u32;
+                        cases += 1;
+                    }
+                }
+            }
+        };
+        compare(&mut ee, &port, "new game");
+        ee.write(0x0033_e830, &[2]);
+        for (n, r) in ix.rows.iter().enumerate().filter(|(_, r)| r.id != 0x20 && r.kind != item_type::MAGIC && r.id != 0) {
+            let (to, eq) = match n % 3 {
+                0 => (INVENTORY, false),
+                1 => (SORA, true),
+                _ => (2, false),
+            };
+            for _ in 0..1 + n % 2 {
+                let ok = ee.call(0x001a_18d8, &[r.id as u64, to as u64, eq as u64], &[], STACK).expect("FUN_001a18d8") as u32 != 0;
+                assert_eq!(port.give(r.id, to, eq), ok, "give item {} to {to}", r.id);
+            }
+        }
+        compare(&mut ee, &port, "after the gives");
+        assert!(yes > 0 && yes < cases, "both answers occur ({yes} of {cases} accepted)");
     }
 
     // --- the diff rig's state keys (RIG-3) ---------------------------------------------------

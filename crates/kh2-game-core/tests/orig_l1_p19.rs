@@ -560,6 +560,32 @@ impl Mem {
     }
 }
 
+/// Byte access to a memory image on either side.
+trait Bytes8 {
+    fn r8(&mut self, a: u32) -> u8;
+    fn w8(&mut self, a: u32, v: u8);
+}
+
+impl Bytes8 for Ee {
+    fn r8(&mut self, a: u32) -> u8 {
+        Ee::r8(self, a)
+    }
+    fn w8(&mut self, a: u32, v: u8) {
+        self.write(a, &[v])
+    }
+}
+
+impl Bytes8 for Mem {
+    fn r8(&mut self, a: u32) -> u8 {
+        Mem::r8(self, a)
+    }
+    fn w8(&mut self, a: u32, v: u8) {
+        Mem::w8(self, a, v)
+    }
+}
+
+type EffectFn = Box<dyn Fn(u32, u32, &mut dyn Bytes8)>;
+
 /// The stand-ins' return policy: (tag, call number, arguments, hash) to v0.
 type RetFn = Box<dyn Fn(u32, u32, &[u64], u64) -> u64>;
 
@@ -579,11 +605,13 @@ struct Cfg {
     flex: Vec<u32>,
     /// Maps an address the port logs to the address the original shows for the same thing (object handles to block addresses).
     xlate: fn(u32) -> u32,
+    /// Memory the stand-in changes when it runs (a wait that ends), applied identically on both sides: (tag, call number, memory).
+    effect: Option<EffectFn>,
 }
 
 impl Cfg {
     fn new(standins: &[(u32, usize)], ret: impl Fn(u32, u32, &[u64], u64) -> u64 + 'static) -> Cfg {
-        Cfg { standins: standins.to_vec(), vargs: vec![0; VSLOTS as usize], ret: Box::new(ret), deref: Vec::new(), floats: Vec::new(), flex: Vec::new(), xlate: |v| v }
+        Cfg { standins: standins.to_vec(), vargs: vec![0; VSLOTS as usize], ret: Box::new(ret), deref: Vec::new(), floats: Vec::new(), flex: Vec::new(), xlate: |v| v, effect: None }
     }
     fn v(mut self, slot: usize, extra: usize) -> Cfg {
         self.vargs[slot] = extra;
@@ -648,6 +676,9 @@ impl Port {
             *c += 1;
             k
         };
+        if let Some(f) = self.cfg.clone().effect.as_ref() {
+            f(tag, k, &mut self.mem);
+        }
         (self.cfg.ret)(tag, k, args, mix(self.seed, tag as u64, k as u64))
     }
 }
@@ -734,6 +765,10 @@ impl Dual {
             k
         };
         let h = mix(s.seed, tag as u64, k as u64);
+        drop(s);
+        if let Some(f) = c.effect.as_ref() {
+            f(tag, k, ee);
+        }
         ee.gpr[2] = (c.ret)(tag, k, &args, h) as u128;
     }
 
@@ -1918,4 +1953,82 @@ fn orig_180a68_matches_the_game() {
         assert_eq!(d.sh.borrow().log.len(), want as usize, "case {n}: the parser is called once for a match and never otherwise");
     }
     assert!(hit > 600 && miss > 600 && empty > 200 && wide > 400, "outcomes: {hit} found, {miss} missed, {empty} empty, {wide} with a wide id");
+}
+
+/// The area thread, as a run of calls. Every callee is a stand-in that logs its arguments (the jump record the thread keeps on its stack
+/// shows as one fixed address); the stand-ins' answers steer the loops: the jump question is yes for the first rounds only, the record
+/// is ready after some waits, and the yield (0x102438) sets the start-up byte at 0x355830 at a chosen call (or the byte is set from the
+/// start). The place, saved place, gate, allocator and task manager words are compared as windows.
+#[test]
+fn orig_1048e0_matches_the_game() {
+    let standins: Vec<(u32, usize)> = vec![
+        (0x19d8d0, 1),
+        (0x14cbd0, 0),
+        (0x108f68, 0),
+        (0x1689c0, 1),
+        (0x1051f0, 2),
+        (0x16f260, 2),
+        (0x105250, 2),
+        (0x1dbe90, 3),
+        (0x1dbe78, 0),
+        (0x1a6b30, 0),
+        (0x1a6b50, 1),
+        (0x138540, 1),
+        (0x19d9d8, 2),
+        (0x102438, 2),
+        (0x102678, 3),
+        (0x1dbfc8, 0),
+        (0x1052a0, 0),
+        (0x181af8, 0),
+        (0x105188, 1),
+        (0x224b50, 0),
+        (0x2c1158, 1),
+        (0x149ba0, 0),
+        (0x1368e8, 1),
+        (0x137150, 0),
+        (0x168ae0, 1),
+        (0x13aaa8, 0),
+        (0x149b08, 0),
+        (0x168b10, 0),
+        (0x16fb20, 1),
+        (0x136aa0, 0),
+        (0x136ec0, 1),
+        (0x102bc8, 3),
+    ];
+    let mut cfg = Cfg::new(&standins, |tag, k, _, h| match tag {
+        0x1051f0 => {
+            if k >= 3 {
+                0
+            } else {
+                h & 1
+            }
+        }
+        0x1a6b30 => ((h >> 2) % 3 != 0) as u64,
+        _ => h,
+    });
+    cfg.effect = Some(Box::new(|tag, k, mem| {
+        if tag == 0x102438 && k + 1 == 1 + (mem.r8(0x355831) % 6) as u32 {
+            mem.w8(0x355830, 1);
+        }
+    }));
+    let Some(mut d) = Dual::new("orig_1048e0", cfg) else { return };
+    let mut r = Rng::new(0x1048e0);
+    let (mut rounds, mut waits, mut final_waits) = ([0u32; 4], 0, 0);
+    for n in 0..800u64 {
+        let mut m = Mem::new();
+        m.win(&mut r, 0x33e830, 8).win(&mut r, 0x3b2180, 0x10).win(&mut r, 0x33e850, 4).win(&mut r, 0x33e6e4, 4).win(&mut r, 0x35cd20, 8).win(&mut r, 0x355830, 2).scratch(SCRATCH, 0x40);
+        if r.below(3) == 0 {
+            m.w8(0x355830, 0);
+        }
+        let thread = r.word() as u32 as u64;
+        d.run(&m, n, |ee| call(ee, 0x1048e0, &[thread]), |p| {
+            kh2_game_core::area::ctl::area_thread(p, thread, SCRATCH);
+            0
+        });
+        let log = d.sh.borrow().log.clone();
+        rounds[log.iter().filter(|e| e.0 == 0x19d9d8).count().min(3)] += 1;
+        waits += log.iter().filter(|e| e.0 == 0x1a6b50).count();
+        final_waits += (log.iter().rev().take_while(|e| e.0 != 0x136ec0).filter(|e| e.0 == 0x102438).count() > 0) as u32;
+    }
+    assert!(rounds.iter().all(|&c| c > 30) && waits > 200 && final_waits > 100, "branches: rounds {rounds:?}, {waits} record waits, {final_waits} cases that yield before the next task");
 }

@@ -51,8 +51,9 @@ Settings (disc path, window size, fullscreen): %APPDATA%\kh2-rs\config.toml
 Log of the last two runs:                      %APPDATA%\kh2-rs\kh2-rs.log and kh2-rs.1.log
 If the game closes unexpectedly it names the log file; that file is what to send when reporting a problem.
 
-kh2idx.txt is a list of file names (made by `kh2 fetch-names` from OpenKH's public name list) that the game uses to find maps.
-Keep it next to kh2-game.exe or in %APPDATA%\kh2-rs. Without it some maps will not load; the game then shows a message.
+kh2idx.txt is a list of file names (community name data, not a game file) that the game uses to find maps. It is not part of
+this project and it is not included with the game disc. If you have one, put it in the same folder as kh2-game.exe (or in
+%APPDATA%\kh2-rs). Without it the game still starts, but some maps will not load and it tells you so.
 
 Licence: MIT or Apache-2.0. Kingdom Hearts is a trademark of its owners; this project is not affiliated with them.
 '@

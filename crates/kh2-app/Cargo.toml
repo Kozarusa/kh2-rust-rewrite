@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "kh2-app"
 description = "kh2-rs game: Bevy application that runs on the user's own Kingdom Hearts II disc"
 version.workspace = true

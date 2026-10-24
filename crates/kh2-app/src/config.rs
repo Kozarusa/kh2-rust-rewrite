@@ -75,7 +75,9 @@ impl Config {
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
-        std::fs::write(dir.join(CONFIG_FILE), self.to_text())
+        let (tmp, dest) = (dir.join(format!("{CONFIG_FILE}.tmp")), dir.join(CONFIG_FILE));
+        std::fs::write(&tmp, self.to_text())?;
+        std::fs::rename(&tmp, &dest)
     }
 }
 
@@ -105,11 +107,14 @@ mod tests {
 
     #[test]
     fn config_round_trips_through_text_and_disk() {
+        // Saving twice replaces the file and leaves no temporary file behind.
         let c = Config { iso: Some(PathBuf::from(r#"C:\Games\KH "II"\disc.iso"#)), width: Some(1280), height: Some(720), fullscreen: Some(true) };
         assert_eq!(Config::parse(&c.to_text()), c);
         let dir = std::env::temp_dir().join(format!("kh2rs-config-test-{}", std::process::id()));
         c.save(&dir).unwrap();
+        c.save(&dir).unwrap();
         assert_eq!(Config::load(&dir), c);
+        assert!(!dir.join("config.toml.tmp").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

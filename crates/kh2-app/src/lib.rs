@@ -91,13 +91,13 @@ pub fn run() {
     }
     let env_iso = std::env::var_os("KH2_ISO").map(std::path::PathBuf::from);
     let local_txt = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
-    let iso = launcher::discover(env_iso, &dir, &local_txt, opts.choose_disc, &mut launcher::pick_disc_dialog).unwrap_or_else(|e| launcher::fail(&e));
+    let iso = launcher::discover(env_iso, &dir, &local_txt, opts.choose_disc, &mut |m| launcher::message_box("kh2-rs", m), &mut launcher::pick_disc_dialog).unwrap_or_else(|e| launcher::fail(&e));
     if release && assets::names_file().is_none() {
         launcher::info_box(
             "kh2-rs: name list missing",
             "The file kh2idx.txt (a list of file names used to find the maps) was not found, so some maps will not load.
 
-Run `kh2 fetch-names` to create it, or copy it next to kh2-game.exe or into %APPDATA%\\kh2-rs.",
+Put the file in the same folder as kh2-game.exe, or in %APPDATA%\\kh2-rs. The game starts without it.",
         );
     }
     let start = opts.area.unwrap_or_else(|| "tt04".into());

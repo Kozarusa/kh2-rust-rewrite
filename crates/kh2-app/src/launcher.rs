@@ -79,19 +79,20 @@ pub fn check_image(path: &Path) -> Result<(), String> {
 }
 
 /// Finds the disc. `pick` is the file dialog (a closure so tests can stand in for it). A disc chosen through it is
-/// saved to the config file in `cfg_dir`.
-pub fn discover(env_iso: Option<PathBuf>, cfg_dir: &Path, local_txt: &Path, force_dialog: bool, pick: &mut dyn FnMut() -> Option<PathBuf>) -> Result<PathBuf, String> {
+/// saved to the config file in `cfg_dir`. A remembered or local disc that exists but is not the USA disc is explained
+/// through `notify` and the dialog is offered instead.
+pub fn discover(env_iso: Option<PathBuf>, cfg_dir: &Path, local_txt: &Path, force_dialog: bool, notify: &mut dyn FnMut(&str), pick: &mut dyn FnMut() -> Option<PathBuf>) -> Result<PathBuf, String> {
     if !force_dialog {
         if let Some(p) = env_iso {
             return Ok(p);
         }
-        if let Some(p) = Config::load(cfg_dir).iso.filter(|p| p.exists()) {
-            check_image(&p)?;
-            return Ok(p);
-        }
-        if let Some(p) = std::fs::read_to_string(local_txt).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()) {
-            check_image(&p)?;
-            return Ok(p);
+        let remembered = Config::load(cfg_dir).iso.filter(|p| p.exists());
+        let local = std::fs::read_to_string(local_txt).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists());
+        for p in remembered.into_iter().chain(local) {
+            match check_image(&p) {
+                Ok(()) => return Ok(p),
+                Err(e) => notify(&format!("{e}\n\nChoose the right disc image in the next window (you can also start the game with --choose-disc).")),
+            }
         }
     }
     let Some(p) = pick() else {
@@ -259,15 +260,15 @@ mod tests {
         std::fs::write(&local, other.to_string_lossy().as_bytes()).unwrap();
         let mut never = || -> Option<PathBuf> { panic!("the dialog must not open") };
         // Environment wins over everything, unchecked.
-        assert_eq!(discover(Some("X:/env.iso".into()), &cfg, &local, false, &mut never).unwrap(), PathBuf::from("X:/env.iso"));
+        assert_eq!(discover(Some("X:/env.iso".into()), &cfg, &local, false, &mut |_| {}, &mut never).unwrap(), PathBuf::from("X:/env.iso"));
         // No config file yet: local/iso.txt.
-        assert_eq!(discover(None, &cfg, &local, false, &mut never).unwrap(), other);
+        assert_eq!(discover(None, &cfg, &local, false, &mut |_| {}, &mut never).unwrap(), other);
         // The config file beats local/iso.txt.
         Config { iso: Some(usa.clone()), ..Default::default() }.save(&cfg).unwrap();
-        assert_eq!(discover(None, &cfg, &local, false, &mut never).unwrap(), usa);
+        assert_eq!(discover(None, &cfg, &local, false, &mut |_| {}, &mut never).unwrap(), usa);
         // A remembered disc that moved falls through to local/iso.txt.
         Config { iso: Some(d.join("gone.iso")), ..Default::default() }.save(&cfg).unwrap();
-        assert_eq!(discover(None, &cfg, &local, false, &mut never).unwrap(), other);
+        assert_eq!(discover(None, &cfg, &local, false, &mut |_| {}, &mut never).unwrap(), other);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -278,24 +279,40 @@ mod tests {
         synthetic_iso(&usa, USA_CNF);
         std::fs::write(&junk, b"nope").unwrap();
         let mut cancel = || None;
-        let e = discover(None, &cfg, &missing, false, &mut cancel).unwrap_err();
+        let e = discover(None, &cfg, &missing, false, &mut |_| {}, &mut cancel).unwrap_err();
         assert!(e.contains("config.toml"), "{e}");
         let mut bad = || Some(junk.clone());
-        assert!(discover(None, &cfg, &missing, false, &mut bad).is_err());
+        assert!(discover(None, &cfg, &missing, false, &mut |_| {}, &mut bad).is_err());
         assert_eq!(Config::load(&cfg).iso, None);
         let mut good = || Some(usa.clone());
-        assert_eq!(discover(None, &cfg, &missing, false, &mut good).unwrap(), usa);
+        assert_eq!(discover(None, &cfg, &missing, false, &mut |_| {}, &mut good).unwrap(), usa);
         assert_eq!(Config::load(&cfg).iso, Some(usa.clone()));
         // The next start finds it without the dialog; --choose-disc forces the dialog again.
         let mut never = || -> Option<PathBuf> { panic!("the dialog must not open") };
-        assert_eq!(discover(None, &cfg, &missing, false, &mut never).unwrap(), usa);
+        assert_eq!(discover(None, &cfg, &missing, false, &mut |_| {}, &mut never).unwrap(), usa);
         let mut asked = false;
         let mut again = || {
             asked = true;
             Some(usa.clone())
         };
-        discover(None, &cfg, &missing, true, &mut again).unwrap();
+        discover(None, &cfg, &missing, true, &mut |_| {}, &mut again).unwrap();
         assert!(asked);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_remembered_disc_that_is_not_usa_offers_the_dialog() {
+        let d = scratch("notusa");
+        let (cfg, fm, usa, missing) = (d.join("cfg"), d.join("fm.iso"), d.join("usa.iso"), d.join("none.txt"));
+        synthetic_iso(&fm, "BOOT2 = cdrom0:\\SLPM_666.75;1\n");
+        synthetic_iso(&usa, USA_CNF);
+        Config { iso: Some(fm), ..Default::default() }.save(&cfg).unwrap();
+        let mut said = Vec::new();
+        let mut good = || Some(usa.clone());
+        let got = discover(None, &cfg, &missing, false, &mut |m| said.push(m.to_string()), &mut good).unwrap();
+        assert_eq!(got, usa);
+        assert!(said.len() == 1 && said[0].contains("--choose-disc") && said[0].contains("Final Mix"), "{said:?}");
+        assert_eq!(Config::load(&cfg).iso, Some(usa));
         std::fs::remove_dir_all(&d).unwrap();
     }
 

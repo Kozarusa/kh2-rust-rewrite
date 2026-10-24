@@ -406,6 +406,27 @@ impl Ramp {
         self.0[1] = crate::pad::ee::div(crate::pad::ee::sub(end, start), steps);
     }
 
+    /// The end test of a ramp: false while the value has not reached the end (it moves up for a change of 0 or more, down below 0);
+    /// true after it has, and then the value is set to the end.
+    ///
+    /// orig 0x14ecd8
+    pub fn check(&mut self) -> bool {
+        let reached = if 0.0 <= self.0[1] { self.0[2] <= self.0[0] } else { self.0[0] <= self.0[2] };
+        if reached {
+            self.0[0] = self.0[2];
+        }
+        reached
+    }
+
+    /// One advance of a ramp: the value goes up by the change twice (added one at a time), then [`Ramp::check`] answers.
+    ///
+    /// orig 0x14ed20
+    pub fn advance(&mut self) -> bool {
+        use crate::pad::ee::add;
+        self.0[0] = add(add(self.0[0], self.0[1]), self.0[1]);
+        self.check()
+    }
+
     /// The static init of the game-speed ramp: only the constructor-list call `(1, 0xffff)` does anything; it zeroes the start and
     /// the change and sets the end to 1.0.
     ///
@@ -425,6 +446,43 @@ impl Ramp {
         self.static_init(1, 0xffff)
     }
 }
+
+/// The game-speed task (priority 800000 on the root manager): the ramp advances; when it answers that it has ended `FUN_00102498` is
+/// called with the task's argument `arg` (a stand-in for the host); then the game speed is set to the ramp's value.
+///
+/// orig 0x14cb08
+pub fn game_speed_task(ramp: &mut Ramp, v: &mut Vsync, host: &mut impl crate::area::ctl::AreaHost, arg: u64) {
+    if ramp.advance() {
+        host.call(0x102498, &[arg]);
+    }
+    v.set_game_speed(ramp.0[0]);
+}
+
+/// The game-speed request: the ramp at [`SPEED_RAMP_BASE`] is set from `start` to `end` in `steps`, then [`game_speed_task`] is made a
+/// task of the root manager `root` (bits 0, priority 800000).
+///
+/// orig 0x14cb50
+pub fn game_speed_request(ramp: &mut Ramp, tasks: &mut crate::task::Tasks, root: u32, start: f32, end: f32, steps: f32) -> u32 {
+    ramp.set(start, end, steps);
+    tasks.create_task(root, 0, FRAME_PRIORITY_SPEED, GAME_SPEED_TASK)
+}
+
+/// The vblank handler: one tick of the play time in the save block `save` (`counting`: the word at `0x33e6fc` is not 0; `world`: the byte
+/// at `0x33e830`), the pause-gated timer tick and the two frame counters ([`Vsync::vblank`]), then `FUN_0014d1f8` (signals the vblank
+/// semaphore, a stand-in for the host). The cache flushes and the interrupt enable are hardware. Returns 0.
+///
+/// orig 0x14cc88
+pub fn vblank_handler(v: &mut Vsync, save: &mut [u8], counting: bool, world: u8, host: &mut impl crate::area::ctl::AreaHost) -> u64 {
+    crate::save_block::play_time_tick(save, counting, world);
+    v.vblank();
+    host.call(0x14d1f8, &[]);
+    0
+}
+
+/// The priority of the game-speed task.
+pub const FRAME_PRIORITY_SPEED: i32 = 800_000;
+/// The game-speed task body.
+pub const GAME_SPEED_TASK: u32 = 0x14cb08;
 
 /// The identity helper of the clock unit: returns its argument (the play-time splitter passes the count through it).
 ///

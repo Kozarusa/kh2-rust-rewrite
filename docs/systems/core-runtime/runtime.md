@@ -81,6 +81,29 @@ the USA executable; field names are ours.
   from the port's `Vsync` at the app's cadence (still 1.0); reporting 2.0 would only be true once the field runs at 30 Hz with step
   2.0, a behaviour change left to the frame-order package (L1-P4).
 
+### Frame order in the app (WP-L1-P4; `crates/kh2-game-core/src/schedule.rs`, `task.rs` `SITES`)
+- One fixed step of the app (`FixedMain`, 60 Hz) is one vblank. `schedule::Vblank` stands where `FixedUpdate` stood in the fixed
+  order: it adds the vblank to the ported `frame::Vsync` (`schedule::FrameClock`) and, when the frame is complete, runs the logic
+  (`FixedUpdate`) as many times as the step: field limit 1 (`FUN_0014cd38`) gives 0, 2, 0, 2 runs (30 Hz, step 2.0); while the pause
+  menu is up the cadence is type 1, limit 0 (`FUN_00239e78` saves type and limit, `FUN_00239ec0` restores them), one run per vblank.
+- decided: a step of 2.0 is two 60 Hz logic ticks back to back, not one tick with every speed doubled: every system of the app moves
+  by a 60 Hz unit per tick. Linear motion is identical at every frame boundary (rig tt-run-06: k 42 now 0.18 off, was 6.7);
+  integrating motion (gravity, turns) takes two half steps where the original takes one [inferred: no oracle compares it].
+- The rig clock, the trace and the turbo tick count run in `FixedFirst`, once per vblank. In a rig run the counter starts at 0 with
+  `k = 0`, so the frame of an even `k` runs its logic at the odd vblank after it (the vblank whose pad the app has read, the pad
+  being read in `Update`) and its motion stands at the next even `k`, as in the original's trace.
+- What the logic sees: its own `Time` (one fixed step per run, so "elapsed crossed a scripted second" fires once per step), the
+  button edges gathered since its last frame, on the frame's first tick only (the original reads the pad once per frame, task
+  `0x167038`, priority 110000), and messages that age only in frames that ran logic (Bevy ages them once per frame after a fixed step;
+  two logic-free frames would drop a message the logic left for its next tick).
+- Task priorities: the 36 calls of `FUN_00102778` with constant arguments are `task::SITES`, read back from the executable by
+  `tests/orig_task_sites.rs`. On the root manager: timer `0x14c560` 1 (first), screen clear `0x14dc70` 100000 [inferred], pad
+  `0x167038` 110000 [inferred], field tasks 300000/330000, `0x2c4958` 380000, `0x168010` 400000, `0x2c0e90` 500010, game speed
+  `0x14cb08` and the frame task `0x14ccf8` 800000 (last). The app keeps that order: pad (`Update`), logic, frame step.
+- Gaps: the wrappers that pass the priority through (`FUN_00102808`, `FUN_00102bc8`, `FUN_00102e78`, `FUN_001039e0`, `FUN_00104420`)
+  and the callers with run-time priorities (`FUN_001394e8`, `FUN_0013a140`, `FUN_00160588`, `FUN_001db278`, `FUN_001dbf60`,
+  `FUN_001ddd10`, `FUN_002248f0`, `FUN_002d58f8`, `FUN_002f5fe8`) are not tabled; the musical mode's frame type 0 (`FUN_002251f0`)
+  and the event game speed (`FUN_0014cb50`) are not wired; the combat PAUSE band keeps the field cadence [inferred].
 ## RNG
 - `rand` `FUN_003117a8`: state = state * M + 1 (64-bit, `FUN_00324820` is the 64-bit multiply, M the word at `DAT_00385f90`, read
   from the executable), result `(state >> 32) & 0x7fffffff`.

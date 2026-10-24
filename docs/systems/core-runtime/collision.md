@@ -202,6 +202,35 @@ depend on it, the other rays (`FUN_00143960`, `FUN_00143ce8`, `FUN_00143b80`, `F
 app's mover does not call any of this yet (it is the mover's package, L2); `World::walk_step`, `floor_ray` and `floor_info`
 expose it in the game's space.
 
+**Status (WP-L1-P15):** the gaps above are ported (`crates/kh2-map/src/oct.rs`, `pool.rs`, `geom.rs`, `World` in
+`crates/kh2-game-core/src/world.rs`) and checked against the original in `crates/kh2-game-core/tests/orig_coct.rs`:
+* Placement `FUN_00142858` (`Oct::place`: matrix, inverse, identity flag; the inverse is bit for bit the game's, the z lane of the
+  translation row sums z, x, y), `FUN_00142a88` (collapsed), the frame mapping of a moved object in the ray cast `FUN_00141f08`,
+  the floor ray's snap test `FUN_00141910`, the sweep `FUN_00164138` (both ends through `+0x90`, the result back through `+0x50`;
+  the tunnelling guard compares the object-frame start with the world-frame end, as the original does), the normal `FUN_001421b8`
+  (the basis rows rotate it, xyz renormalized, w stays) and the world-space vertices `FUN_001422d8`. The solver `FUN_001632b8`
+  runs its two body-height probe passes for the identity-placed object only (they test `+0xd1`). The VU write masks matter for the
+  w lane, which the back-mapping multiplies into the translation row: the solver's multiplies write xyz only, so a face push ends
+  with w = (centre w - plane distance) + plane distance and an edge push with w = (centre w - contact w) + contact w (the dest
+  masks were read from the instruction words); the collider record now compares bit for bit.
+* The pool (`MovingPool`): `FUN_001652b8` (constructor), `FUN_001653d8` / `FUN_001650f0` / `FUN_001650e0` (allocate, build, clear),
+  `FUN_00165188` (free), `FUN_00165250` (place), `FUN_00165290` / `FUN_001652a0` (disable, enable), `FUN_00165388` (release),
+  `FUN_00165910` (list walk, skips flag bit 1), `FUN_00165430` (sweep every other owner's enabled, not collapsed object),
+  `FUN_001654f8` (floor ray against every one, highest floor wins, whole-record copy back), `FUN_001657d8` (segment against every
+  one, each hit shortens the segment). Entries are named by `base + 16 * index`, the number `coll +0x78` holds. Flag bit 1 has no
+  writer in the clusters read [inferred]; `set_hidden` exists for the list walk. The allocator calls of the original (`LoadDataAlloc`
+  `0x106220`, free `0x106280`) are replaced by hooks in the test; nothing else is stubbed.
+* `Oct::walk_step_with(pool, c)` is `FUN_00143840` over a non-empty list (`World::walk_step` uses it; `World::add_moving`,
+  `remove_moving`, `place_moving`, `set_moving_disabled` manage the pool; `floor_info` reads the lift's normal, flag and material when
+  `coll +0x78` names an entry). The rays `FUN_00143960` (`Oct::ray_walk_b`), `FUN_00143ce8` (`ray_floor_kind`), `FUN_00143b80`
+  (`pool::ray_attr_200`; its ninth argument, the owner to skip, is the caller's stack garbage in the original and no owner is skipped
+  here [inferred]) and `FUN_00143c28` (`pool::ray_second`) are ported. The edge helpers `FUN_00164780` (`nearest_edge`) and
+  `FUN_00164690` (`edge_direction_gap`) are ported and checked; their caller `FUN_00164ce8` (the second sphere pass) is not.
+* Floor lighting: `FUN_0015c690` (a 4-byte lookup in the table at 0x520604) and `FUN_00153540` (light volumes of
+  `DAT_00358874` / `DAT_00358888`, `FUN_00162c88`, `FUN_00153190`) belong to `dk::MapColor`, the map's lighting colour, which is
+  drawing, not collision: not ported here (decided: left to the render side).
+* Nothing is rewired in the app: no mover calls `walk_step` yet (L2), and no script registers a moving object.
+
 ### 9.1 The collision slots and their accessors
 The five collision objects of section 8 and the draw-cull object live in globals; the wrappers in 0x143100..0x143e90 only
 pick a slot and forward.
@@ -437,4 +466,4 @@ stick delta as tt-run-06 at k150.
   `FUN_00148440`, `FUN_00165990`, `FUN_00163248` and `FUN_00161ed0` were not re-read in this package (cited from sections 5 and 8 or
   from their callers); the constants `DAT_00378f6c`, `DAT_00378f70`, `DAT_0037953c`, `DAT_00379544`, `DAT_00379548`, `DAT_0037955c`
   were not read (the oracle reads them from the executable); the roof stop of a jump (9.3) and `coll +0x20` for Sora (9.8) are open.
-**Status (WP-L1-P10):** read and ported: `FUN_00141f08`, `FUN_00141d90`, `FUN_001623a0`, `FUN_00163f98`, `FUN_001632b8`, `FUN_00163248`, `FUN_00161ed0`, `FUN_00162028`, `FUN_00162678`, `FUN_001625e0`, `FUN_001626f0`, `FUN_00330c80`, `FUN_00141720`, `FUN_00141768`, `FUN_00143560`, `FUN_001434b8`; the data constants (0x378f50..0x378ff8, 0x379500..0x37955c, the level tables 0x355e60 and 0x355e70) are small rule values now in `oct.rs` and `geom.rs`. Still open: the pool functions of the moving objects, `FUN_00165910`'s non-empty path, `FUN_00142858`'s inverse, `FUN_00153540` (floor lighting colour), and what the vector lanes the VU ops leave alone hold (the w lanes of the collider's vectors are not compared and nothing reads them).
+**Status (WP-L1-P10):** read and ported: `FUN_00141f08`, `FUN_00141d90`, `FUN_001623a0`, `FUN_00163f98`, `FUN_001632b8`, `FUN_00163248`, `FUN_00161ed0`, `FUN_00162028`, `FUN_00162678`, `FUN_001625e0`, `FUN_001626f0`, `FUN_00330c80`, `FUN_00141720`, `FUN_00141768`, `FUN_00143560`, `FUN_001434b8`; the data constants (0x378f50..0x378ff8, 0x379500..0x37955c, the level tables 0x355e60 and 0x355e70) are small rule values now in `oct.rs` and `geom.rs`. Open after WP-L1-P15: the second sphere pass `FUN_00164ce8` and its callers, the draw-cull half of 9.6, and the floor lighting colour (drawing). The pool, the placement and the moving-object queries are ported (status above).

@@ -12,6 +12,7 @@
 //! What is NOT here: the object constructors and the removal from the list (the destructor path), the spawn record behind +0x81c
 //! (its serial lookup takes a resolver, see [`ObjList::find_by_serial`]). Nothing in the app uses this module yet.
 
+use crate::area::ctl::AreaHost;
 use crate::shared::enemy_obj::SELF_BASE;
 
 /// First object handle; slot `n` is `OBJ_BASE + n * HANDLE_STRIDE`. Same base as the enemy objects of the AI host.
@@ -255,6 +256,272 @@ impl ObjList {
                 return p;
             }
         }
+    }
+}
+
+// ---- the base object constructor (0x168d30) and its finishing pass (0x1698d0) --------------------------------------------------
+
+/// The arguments of the base constructor besides the object itself (`a0`): the model id (`a1`), the object entry pointer (`a2`, stored at
+/// +8), the list priority (`a3`, its low byte), the pointer to the 16-byte start position (`t0`) and the start rotation (float argument
+/// `f12`).
+#[derive(Clone, Copy, Debug)]
+pub struct CtorArgs {
+    pub id: u64,
+    pub entry: u32,
+    pub priority: u32,
+    pub pos: u32,
+    pub rot: f32,
+}
+
+impl ObjList {
+    /// The base object constructor: sets every field of the object block `this` (which must have been taken with [`ObjList::alloc`]) to its
+    /// start value, builds its parts through the other units (every call goes through the host and is logged: the part constructors, the
+    /// action and animation set-up, the model data), links the object into the list and copies the start position and rotation. The vector
+    /// at +0x620 is the constant (0, 0, 0, 1) the original stores from the vector unit's zero register. `cost` is the 8 bytes of the area
+    /// cost budget (0x1c893b8), to which the entry's byte +0x54 is added. The object's parts are at these offsets: +0x80 and +0x9c (two
+    /// animation sets), +0x110, +0x140, +0x308 (16 pairs), +0x3b4 and +0x414 (the flag tables), +0x478, +0x480, +0x590, +0x670, +0x7a0 (the
+    /// data cache record), +0x8e0 and +0x4a0. `scratch` is the address of a 16-byte stack copy of the start position that the original
+    /// hands to `0x16a700`. The float argument of `0x16a700`'s sibling `0x16a7f0` (the rotation, in f12) is passed to the host as its bit pattern after the register arguments.
+    ///
+    /// orig 0x168d30
+    pub fn construct(&mut self, host: &mut impl AreaHost, cost: &mut [u8], this: u32, a: CtorArgs, scratch: u32) {
+        let c0 = host.read32(0x37a180);
+        let c1 = host.read32(0x37a184);
+        {
+            let b = &mut self.get_mut(this).expect("an allocated object block").0[..];
+            put(b, 0, 0x35b950);
+            put(b, 8, a.entry);
+            put(b, 4, this);
+            for o in [0x1c, 0x14, 0x18, 0x2c, 0x24, 0x28, 0x10, 0x20] {
+                put(b, o, 0);
+            }
+            for o in [0x3c, 0x30, 0x34, 0x38] {
+                put(b, o, c0);
+            }
+        }
+        host.call(0x1db410, &[(this + 0x80) as u64]);
+        host.call(0x1db410, &[(this + 0x9c) as u64]);
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x108, 0);
+            put(b, 0x100, 0xffff_ffff);
+            put(b, 0x10c, 0);
+            put(b, 0x104, 5);
+        }
+        host.call(0x1943c8, &[(this + 0x110) as u64]);
+        host.call(0x17d768, &[(this + 0x140) as u64, this as u64]);
+        for k in 0..16u32 {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x308 + 8 * k as usize, 0);
+            put(b, 0x30c + 8 * k as usize, 0);
+            host.call(0x32f6a0, &[(this + 0x30c + 8 * k) as u64]);
+        }
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            for o in [0x3a0, 0x300, 0x304, 0x388, 0x38c, 0x390, 0x394, 0x398, 0x39c] {
+                put(b, o, 0);
+            }
+            for o in [0x3af, 0x3ad, 0x3ae, 0x3ac] {
+                b[o] = 0x80;
+            }
+            put(b, 0x3b0, 0);
+            crate::progress_flags::recom_clear(&mut b[0x3b4..0x414]);
+            crate::progress_flags::recom_clear(&mut b[0x414..0x474]);
+            put(b, 0x474, 0);
+        }
+        host.call(0x330d38, &[(this + 0x478) as u64]);
+        put(&mut self.get_mut(this).unwrap().0[..], 0x47c, 0);
+        host.call(0x330d38, &[(this + 0x480) as u64]);
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            for o in [0x484, 0x488, 0x48c, 0x4a4, 0x4a8, 0x4a0, 0x4b4, 0x4b0, 0x500, 0x504, 0x508, 0x50c, 0x510] {
+                put(b, o, 0);
+            }
+            put(b, 0x4ac, 0xffff_ffff);
+            b[0x514] = 0;
+            b[0x518..0x51a].fill(0);
+            b[0x51c..0x53c].fill(0);
+            for o in [0x56c, 0x564, 0x568, 0x560, 0x570, 0x57c, 0x588, 0x58c] {
+                put(b, o, 0);
+            }
+            put(b, 0x578, 3);
+            b[0x576..0x578].fill(0);
+        }
+        host.call(0x32e458, &[(this + 0x590) as u64]);
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x644, 0xffff);
+            for o in [0x648, 0x64c, 0x650] {
+                put(b, o, 0);
+            }
+            b[0x654] = 0;
+            b[0x620..0x630].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f]);
+            b[0x630..0x640].fill(0);
+            let f = get(b, 0x660);
+            put(b, 0x660, f & 0xffff_fffa | 2);
+        }
+        host.call(0x330bd0, &[(this + 0x670) as u64]);
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            crate::progress_flags::reset_record(&mut b[0x7a0..0x7b8]);
+        }
+        {
+            let mut rec = [0u8; 0x18];
+            rec.copy_from_slice(&self.get(this).unwrap().0[0x7a0..0x7b8]);
+            crate::system_tables::data_cache_set(host, this + 0x7a0, &mut rec, a.id, a.entry as i32 as i64 as u64);
+            self.get_mut(this).unwrap().0[0x7a0..0x7b8].copy_from_slice(&rec);
+        }
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            for o in [0x7f8, 0x800, 0x80c, 0x804, 0x808, 0x810, 0x818, 0x81c, 0x828, 0x830, 0x838] {
+                put(b, o, 0);
+            }
+            b[0x7fc] = 0;
+            put(b, 0x82c, c0);
+            put(b, 0x834, c0);
+            for o in [0x860, 0x86c, 0x864, 0x868, 0x87c, 0x874, 0x878, 0x88c, 0x884, 0x888, 0x8ac, 0x8a4, 0x8a8, 0x870, 0x880, 0x8a0] {
+                put(b, o, 0);
+            }
+            b[0x8bc..0x8c0].fill(0x80);
+            for o in [0x8d4, 0x8c4, 0x8c8, 0x8cc] {
+                put(b, o, 0);
+            }
+            put(b, 0x8d0, c0);
+            b[0x8dc] = 1;
+            put(b, 0x8c0, c0);
+            put(b, 0x8d8, 0);
+            b[0x8dd] = 0;
+        }
+        host.call(0x330ce0, &[(this + 0x8e0) as u64]);
+        let no_shadow = host.call(0x1934c0, &[]);
+        let shadow_byte = if no_shadow == 0 && host.read32(0x35d268) & 0x10 == 0 { host.read8(a.entry.wrapping_add(0x56)) } else { 0 };
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x9a8, c1);
+            b[0x9ac] = shadow_byte;
+            put(b, 0x9b0, 0);
+            b[0x9ad] = a.priority as u8;
+        }
+        self.insert(this);
+        host.call(0x16b648, &[this as u64, 0]);
+        let knm = host.call(0x1a79d8, &[(this + 0x7a0) as u64]);
+        put(&mut self.get_mut(this).unwrap().0[..], 0x8b0, knm as u32);
+        if knm == 0 {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x670, 0);
+            let f = get(b, 0x768);
+            put(b, 0x768, f & 0xffff_fff3);
+        } else {
+            let alloc = host.call(0x104f98, &[]);
+            let obj = get(&self.get(this).unwrap().0[..], 0x8b0);
+            let v = host.vcall(obj, 9, &[alloc]);
+            put(&mut self.get_mut(this).unwrap().0[..], 0x670, v as u32);
+            let knt = host.call(0x1a7a10, &[(this + 0x7a0) as u64]);
+            if knt != 0 {
+                let timer = get(&self.get(this).unwrap().0[..], 0x670);
+                host.call(0x11e018, &[timer as i32 as i64 as u64, knt]);
+                let b = &mut self.get_mut(this).unwrap().0[..];
+                put(b, 0x69c, knt as u32);
+                let f = get(b, 0x7f8);
+                put(b, 0x7f8, f | 2);
+            }
+            let timer = get(&self.get(this).unwrap().0[..], 0x670);
+            host.call(0x11c268, &[timer as i32 as i64 as u64]);
+            let (w88, w8c) = (host.read32(0x37a188), host.read32(0x37a18c));
+            {
+                let b = &mut self.get_mut(this).unwrap().0[..];
+                put(b, 0x774, w88);
+                put(b, 0x778, w8c);
+            }
+            host.call(0x193048, &[this as u64]);
+            let has_bit = host.read16(a.entry.wrapping_add(0x48)) & 0x10 != 0;
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            if has_bit {
+                let f = get(b, 0x768);
+                put(b, 0x768, f | 0x20);
+            }
+            let e = get(b, 8);
+            b[0x78f] = host.read8(e.wrapping_add(6));
+        }
+        let file = {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x668, 0);
+            put(b, 0x664, 0);
+            get(b, 0x7ac)
+        };
+        let e = crate::system_tables::bar_nth_of_type(host, file, 0x17, 0);
+        if e != 0 {
+            let payload = host.read32(e.wrapping_add(8));
+            if payload != 0 {
+                host.call(0x169af0, &[this as u64, payload as i32 as i64 as u64]);
+            }
+        }
+        {
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x638, 0);
+            put(b, 0x63c, c0);
+            put(b, 0x630, 0);
+            put(b, 0x634, c0);
+        }
+        let used = host.read8(a.entry.wrapping_add(0x54)) as f32;
+        crate::system_tables::cost_add(cost, used);
+        host.call(0x1ae998, &[(this + 0x4a0) as u64, this as u64]);
+        {
+            let mut v = [0u32; 4];
+            if 0x890 + this != a.pos {
+                for (k, w) in v.iter_mut().enumerate() {
+                    *w = host.read32(a.pos.wrapping_add(4 * k as u32));
+                }
+            }
+            let b = &mut self.get_mut(this).unwrap().0[..];
+            put(b, 0x820, 0);
+            put(b, 0x824, 0);
+            if 0x890 + this != a.pos {
+                for (k, w) in v.iter().enumerate() {
+                    put(b, 0x890 + 4 * k, *w);
+                }
+            }
+            put(b, 0x89c, a.rot.to_bits());
+        }
+        host.call(0x16a7f0, &[this as u64, a.rot.to_bits() as u64]);
+        for k in 0..4u32 {
+            let w = host.read32(a.pos.wrapping_add(4 * k));
+            host.write32(scratch.wrapping_add(4 * k), w);
+        }
+        host.call(0x16a700, &[this as u64, scratch as u64]);
+        host.call(0x1921e8, &[this as u64]);
+        host.call(0x169be8, &[this as u64]);
+        host.call(0x1a7b50, &[(this + 0x7a0) as u64, this as u64, (this + 0x9c) as u64, (this + 0x7b8) as u64]);
+    }
+
+    /// The pass after an object is built: when the object's flag word +0x588 has bit 0x20 clear, the type-3 entry of the object's BAR (the
+    /// file at +0x7ac) is looked up, its address kept in the word 0x52217c and, when the entry has a payload, `0x169a90` is told the object
+    /// and the payload; the 16-byte position at +0x540 is copied to +0x890, bit 0x80 is set in the word +0x7f8 and the word +0x89c takes
+    /// the float at +0x55c.
+    ///
+    /// orig 0x1698d0
+    pub fn finish_construct(&mut self, host: &mut impl AreaHost, this: u32) {
+        let (flags, file) = {
+            let b = &self.get(this).unwrap().0[..];
+            (get(b, 0x588), get(b, 0x7ac))
+        };
+        if flags & 0x20 == 0 {
+            let e = crate::system_tables::bar_nth_of_type(host, file, 3, 0);
+            host.write32(0x52217c, e);
+            if e != 0 {
+                let payload = host.read32(e.wrapping_add(8));
+                if payload != 0 {
+                    host.call(0x169a90, &[this as u64, payload as i32 as i64 as u64]);
+                }
+            }
+        }
+        let b = &mut self.get_mut(this).unwrap().0[..];
+        let pos: [u8; 16] = b[0x540..0x550].try_into().unwrap();
+        b[0x890..0x8a0].copy_from_slice(&pos);
+        let f = get(b, 0x7f8);
+        put(b, 0x7f8, f | 0x80);
+        let w = get(b, 0x55c);
+        put(b, 0x89c, w);
     }
 }
 

@@ -174,7 +174,7 @@ pub fn run_area_with(area: &Area, programs: [u8; 3], entrance: u8, ctx: &mut Scr
     let mut vars = ScriptVars { lcg: ctx.lcg, ..ScriptVars::default() };
     let mut c = Collector { run: ScriptRun::default(), script: "map", program: 0, ctx };
     for (k, script) in SCRIPTS.iter().enumerate() {
-        // FUN_00180a68 compares the program's signed halfword id with the record byte.
+        // FUN_00180a68 (see `find_program`) compares the program's signed halfword id with the record byte.
         let Some(p) = area.scripts.get(*script).and_then(|ps| ps.iter().find(|p| p.id == programs[k] as u16)) else { continue };
         c.script = script;
         c.program = p.id;
@@ -290,8 +290,42 @@ impl crate::Activator {
         match self.shape {
             0 => x.abs() <= sx && y.abs() <= sy && z.abs() <= sz,
             1 => y.abs() <= sy && (x / sx) * (x / sx) + (z / sz) * (z / sz) <= 1.0,
-            2 => true,
+            2 => shape_always_inside() != 0,
             _ => false,
+        }
+    }
+}
+
+/// The volume test of shape 2: every point is inside.
+///
+/// orig 0x334388
+pub fn shape_always_inside() -> u32 {
+    1
+}
+
+/// Finds a script program by id in a chain of program records and hands it to the parser. A record is a signed halfword id, a signed
+/// halfword offset of the next record (in bytes, from this record) and the program from +4; the chain ends at id -1. `id` is the full
+/// register the caller passes: it matches a record whose id, sign-extended, equals it. `read16(addr)` reads a halfword of the area
+/// file; `parse(start, program)` is the parser `0x180ad8` called with the chain's start and the matching record's program address.
+/// Returns whether a record matched.
+///
+/// orig 0x180a68
+pub fn find_program(read16: &mut dyn FnMut(u32) -> u16, start: u32, id: u64, parse: &mut dyn FnMut(u32, u32)) -> bool {
+    let mut rec = start;
+    let mut cur = read16(rec) as i16;
+    if cur == -1 {
+        return false;
+    }
+    loop {
+        let next = rec.wrapping_add(read16(rec.wrapping_add(2)) as i16 as i32 as u32);
+        if cur as i64 as u64 == id {
+            parse(start, rec.wrapping_add(4));
+            return true;
+        }
+        cur = read16(next) as i16;
+        rec = next;
+        if cur == -1 {
+            return false;
         }
     }
 }

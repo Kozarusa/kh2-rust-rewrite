@@ -131,3 +131,99 @@ pub fn reset_if(q: &mut Queue, a: i32, b: i64) {
 pub fn reset(q: &mut Queue) {
     reset_if(q, 1, 0xffff);
 }
+
+/// What the completion pass needs of the rest of the game: memory words (the request records, the queue objects), calls of the
+/// original's functions that belong to other units (the cache flush, the BAR fix-up, the completion callbacks, the file unit's
+/// special-read hook) and virtual calls (method `slot`, a word index, of the object at `obj`). The oracle logs every call on both sides.
+pub trait QueueHost {
+    fn read32(&mut self, addr: u32) -> u32;
+    fn write32(&mut self, addr: u32, v: u32);
+    /// A call of the original function at `callee`; the arguments are the argument registers (32-bit values sign-extended).
+    fn call(&mut self, callee: u32, args: &[u64]) -> u64;
+    /// A virtual call: method `slot` of `obj`'s function table, `obj` first.
+    fn vcall(&mut self, obj: u32, slot: u32, args: &[u64]) -> u64;
+}
+
+fn sx(v: u32) -> u64 {
+    v as i32 as i64 as u64
+}
+
+/// The completion pass of the file unit (a root task at priority 400000): walks the list from the head, and for every request whose
+/// state is 2 (done) flushes the cache (`0x318620`), runs its completion (kind 0: the callback with destination, result and argument;
+/// kind 1: the BAR fix-up `0x168570` when the read produced a result, else the destination is cleared, then the callback; kind 2: flush
+/// mode 2, the special-read hook `0x1f1801c`, the callback with its argument; other kinds: nothing), unlinks the record from the list
+/// (moving the tail word back to its predecessor when it was the last), clears its link and hands it back to the pool object at the word
+/// 0x33e69c (its method 1). The next request is read before the completion, so a callback that edits the list does not derail the walk.
+///
+/// orig 0x168010
+pub fn completion_pass(q: &mut Queue, host: &mut impl QueueHost) {
+    let mut p = q.head;
+    loop {
+        let cur;
+        loop {
+            if p == 0 {
+                return;
+            }
+            let c = p;
+            p = host.read32(c);
+            if host.read32(c + 4) == 2 {
+                cur = c;
+                break;
+            }
+        }
+        host.call(0x318620, &[0]);
+        let kind = host.read32(cur + 0x30) as i32;
+        match kind {
+            1 => {
+                if host.read32(cur + 0x40) == 0 {
+                    host.write32(cur + 0x34, 0);
+                } else {
+                    let dest = host.read32(cur + 0x34);
+                    host.call(0x168570, &[sx(dest)]);
+                }
+                finish_read(host, cur);
+            }
+            0 => finish_read(host, cur),
+            2 => {
+                host.call(0x318620, &[2]);
+                host.call(0x1f1801c, &[]);
+                let cb = host.read32(cur + 0x38);
+                if cb != 0 {
+                    let arg = host.read32(cur + 0x3c);
+                    host.call(cb, &[sx(arg)]);
+                }
+            }
+            _ => {}
+        }
+        let next = host.read32(cur);
+        let prev;
+        if cur == q.head {
+            q.head = next;
+            prev = 0;
+        } else {
+            let mut pr = q.head;
+            let mut at = host.read32(pr);
+            while at != cur {
+                pr = at;
+                at = host.read32(at);
+            }
+            let after = host.read32(cur);
+            host.write32(pr, after);
+            prev = pr;
+        }
+        if cur == q.tail {
+            q.tail = prev;
+        }
+        host.write32(cur, 0);
+        let pool = host.read32(0x33e69c);
+        host.vcall(pool, 1, &[sx(cur)]);
+    }
+}
+
+fn finish_read(host: &mut impl QueueHost, cur: u32) {
+    let cb = host.read32(cur + 0x38);
+    if cb != 0 {
+        let (dest, result, arg) = (host.read32(cur + 0x34), host.read32(cur + 0x40), host.read32(cur + 0x3c));
+        host.call(cb, &[sx(dest), sx(result), sx(arg)]);
+    }
+}

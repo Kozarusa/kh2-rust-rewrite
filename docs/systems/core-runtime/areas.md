@@ -260,8 +260,8 @@ entrance, map, btl, evt; 0xff keeps the current one).
   program bytes take effect (the game restarts the area thread on every jump) [inferred].
   **WP-JT3** (types 4 to 6 and the record's words 4 to 6; `area_jump::resolve_record`, `type4_dest`, `JumpExtras`).
   Type 4 (`FUN_0019d9d8` case 4 -> `FUN_00149df0`, fade kind always 1) [V]: flag 0x1071 set and 0x1072 clear and one of
-  0x140f / 0x1822 / 0x200b set -> world 4, area 0, entrance 0, programs kept; else one of 0x8cd / 0x3834 / 0x1c1c ->
-  `FUN_00198080(0x40, 0x12)` (world 0x12); in both the record's world byte is remembered in `DAT_01c8bd90`
+  0x140f / 0x1822 / 0x200b set -> world 4, area 0, entrance 0, programs kept; else 0x8cd clear and one of 0x3834 / 0x1c1c set ->
+  `FUN_00198080(0x40, 0x12)` (world 0x12; a set 0x8cd goes to the world map, section 2a); in both the record's world byte is remembered in `DAT_01c8bd90`
   (`Type4Memory`). Otherwise the world map: world 0xf, area 0, entrance `FUN_00149db8(world)` (searches the 15
   `(entrance, world)` pairs at 0x3790a8, read from the executable at run time, 0 when absent), where the remembered byte
   replaces the record's world and is forgotten [inferred: that the caller passes the remembered byte as the world
@@ -410,6 +410,49 @@ group has a walk-in volume (option 0) and a prompt volume (option 1 or 2). Examp
 community's names) -> tt03 entrance 0; tt03 -> tt02, tt04, tt06, tt37 (entrance 1), tt05, tt04; tt04 (the
 Sandlot) -> tt03, tt06, tt07 (entrance 1 each); tt06 -> tt03, tt04, tt07, tt08, tt05, tt04; tt08 -> tt06, tt09,
 tt37; tt40 -> tt19 and area 100. The full list is in the test output.
+
+## 2a. Area control port (WP-L1-P6)
+
+`crates/kh2-game-core/src/area.rs`, module `ctl`, ports the area change on the original's byte layouts, and `crates/kh2-game-core/tests/orig_area.rs`
+runs the original (kh2-ee, 123 tests, 38,000 cases over seven scenarios) against it. The state is the row of globals from 0x33e828: the
+active byte, the current place (0x33e830), the destination of the jump in progress (0x33e838), the last exit (0x33e840), the previous place
+(0x33e848), the allocator (0x33e850) and the jump task (0x33e854), plus the area thread's gate byte (0x3b2180) and saved destination
+(0x3b2188); the place bytes in the save block (+0xc, +0xd, +0xe) and the per-area program table (+0xf) are written through a slice. A place is six
+bytes (world, area, entrance, map, btl and evt program). Everything asked of other units (fades, task creation, party reset, story flags,
+the loaded files' memory, virtual calls) goes through the `AreaHost` trait; the oracle lays the same memory on both sides, makes every callee of
+another unit a stand-in that logs its address and arguments (low 32 bits; float arguments of `FUN_001abf40` are the registers f12 to f14) and
+compares the log, every byte of the windows and the arenas after each case.
+
+Ported and verified [V, oracle]: the merge of program bytes (0x104b90) and the destination apply (0x104bd0, 0x105188); the reset of all five
+records (0x1052e0, 0x105420: it fires only for the arguments (1, 0xffff)); the jump start (0x104e18: with the gate set it only records the fade kind and the
+saved destination), the jump task (0x104d58), the area-thread start (0x104c68), the area start and end (0x1047a8, 0x104b60, 0x104ce0) with their
+call runs (0x1688a0, 0x168928, 0x168960, 0x168ae0, 0x168b10, 0x168ba8, 0x168ca0, 0x168ce8, 0x149b08, 0x149b40, 0x149ba0, 0x149bb8, 0x149cb8, 0x149ce0,
+0x149d40, 0x149d78); the area allocator (0x105250 create, 0x1052a0 destroy, 0x104fa8 and 0x104fe0 the virtual calls, 0x105f18..0x105fd8 the object);
+the place names (0x105010, 0x105098, 0x105d60, 0x149db8); the exit walk-in (0x198fa0), the world-map jump (0x149df0), the title task (0x149f38,
+0x149eb0), the local-set lookup (0x198080), the record parser and player (0x19d8d0, 0x19d8f0, 0x19d9c8, 0x19d9d8); the group records (0x198300,
+0x198328, 0x198340 and its twin 0x198430, 0x1985f8 and its twin 0x198660, 0x199698, 0x19a308, 0x19a3b8, 0x19a3d8, 0x1982c8) and the group handlers
+(0x1981a0, 0x1986c8, 0x198920, 0x198b30, 0x198e10, 0x1989d8, 0x199378, 0x199398, 0x1993f8, 0x199580, 0x1995c8, 0x1996f0, 0x199930, 0x199bf8,
+0x199c48, 0x199c70, 0x199ca0, 0x199cc0, 0x199d18, 0x199d68, 0x199e10, 0x199e98, 0x199f70); the area-info table readers (0x1933a0..0x1935e8,
+0x193380, 0x193ef8); the camp-poll leaves (0x149fa8..0x14a060, 0x14a1e0, 0x149f70).
+
+What the oracle showed [V]:
+- Type 4, second case: the old reading "one of 0x8cd, 0x3834, 0x1c1c set" was wrong. Flag 0x8cd set sends the record to the world map; the story case
+  needs 0x8cd clear and 0x3834 or 0x1c1c set (`FUN_0019d9d8` tests 0x8cd first and goes to the world-map label when it is set).
+- The end of `FUN_0019d9d8` has a story override that the app lacked: with flag 0x872 clear and 0x86e, 0x86f, 0x870, 0x871 all set, every jump that has a
+  destination (types 1 to 3 and the first two cases of type 4) goes to `FUN_00198080(0x7a, 2)` (world 2, the first area the table lists for key 0x7a,
+  entrance 0, programs 0x7a) instead.
+- The "menu before" code: 1 opens the camp page 0 and 2 page 2 (after `FUN_001d73d0`), and every non-zero code sets the jump's wait to 2 ticks, also codes
+  other than 1 and 2, which open no menu.
+- The jump task's party reset argument is the reset word itself (the register is still loaded from the task block), and `FUN_001abfe8` runs before
+  the area is unloaded; `FUN_00102498` (the task end) clears the task's function word.
+- The area group's event argument is passed as an unsigned halfword (`FUN_001975e0`, `FUN_00197838`, `FUN_00197870` get 0x0000fffd for -3).
+
+The app (`crates/kh2-event/src/area_jump.rs`, `crates/kh2-game-core/src/area.rs` `run_area_script`) now calls `ctl::world_map_entrance` for the world-map
+entrance and `ctl::merge_programs` for the jump's program bytes, and it carries the three fixes above (`type4_dest`, `story_override`, `delay_ticks`).
+Not wired: the rest of the port has no host in the app yet (its own fade, task and menu paths do the work). Not ported here: the area thread
+`FUN_001048e0` (two yield loops), the pause-poll task `FUN_0014a080`, the object constructors `FUN_001692f8` and `FUN_001694f4`, `FUN_00168d30`,
+`FUN_00193610` (the file-table loader), `FUN_001698d0`, the kind-4 handler `FUN_00199b18`, the VU0 handlers `FUN_00199058` and `FUN_00198c98`,
+`FUN_00198c18`, and the random-position placement `FUN_00199970` and `FUN_00199a80`; the callees the host stands in for belong to other units.
 
 ## 7. Area music
 

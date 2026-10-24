@@ -832,11 +832,13 @@ struct Cmds<'a> {
 
 impl Cmds<'_> {
     /// The spell command of a slot (`FUN_001a4dd0`): the row the slot's level picks.
+    /// orig 0x1a4dd0
     fn spell(&self, slot: u8) -> u16 {
         crate::magic_rules::pick_row(&self.md.magc, slot, self.p.spell_level(slot), self.md.world).map_or(0, |r| r.command)
     }
 
     /// `FUN_001a1f78`.
+    /// orig 0x1a1f78
     fn of_item(&self, id: u16) -> u16 {
         let Some(it) = self.p.items().get(id) else { return 0 };
         match it.kind {

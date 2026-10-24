@@ -141,6 +141,7 @@ impl TexAnim {
     }
 
     /// FUN_0011e850: every TEXA that has `slot` in its slot table plays that animation this field.
+    /// orig 0x11e850
     fn play_slot(&mut self, slot: u32) {
         let anims = self.anims.clone();
         for (i, t) in anims.texa.iter().enumerate() {

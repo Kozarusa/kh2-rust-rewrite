@@ -85,6 +85,7 @@ impl Wldf {
     /// key with `+0`); the same probe order, so a repeated key gives the same record [the compare
     /// function `0x332e08` has no decompilation: a plain unsigned compare is assumed, the oracle in
     /// `progress.rs` shows the result agrees for every record].
+    /// orig 0x1b68c0
     pub fn find(&self, key: u8) -> Option<&WorldFlag> {
         let n = self.records.len();
         // `span` is the search span of the game's compare loop, `top` its upper bound and `lo` its lower bound.

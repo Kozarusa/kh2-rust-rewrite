@@ -35,25 +35,6 @@ struct WindowMemory {
     config: config::Config,
 }
 
-/// F11 and Alt+Enter toggle borderless fullscreen; the current size is noted for the config file.
-fn window_settings(keys: Res<ButtonInput<KeyCode>>, mut memory: ResMut<WindowMemory>, mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
-    let Ok(mut window) = windows.single_mut() else { return };
-    let alt_enter = keys.just_pressed(KeyCode::Enter) && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
-    if keys.just_pressed(KeyCode::F11) || alt_enter {
-        window.mode = if matches!(window.mode, bevy::window::WindowMode::Windowed) {
-            bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
-        } else {
-            bevy::window::WindowMode::Windowed
-        };
-    }
-    let full = !matches!(window.mode, bevy::window::WindowMode::Windowed);
-    memory.config.fullscreen = Some(full);
-    if !full {
-        memory.config.width = Some(window.width().round() as u32);
-        memory.config.height = Some(window.height().round() as u32);
-    }
-}
-
 /// Writes the remembered window settings when the game exits.
 fn save_window_settings(mut exits: MessageReader<AppExit>, memory: Res<WindowMemory>) {
     if exits.read().next().is_some() {
@@ -118,7 +99,8 @@ Put the file in the same folder as kh2-game.exe, or in %APPDATA%\\kh2-rs. The ga
             std::env::set_var("KH2_NO_MUSIC", "1");
         }
     }
-    let present_mode = if turbo { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
+    let no_vsync = turbo || std::env::var("KH2_VSYNC").is_ok_and(|v| v.trim() == "0");
+    let present_mode = if no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::AutoVsync };
     // The remembered window size and fullscreen apply to the release build and the window flags, never to harness runs.
     let remember = release || opts.windowed || opts.fullscreen;
     let saved = if remember { config::Config::load(&dir) } else { config::Config::default() };
@@ -133,10 +115,56 @@ Put the file in the same folder as kh2-game.exe, or in %APPDATA%\\kh2-rs. The ga
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(window), ..default() }));
     if remember {
-        app.insert_resource(WindowMemory { dir, config: saved }).add_systems(Update, window_settings).add_systems(Last, save_window_settings);
+        app.insert_resource(WindowMemory { dir, config: saved }).add_systems(Last, save_window_settings);
     }
     if turbo {
         kh2_game_core::harness::configure_turbo(&mut app);
     }
+    if !turbo {
+        app.add_systems(Update, window_modes);
+    }
     app.add_plugins(plugins::GamePlugins { iso, start }).run();
+}
+
+/// The one window system: F11 and Alt+Enter toggle borderless fullscreen and the size is noted for the config file (when
+/// the settings are remembered); Numpad - toggles uncapped rendering (`KH2_VSYNC=0` starts it). One title state machine: the title names the vsync mode while it is off
+/// and the field rate for 2 seconds after Numpad + (Numpad + is `schedule::toggle_field_hz`; no other handler reads either key).
+fn window_modes(
+    keys: Res<ButtonInput<KeyCode>>,
+    clock: Res<kh2_game_core::schedule::FrameClock>,
+    shown: Res<kh2_game_core::schedule::FieldHzShown>,
+    mut memory: Option<ResMut<WindowMemory>>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+) {
+    use bevy::window::PresentMode::{AutoNoVsync, AutoVsync};
+    let Ok(mut w) = windows.single_mut() else { return };
+    let alt_enter = keys.just_pressed(KeyCode::Enter) && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
+    if keys.just_pressed(KeyCode::F11) || alt_enter {
+        w.mode = if matches!(w.mode, bevy::window::WindowMode::Windowed) {
+            bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+        } else {
+            bevy::window::WindowMode::Windowed
+        };
+    }
+    if let Some(memory) = memory.as_mut() {
+        let full = !matches!(w.mode, bevy::window::WindowMode::Windowed);
+        memory.config.fullscreen = Some(full);
+        if !full {
+            memory.config.width = Some(w.width().round() as u32);
+            memory.config.height = Some(w.height().round() as u32);
+        }
+    }
+    if keys.just_pressed(KeyCode::NumpadSubtract) {
+        w.present_mode = if matches!(w.present_mode, AutoNoVsync) { AutoVsync } else { AutoNoVsync };
+    }
+    let mut title = String::from("kh2-rs");
+    if matches!(w.present_mode, AutoNoVsync) {
+        title.push_str(" [vsync off]");
+    }
+    if shown.0 > 0 {
+        title.push_str(&format!(" [field {} Hz]", clock.field_hz()));
+    }
+    if w.title != title {
+        w.title = title;
+    }
 }

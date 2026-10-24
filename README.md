@@ -82,6 +82,8 @@ Automated checks use these environment variables:
 - `KH2_VIEW_SLOT=<slot>`: open the motion viewer on that slot.
 - `KH2_NO_ENEMIES=1`: disable enemy waves.
 - `KH2_FPS=1`: log the frame rate.
+- `KH2_FIELD_HZ=30|60`: field logic rate (default 60 for play, smooth; 30 is the original's cadence and the default for rig and turbo runs); Numpad + toggles in game.
+- `KH2_VSYNC=0`: uncapped rendering (vsync is the default); Numpad - toggles in game.
 
 ## Tools
 

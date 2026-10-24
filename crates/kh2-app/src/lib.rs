@@ -50,7 +50,8 @@ pub fn run() {
             std::env::set_var("KH2_NO_MUSIC", "1");
         }
     }
-    let present_mode = if turbo { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
+    let no_vsync = turbo || std::env::var("KH2_VSYNC").is_ok_and(|v| v.trim() == "0");
+    let present_mode = if no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::AutoVsync };
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window { title: "kh2-rs".into(), focused: front, window_level: level, present_mode, ..default() }),
@@ -59,5 +60,33 @@ pub fn run() {
     if turbo {
         kh2_game_core::harness::configure_turbo(&mut app);
     }
+    if !turbo {
+        app.add_systems(Update, window_modes);
+    }
     app.add_plugins(plugins::GamePlugins { iso, start }).run();
+}
+
+/// Numpad - toggles uncapped rendering (`KH2_VSYNC=0` starts it). One title state machine: the title names the vsync mode while it is off
+/// and the field rate for 2 seconds after Numpad + (Numpad + is `schedule::toggle_field_hz`; no other handler reads either key).
+fn window_modes(
+    keys: Res<ButtonInput<KeyCode>>,
+    clock: Res<kh2_game_core::schedule::FrameClock>,
+    shown: Res<kh2_game_core::schedule::FieldHzShown>,
+    mut windows: Query<&mut Window>,
+) {
+    use bevy::window::PresentMode::{AutoNoVsync, AutoVsync};
+    let Ok(mut w) = windows.single_mut() else { return };
+    if keys.just_pressed(KeyCode::NumpadSubtract) {
+        w.present_mode = if matches!(w.present_mode, AutoNoVsync) { AutoVsync } else { AutoNoVsync };
+    }
+    let mut title = String::from("kh2-rs");
+    if matches!(w.present_mode, AutoNoVsync) {
+        title.push_str(" [vsync off]");
+    }
+    if shown.0 > 0 {
+        title.push_str(&format!(" [field {} Hz]", clock.field_hz()));
+    }
+    if w.title != title {
+        w.title = title;
+    }
 }

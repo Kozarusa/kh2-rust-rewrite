@@ -52,7 +52,7 @@ No. It is a re-creation. It aims to behave like the original, and it is checked 
 
 ## For developers
 
-Quick start: `cargo run -p kh2 -- set-iso "path	o\Kingdom Hearts II (USA).iso"` then `cargo run --release -p kh2-app`.
+Quick start: `cargo run -p kh2 -- set-iso "path\to\Kingdom Hearts II (USA).iso"` then `cargo run --release -p kh2-app`.
 
 ## Credits and licenses
 

@@ -25,6 +25,7 @@ pub mod pad;
 pub mod party_rules;
 pub mod progress;
 pub mod progress_flags;
+pub mod props;
 pub mod reaction_parts;
 pub mod reaction_rules;
 pub mod rig;

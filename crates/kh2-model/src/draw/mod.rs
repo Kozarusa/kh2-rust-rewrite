@@ -16,6 +16,7 @@
 //! which is exactly 0.75: the picture is a 4:3 frustum drawn into the 512 by 416 buffer with non-square pixels.
 
 pub mod frustum;
+pub mod props;
 pub mod shadow;
 
 /// The address of the view index word (`0x349e40`).

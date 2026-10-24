@@ -87,8 +87,11 @@ impl CallHost for Log {
     }
 }
 
+/// A shared log of stand-in calls: the callee and its argument registers.
+type CallLog = Rc<RefCell<Vec<(u32, Vec<u64>)>>>;
+
 /// Hooks that log the call (callee and the first `n` argument registers) into `log`; they return 0.
-fn log_hooks(ee: &mut Ee, log: &Rc<RefCell<Vec<(u32, Vec<u64>)>>>, addrs: &[(u32, usize)]) {
+fn log_hooks(ee: &mut Ee, log: &CallLog, addrs: &[(u32, usize)]) {
     for &(a, n) in addrs {
         let l = log.clone();
         ee.hooks.insert(a, move |ee: &mut Ee| {
@@ -140,8 +143,8 @@ fn orig_14eca0_matches_the_game() {
         let game: Vec<f32> = (0..3).map(|i| ee.f32_at(OUT + 4 * i)).collect();
         let mut ramp = Ramp::default();
         ramp.set(a, b, c);
-        for i in 0..3 {
-            assert_eq!(game[i].to_bits(), ramp.0[i].to_bits(), "case {n}: word {i}: args {a} {b} {c}: game {} port {}", game[i], ramp.0[i]);
+        for (i, (g, p)) in game.iter().zip(ramp.0.iter()).enumerate() {
+            assert_eq!(g.to_bits(), p.to_bits(), "case {n}: word {i}: args {a} {b} {c}: game {g} port {p}");
         }
         assert_eq!(ee.r32(OUT + 12), tail, "case {n}: the fourth word stays");
     }
@@ -456,12 +459,12 @@ fn mode_switch_check(addr: u32, calls: &[(u32, usize)], port: impl Fn(&mut Log))
 
 #[test]
 fn orig_1021c0_matches_the_game() {
-    mode_switch_check(0x1021c0, &[(0x167878, 0), (0x14a220, 0)], |p| modes::disable(p));
+    mode_switch_check(0x1021c0, &[(0x167878, 0), (0x14a220, 0)], modes::disable);
 }
 
 #[test]
 fn orig_1021e0_matches_the_game() {
-    mode_switch_check(0x1021e0, &[(0x1678b0, 0), (0x14a230, 0)], |p| modes::enable(p));
+    mode_switch_check(0x1021e0, &[(0x1678b0, 0), (0x14a230, 0)], modes::enable);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -1111,7 +1114,7 @@ fn orig_102340_matches_the_game() {
 // ---------------------------------------------------------------------------------------------------------------------------------
 // Yield and wait, with the context switch itself stubbed (a hook that logs the two buffers it would switch between).
 
-fn switch_world(what: &str) -> Option<(TW, Rc<RefCell<Vec<(u32, Vec<u64>)>>>)> {
+fn switch_world(what: &str) -> Option<(TW, CallLog)> {
     let mut w = TW::new(what)?;
     let log = Rc::new(RefCell::new(Vec::new()));
     log_hooks(&mut w.ee, &log, &[(0x105510, 2)]);
@@ -1191,7 +1194,7 @@ impl TW {
     }
 
     /// Starts the mode on both sides; returns the stand-in call logs (game, port).
-    fn start_mode(&mut self, mode: u32, root: u32, calls: &Rc<RefCell<Vec<(u32, Vec<u64>)>>>) -> Vec<(u32, Vec<u64>)> {
+    fn start_mode(&mut self, mode: u32, root: u32, calls: &CallLog) -> Vec<(u32, Vec<u64>)> {
         calls.borrow_mut().clear();
         let before = self.tasks.live_tasks();
         self.call(0x102070, &[mode as u64]);
@@ -1504,8 +1507,7 @@ fn orig_102a60_matches_the_game() {
         let mut p = begin(&mut w.ee, &st, &mut r, &wins, &rules);
         w.ee.w32(0x33e70c, next);
         p.put(0x33e70c, &next.to_le_bytes());
-        let mut ctl = AreaCtl::default();
-        ctl.task_mgr = r.word() as u32;
+        let mut ctl = AreaCtl { task_mgr: r.word() as u32, ..AreaCtl::default() };
         let prev = p.bytes(0x33e848, 6);
         ctl.prev.copy_from_slice(&prev);
         call(&mut w.ee, 0x102a60, &[], &[]);

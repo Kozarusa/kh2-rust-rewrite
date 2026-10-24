@@ -125,8 +125,8 @@ The target point the app uses is the locked enemy's position raised 100; the gam
 ## The drawn view and the player (WP-L2-S1)
 - The player's stick is mapped by the drawn view (smoothed position +0x10 to look-at +0x00, after collision, via `FUN_00107160` and the
   matrix of `FUN_00106f78`), not by the orbit yaw +0x4c (`controller.md` "The stick vector"). The port maps it by `OrbitCamera.yaw`.
-- The auto-camera and zoom read the pad's sticks; the port's `camera::tick` reads the keyboard only, so a rig pad script never turns
-  the camera. Rig tt-run-06: both cameras stand at x 870 (the room's camera collision [inferred]); the original's slides to z 405 by
+- The auto-camera and zoom read the pad's sticks. (Until WP-L2-P2 the port's `camera::tick` read the keyboard only, so a rig pad script
+  never turned the camera; see "Pad sticks, the frame step and the oracle" below.) Rig tt-run-06: both cameras stand at x 870 (the room's camera collision [inferred]); the original's slides to z 405 by
   k 80 while the port's stays at 390.6.
 - Quick Run camera speed: the smoothing time and the auto-camera rate take the followed object's run speed +0x114 each tick, so they
   follow whatever writes +0x114; the port passes the `prty` row's RunSpeed. Quick Run (`FUN_00178108`) writes its speed into the move
@@ -153,6 +153,15 @@ The target point the app uses is the locked enemy's position raised 100; the gam
   0x355840, and the port's `Rig` on the same values. The yaw of the original is `PI` minus the port's yaw (the port's Y-up mirror).
   Not covered: modes 1 to 10 of 0x140a80, the script flag `+0x39`, Select, the event camera. The logical stick bits of the pad layer
   (`FUN_00157f98` and its three siblings) are stubbed from the stick's direction [inferred].
+- **Rig result** (`movement/tt-run-06`, 2026-10-24): the camera rows pass at k 40 to 320 (position within 1.1 cm, look-at point within 2.1 cm,
+  the latter being Sora's own offset); `core-runtime/area-change` k 42 to 120: camera and Sora within 0.26 cm, facing within 5e-5, then
+  the original's Sora is deflected and slowed by an obstacle at about (660, -380) that the port does not have (not a camera matter).
+  Remaining camera-side residue: the eye sits 1 cm off in z from the first moving frame on in tt-run-06, because Sora's facing differs by
+  0.15 degrees at k 42 (original 57.25 degrees, port 57.43) and the auto-camera follows the facing; the cause is in the heading or the
+  turn (WP-L2-P1's code), not found.
+- **Gaps**: the rotation of `FUN_0013f7a0` is the game's own sine series (`FUN_002fb628`, `FUN_002fb460`; the cosine is the root of one minus
+  the sine squared), the port uses libm: positions differ by up to 5e-4 of the radius near a quarter turn. The script flag `+0x39`
+  (`FUN_00140288`) has no port counterpart. `FUN_0019ae68` (the player's up-down flag that skips the zoom unless R2 is held) is not modelled.
 
 ## Area camera types -- verified unless marked
 

@@ -267,6 +267,44 @@ when the world map builds its props. The episode list removal of 0xd and the map
 gaps: docs/systems/worldmap-gummi/worldmap-plan.md section 10 (W2).
 - WM10: the world boot is ported (`Story::world_boot`). `FUN_001b6870` clears the eight flag words at 0x3418a4 and the queue count byte 0x3419c3, sets world flag 0 (`FUN_001b68f8(0)`) and drains the queue with hook argument 0 (`FUN_001b6e60`, `FUN_001b68c0` finds the record, `FUN_001b6a48(record, 0)` runs the list). It has one caller chain: `FUN_00187d20` <- `FUN_00105638` (the game-state constructor) <- `FUN_00101d68`, after `FUN_001688a0` -> `FUN_0017fd10` has loaded the `wldf` table [V: `mips_scan --jal` finds no other caller of 0x1b6870, 0x1b6e60, 0x187d20 or 0x105638]. The save block's static initialiser `FUN_001057b8` clears the world region (`FUN_0032c550(0x341858)`) without calling it, and nothing else re-runs it, so the boot is the process start-up state: the app applies it to the new game (after the table is read) and a loaded save replaces the whole world region afterwards (`world_state`). On the disc flag 0's list writes route states 1 to 20 to 0 and route 21 to 2; every other state starts 0. A state file without `world_state` keeps the boot's region.
 
+## Save remainder (WP-L1-P17)
+
+Ported on the save block's byte layout and compared with the game's code by `crates/kh2-game-core/tests/orig_save2.rs` (kh2-ee, 1,000 to
+4,000 random cases each; stand-ins listed in the file's header):
+
+- The world flags and their queue, over the world region (the bytes from `0x341858`, `save_block::at::WORLD_RECORDS`): `FUN_001b6a18`
+  (`world_flag_check`), `FUN_001b68f8` (`world_flag_set`), `FUN_001b6e20` (`world_take_queue`), `FUN_001b6e60` (`world_drain`), `FUN_001b6870`
+  (`world_boot`) and `FUN_002c6d60` (`world_record_order`, the menu's sort key: byte +2 of the `wldf` record, which `Wldf` does not keep, so
+  `Story` answers 0). The queue write goes through a count byte that wraps: with 255 queued flags the next write lands on the count byte itself
+  (both the original and the port do this). `Story` runs these ports on its world array (`world_flag_set`, `world_boot`, `world_consume_queue`
+  are the same code); the list runner `FUN_001b6a48` is `run_world_list` in `progress.rs` (its ops are still not oracle-tested). The boot test
+  `orig_105638_matches_the_game` now runs the real `FUN_001b6870` in the original and compares the world region of the whole new-game block.
+- The full story flag setter `FUN_0017ff60` (`progress_flags::set_flag_full`) on the whole save block with the loaded tables passed in
+  (`SetterTables`): the flag bit, then the side-effect list of the flag's world: op 1 area programs (`FUN_00104b90`), 2 lock state and message
+  (`FUN_00195260`), 3 open a lock (`FUN_00195288`), 4 and 5 lock or open and clear the lock's world point (`FUN_001952a0`, `FUN_00195300`,
+  `FUN_00194f68`, `FUN_00194fd8`), 6 the record byte of the world (`FUN_001a7730`), 7 clear flags, 8 and 9 set and clear record bits
+  (`FUN_001a52b0`, `FUN_001a52f0`), 0xc set flags (recursion), 0xd the world record's bytes 1 and 2, other ops nothing. The ten calls after
+  the list (`FUN_001803b0`, `FUN_00180450`, `FUN_001805d0`, `FUN_00180558`, `FUN_001d39d0`, `FUN_001d3238`, `FUN_001b6da0`, `FUN_001be9c8`,
+  `FUN_001d5718`, `FUN_00195130`) go through `SetterTail`, so a caller (and the oracle) sees their order and arguments; `FUN_0019d890` runs for flag 0x8d0.
+  Not wired: `Story::set` keeps its own storage (flag words, program table, locks, world array apart) and still acts on ops 1 to 5, 7, 0xc, 0xd only;
+  ops 6, 8 and 9 and the world point clears stay recorded as unported there. Moving `Story` onto the one block is the follow-up.
+- `FUN_0014ca28` (`save_block::play_time_tick`): the play-time word at `+0x1604` and, while the counting word `0x33e6fc` is set and the world
+  byte `0x33e830` is below 0x13, the word of that world at `+0x160c + 4 * world`; each stops at 0xcdfe5c4. Not called by the app yet (the vblank
+  handler `FUN_0014cc88` is `frame::Vsync::vblank`, which has no save block).
+- `FUN_00187e68` (`save_block::defeat_count`), `FUN_001878b0` (`Progress::experience_to_next`, compared on the disc's `lvup` blob; level 0 reads
+  before the table in the original and is left out), `FUN_001a6810` (`find_chest`) and `FUN_001be4b8` (`find_record_by_id`) over tables behind
+  their pointers. The `0x1803b0` oracle (`orig_story.rs`) now also draws ids outside the five removal ids.
+- The record bits (`+0x1550`, 23 words) live in `Progress`'s raw `SaveBlock` (accessors `record_bit`, `set_record_bit`); a bit past the 23 words is
+  ignored (it was kept in a side array before and dropped by `save_image`). The slot file key `record_bits` keeps its form. The moogle record and
+  the journal pairs stay in the app's own storage: `Moogle` is a public struct with bit sets the menu crate edits in place, and the journal keeps
+  (category, entry) pairs whose per-category bit offsets are not known (`journal_seen`, marked [inferred] in the code), so moving them is not
+  behaviour-neutral and was left.
+- Left unported on purpose: the other `core.save` rows of the ledger are mislabelled non-save code (debug display and video set-up at
+  `0x152e90`, `0x166fd0` to `0x167600`, `0x239ac8`, `0x239b20`; script trap wrappers `0x16df98`, `0x16e120`, `0x16e140`, `0x16e1a0`, `0x16e1c0`,
+  `0x19ef40`, `0x254038`, `0x2540a8`; table pointer setters `0x1a6800`, `0x1af928`, `0x1af940`, `0x1b50b0`, `0x1b6860`, `0x1bea98`,
+  `0x1c6cd0`, `0x1d3900`; `0x16e160`, `0x1ddff0` empty; `0x1875b0` the tail of `FUN_001875c8`'s clearing loop; `0x190f00`, `0x16e1e0`, `0x1d13f8`,
+  `0x1b5718`, `0x1a6778`, `0x1a4da0` table or UI helpers).
+
 ## Decompile index
 
 | address | what |

@@ -567,9 +567,9 @@ pub struct Progress {
     /// The "seen" words of the NEW tags (save `+0x31b4`, docs/systems/ui/menus-new-help.md 16.1) as a save slot carries them: empty until a slot
     /// that holds them is loaded or the menu stores them (`set_new_seen`).
     new_seen: Vec<u32>,
-    /// The record bits (the word array at `0x33fdb0`, save `+0x1550`, outside the party block): `FUN_001a5328` tests
-    /// bit n, `FUN_001a52b0` sets it. The shops read and set them (`menu_shop::stock`); nothing else in the app does yet.
-    record_bits: Vec<u32>,
+    // The record bits (the word array at `0x33fdb0`, save `+0x1550`, outside the party block; `FUN_001a5328` tests bit n, `FUN_001a52b0` sets
+    // it; the shops read and set them, `menu_shop::stock`) live in `save` at that offset: `RECORD_WORDS` words (accessors `record_bit`,
+    // `set_record_bit`).
     /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/systems/ui/menus-shop.md 23), read and written by the shop's
     /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Saved in the slot files (key `moogle`).
     pub moogle: Moogle,
@@ -735,7 +735,7 @@ impl Progress {
         self.save.party()
     }
 
-    /// The save block as the original lays it out. Only the regions `Progress` keeps in it are current: the party block, the munny, the
+    /// The save block as the original lays it out. Only the regions `Progress` keeps in it are current: the party block, the record bits, the munny, the
     /// option word, the game mode and the shops' words. Use [`Progress::save_image`] for the whole image.
     pub fn save(&self) -> &SaveBlock {
         &self.save
@@ -756,7 +756,7 @@ impl Progress {
     }
 
     fn with_save(save: SaveBlock, items: Arc<ItemIndex>) -> Progress {
-        Progress { rig: RigStart::default(), save, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
+        Progress { rig: RigStart::default(), save, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, story: StoryHandle::default(), new_seen: Vec::new(), moogle: Moogle::default(), journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -1233,17 +1233,37 @@ impl Progress {
     }
 
     /// `FUN_001a5328`: record bit `n` (the array at `0x33fdb0`) is set.
+    ///
+    /// The array is the save block's 23 words from `+0x1550`; a bit past them reads as clear [inferred: the original's array runs on into the
+    /// words behind it, which the app keeps elsewhere; no chest or record number reaches that far].
     pub fn record_bit(&self, n: u16) -> bool {
-        self.record_bits.get(n as usize >> 5).is_some_and(|w| w >> (n & 31) & 1 != 0)
+        let w = n as usize >> 5;
+        w < save_block::RECORD_WORDS && self.save.u32_at(crate::save_block::at::RECORD_BITS + 4 * w) >> (n & 31) & 1 != 0
     }
 
     /// `FUN_001a52b0`: sets record bit `n` (its call of `FUN_001d39d0` after the write is not ported).
     pub fn set_record_bit(&mut self, n: u16) {
         let w = n as usize >> 5;
-        if self.record_bits.len() <= w {
-            self.record_bits.resize(w + 1, 0);
+        if w < save_block::RECORD_WORDS {
+            let o = crate::save_block::at::RECORD_BITS + 4 * w;
+            self.save.set_u32(o, self.save.u32_at(o) | 1 << (n & 31));
         }
-        self.record_bits[w] |= 1 << (n & 31);
+    }
+
+    /// The record bit words (`+0x1550`) without the trailing zero words, as the slot file stores them.
+    fn record_words(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = (0..save_block::RECORD_WORDS).map(|i| self.save.u32_at(crate::save_block::at::RECORD_BITS + 4 * i)).collect();
+        while v.last() == Some(&0) {
+            v.pop();
+        }
+        v
+    }
+
+    /// Replaces the record bit words (a shorter list clears the rest; words past `RECORD_WORDS` are dropped).
+    fn set_record_words(&mut self, words: &[u32]) {
+        for i in 0..save_block::RECORD_WORDS {
+            self.save.set_u32(crate::save_block::at::RECORD_BITS + 4 * i, words.get(i).copied().unwrap_or(0));
+        }
     }
 
     /// `FUN_00265348`'s test: the shop item at place `n` of the shop file's list was seen (save `+0x3714`).
@@ -2151,11 +2171,6 @@ impl Progress {
         self.save.set_shop_visits(0);
         self.set_wallet(word(sb::WALLET));
         self.save.set_game_mode(mode);
-        let mut bits: Vec<u32> = (0..sb::RECORD_WORDS as u32).map(|i| word(sb::RECORD_BITS + 4 * i)).collect();
-        while bits.last() == Some(&0) {
-            bits.pop();
-        }
-        self.record_bits = bits;
         let mut locks: Vec<[u16; 2]> = at(story::LOCKS, (sb::RECORD_BITS - story::LOCKS) as usize).as_chunks::<4>().0.iter().map(|c| [u16::from_le_bytes([c[0], c[1]]), u16::from_le_bytes([c[2], c[3]])]).collect();
         while locks.last() == Some(&[0, 0]) {
             locks.pop();
@@ -2199,11 +2214,6 @@ impl Progress {
             if st.world.len() == world::LEN {
                 b[at(world::RECORDS)..][..world::LEN].copy_from_slice(&st.world);
             }
-        }
-        let b = img.bytes_mut();
-        for i in 0..save_block::RECORD_WORDS {
-            let w = self.record_bits.get(i).copied().unwrap_or(0);
-            b[at(save_block::RECORD_BITS) + 4 * i..][..4].copy_from_slice(&w.to_le_bytes());
         }
         img.bytes().to_vec()
     }
@@ -2531,7 +2541,8 @@ impl Progress {
                 // The record bits (save `+0x1550`): the words as integers.
                 "record_bits" => {
                     let Json::Arr(a) = v else { return Err("record_bits: expected an array".into()) };
-                    self.record_bits = a.iter().map(|x| in_range(int(x, "record_bits")?, u32::MAX.into(), "record_bits")).collect::<Result<Vec<_>, _>>()?.into_iter().map(|n| n as u32).collect();
+                    let words = a.iter().map(|x| in_range(int(x, "record_bits")?, u32::MAX.into(), "record_bits")).collect::<Result<Vec<_>, _>>()?;
+                    self.set_record_words(&words.into_iter().map(|n| n as u32).collect::<Vec<_>>());
                 }
                 // The story arrays of a slot file (`slot_json`): the flag words and the area program table as hex
                 // and the exit locks as a flat list of (state, message) pairs. Replaces them; the effect lists stay.
@@ -2613,7 +2624,7 @@ impl Progress {
                     self.reaction_uses.clear();
                     self.limit_best.clear();
                     self.report = [0; REPORT_WORDS];
-                    self.record_bits.clear();
+                    self.set_record_words(&[]);
                 }
                 "new_seen" => {
                     let Json::Arr(a) = v else { return Err("new_seen: expected an array".into()) };
@@ -2840,6 +2851,127 @@ pub struct Story {
     pub world_unported: Vec<(u8, u16)>,
 }
 
+/// The world flag ports' view of the story: the `wldf` table, story flag `0x102b` and the list runner (`WorldEnv`).
+struct StoryWorld<'a> {
+    table: &'a kh2_ard::worldmap::Wldf,
+    second: bool,
+    unported: &'a mut Vec<(u8, u16)>,
+}
+
+impl crate::progress_flags::WorldEnv for StoryWorld<'_> {
+    /// Byte +1 of a `wldf` record is its kind; the other bytes are not kept by `Wldf` (0).
+    fn record_byte(&self, index: u32, offset: usize) -> u8 {
+        if offset == 1 { self.table.find(index as u8).map_or(0, |r| r.kind) } else { 0 }
+    }
+
+    fn second_part(&self) -> bool {
+        self.second
+    }
+
+    fn run_list(&mut self, world: &mut [u8], key: u8, hook: bool) {
+        run_world_list(world, self.table, key, hook, self.unported);
+    }
+}
+
+fn wbyte(w: &[u8], o: usize) -> u8 {
+    w.get(o).copied().unwrap_or(0)
+}
+
+fn wput(w: &mut [u8], o: usize, v: u8) {
+    if let Some(b) = w.get_mut(o) {
+        *b = v;
+    }
+}
+
+fn wword(w: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes([0, 1, 2, 3].map(|k| wbyte(w, o + k)))
+}
+
+fn wput_word(w: &mut [u8], o: usize, v: u32) {
+    for (k, b) in v.to_le_bytes().into_iter().enumerate() {
+        wput(w, o + k, b);
+    }
+}
+
+/// `FUN_001b4e98(record, v)`: the map-state write of world `w` (value 3 on a state above 2 counts up instead; value 2 also clears bit 0
+/// of byte 3). `world` is the world region from `world::RECORDS`.
+fn world_record_write(world: &mut [u8], w: u32, v: u8) {
+    let a = 4 * w as usize;
+    let cur = wbyte(world, a);
+    if v == 3 && cur > 2 {
+        wput(world, a, cur.wrapping_add(1));
+        return;
+    }
+    wput(world, a, v);
+    if v == 2 {
+        wput(world, a + 3, wbyte(world, a + 3) & 0xfe);
+    }
+}
+
+/// `FUN_001b6a48(record, call_hook)` with `FUN_001b6a90` on each command: runs the action list of the `wldf` record with
+/// index `key` on the world region (the bytes from `world::RECORDS`). `call_hook` is `DAT_01d5d794` (the argument of `FUN_001b6a48`):
+/// with it op 0xf also calls `FUN_001c6d10`, not ported. Ops 8..0xb (`FUN_001b6d30`) write the route state bytes at `world::ROUTE_STATE + id`
+/// (`FUN_001c0950`); the list removal of op 0xd (`FUN_003335d0`) are recorded in `unported`.
+fn run_world_list(world: &mut [u8], table: &kh2_ard::worldmap::Wldf, key: u8, call_hook: bool, unported: &mut Vec<(u8, u16)>) {
+    let rel = |a: u32| (a - world::RECORDS) as usize;
+    let Some(rec) = table.find(key) else { return };
+    for act in table.actions(rec.list) {
+        let ids: Vec<u32> = act.ids().map(u32::from).collect();
+        match act.op {
+            1 | 2 | 3 | 7 => {
+                let v = match act.op {
+                    1 => 0,
+                    2 => 1,
+                    3 => 2,
+                    _ => 3,
+                };
+                ids.iter().for_each(|&w| world_record_write(world, w, v));
+            }
+            4 => {
+                for &w in &ids {
+                    world_record_write(world, w, 2);
+                    let a = 4 * w as usize + 3;
+                    wput(world, a, wbyte(world, a) & 0xfd);
+                }
+            }
+            5 | 6 => {
+                let bit = if act.op == 5 { 2 } else { 1 };
+                for &w in &ids {
+                    let a = 4 * w as usize + 3;
+                    wput(world, a, wbyte(world, a) | bit);
+                }
+            }
+            8..=0xb => {
+                for &id in &ids {
+                    wput(world, rel(world::ROUTE_STATE) + id as usize, act.op as u8 - 8);
+                }
+            }
+            0xc => {
+                for &id in &ids {
+                    for base in [world::EPISODES_A, world::EPISODES_B] {
+                        let a = rel(base) + 4 * (id >> 5) as usize;
+                        wput_word(world, a, wword(world, a) | 1 << (id & 31));
+                    }
+                }
+            }
+            0xd => {
+                for &id in &ids {
+                    let a = rel(world::EPISODES_B) + 4 * (id >> 5) as usize;
+                    wput_word(world, a, wword(world, a) & !(1 << (id & 31)));
+                }
+                unported.push((key, 0xd));
+            }
+            0xf => {
+                if call_hook {
+                    unported.push((key, 0xf));
+                }
+                wput(world, rel(world::MAP_BYTE), act.data.first().map_or(0, |h| *h as u8));
+            }
+            op => unported.push((key, op)),
+        }
+    }
+}
+
 /// Records of `00worldpoint.bin` `FUN_00194f68` searches (it returns an index 0..=0x35, else -1).
 const WORLD_POINT_RECORDS: usize = 0x36;
 
@@ -3020,7 +3152,8 @@ impl Story {
 
     /// `FUN_001b6a18`: world flag `i` is set.
     pub fn world_flag(&self, i: u32) -> bool {
-        self.world_word(world::FLAGS + 4 * (i >> 5)) >> (i & 31) & 1 != 0
+        // The flag words are 32 bytes from `world_at::FLAGS`; an untouched region reads clear.
+        crate::progress_flags::world_flag_check(&self.world_bytes(), i)
     }
 
     /// The world flags just set that the game has queued (`FUN_001b68f8`, `world::QUEUE`), oldest first. The count byte is
@@ -3039,20 +3172,6 @@ impl Story {
         self.world_word(world::EPISODES_A + 4 * (id >> 5)) >> (id & 31) & 1 != 0
     }
 
-    /// `FUN_001b4e98(record, v)`: the map-state write (value 3 on a state above 2 counts up instead; value 2 also clears bit 0 of byte 3).
-    fn world_record_write(&mut self, w: u32, v: u8) {
-        let a = world::RECORDS + 4 * w;
-        let cur = self.world_byte(a);
-        if v == 3 && cur > 2 {
-            self.world_set(a, cur.wrapping_add(1));
-            return;
-        }
-        self.world_set(a, v);
-        if v == 2 {
-            self.world_set(a + 3, self.world_byte(a + 3) & 0xfe);
-        }
-    }
-
     /// `FUN_001b6da0(flag)`: every `wldf` record that follows story flag `flag` sets its world flag.
     /// orig 0x1b6da0
     fn world_flags_follow(&mut self, flag: u16) {
@@ -3062,98 +3181,28 @@ impl Story {
         }
     }
 
+    /// The environment the world flag ports of `progress_flags` run in: the `wldf` table, story flag `0x102b` and the list runner.
+    fn world_env<'a>(table: &'a kh2_ard::worldmap::Wldf, second: bool, unported: &'a mut Vec<(u8, u16)>) -> StoryWorld<'a> {
+        StoryWorld { table, second, unported }
+    }
+
     /// `FUN_001b68f8(i)`: sets world flag `i` (four indexes are skipped while their rival flag is set) and queues it unless the
     /// record is kind 1 with story flag `0x102b` set. A flag already set changes nothing. A key the table lacks reads the
-    /// kind from address 1 in the game, which is taken as 0 [inferred], so it queues.
-    /// orig 0x1b68f8
+    /// kind from address 1 in the game, which is taken as 0 [inferred], so it queues. The routine is `progress_flags::world_flag_set`
+    /// on the world region.
     pub fn world_flag_set(&mut self, i: u8) {
-        let rival = match i {
-            0x25 => Some(0x73),
-            0x2a => Some(0x56),
-            0x2d => Some(0x54),
-            0x2e => Some(0x72),
-            _ => None,
-        };
-        if rival.is_some_and(|r| self.world_flag(r)) {
-            return;
-        }
-        let a = world::FLAGS + 4 * (u32::from(i) >> 5);
-        let bit = 1u32 << (i & 31);
-        let word = self.world_word(a);
-        if word & bit != 0 {
-            return;
-        }
-        self.world_set_word(a, word | bit);
-        let kind = self.world_table.find(i).map_or(0, |r| r.kind);
-        if kind != 1 || !self.test(0x102b) {
-            let n = self.world_byte(world::QUEUE_COUNT);
-            self.world_set(world::QUEUE_COUNT, n.wrapping_add(1));
-            self.world_set(world::QUEUE + u32::from(n), i);
-        }
+        self.world_ensure();
+        let (table, second) = (self.world_table.clone(), self.test(0x102b));
+        let env = Self::world_env(&table, second, &mut self.world_unported);
+        crate::progress_flags::world_flag_set(&mut self.world, &env, u32::from(i));
     }
 
     /// `FUN_001b6a48(record, call_hook)` with `FUN_001b6a90` on each command: runs the action list of the `wldf` record with
-    /// index `key`. `call_hook` is `DAT_01d5d794` (the argument of `FUN_001b6a48`): with it op 0xf also calls `FUN_001c6d10`,
-    /// not ported. Ops 8..0xb (`FUN_001b6d30`) write the route state bytes at `world::ROUTE_STATE + id` (`FUN_001c0950`); the list removal of op 0xd
-    /// (`FUN_003335d0`) are recorded in `world_unported`.
+    /// index `key` (see `run_world_list`).
     pub fn world_run_list(&mut self, key: u8, call_hook: bool) {
+        self.world_ensure();
         let table = self.world_table.clone();
-        let Some(rec) = table.find(key) else { return };
-        for act in table.actions(rec.list) {
-            let ids: Vec<u32> = act.ids().map(u32::from).collect();
-            match act.op {
-                1 | 2 | 3 | 7 => {
-                    let v = match act.op {
-                        1 => 0,
-                        2 => 1,
-                        3 => 2,
-                        _ => 3,
-                    };
-                    ids.iter().for_each(|&w| self.world_record_write(w, v));
-                }
-                4 => {
-                    for &w in &ids {
-                        self.world_record_write(w, 2);
-                        let a = world::RECORDS + 4 * w + 3;
-                        self.world_set(a, self.world_byte(a) & 0xfd);
-                    }
-                }
-                5 | 6 => {
-                    let bit = if act.op == 5 { 2 } else { 1 };
-                    for &w in &ids {
-                        let a = world::RECORDS + 4 * w + 3;
-                        self.world_set(a, self.world_byte(a) | bit);
-                    }
-                }
-                8..=0xb => {
-                    for &id in &ids {
-                        self.world_set(world::ROUTE_STATE + id, act.op as u8 - 8);
-                    }
-                }
-                0xc => {
-                    for &id in &ids {
-                        for base in [world::EPISODES_A, world::EPISODES_B] {
-                            let a = base + 4 * (id >> 5);
-                            self.world_set_word(a, self.world_word(a) | 1 << (id & 31));
-                        }
-                    }
-                }
-                0xd => {
-                    for &id in &ids {
-                        let a = world::EPISODES_B + 4 * (id >> 5);
-                        self.world_set_word(a, self.world_word(a) & !(1 << (id & 31)));
-                    }
-                    self.world_unported.push((key, 0xd));
-                }
-                0xf => {
-                    if call_hook {
-                        self.world_unported.push((key, 0xf));
-                    }
-                    self.world_set(world::MAP_BYTE, act.data.first().map_or(0, |h| *h as u8));
-                }
-                op => self.world_unported.push((key, op)),
-            }
-        }
+        run_world_list(&mut self.world, &table, key, call_hook, &mut self.world_unported);
     }
 
     /// The consuming half of `FUN_002c6bf8`: `FUN_001b6e20` copies the queue out and zeroes its count byte, then each queued world
@@ -3165,14 +3214,10 @@ impl Story {
 
     /// `FUN_001b6e20` then each flag's list with the hook argument `call_hook` (`FUN_001b6e60` is the same loop with 0).
     fn world_drain(&mut self, call_hook: bool) -> Vec<u8> {
-        let queue = self.world_queue();
-        if !queue.is_empty() {
-            self.world_set(world::QUEUE_COUNT, 0);
-        }
-        for &key in &queue {
-            self.world_run_list(key, call_hook);
-        }
-        queue
+        self.world_ensure();
+        let (table, second) = (self.world_table.clone(), self.test(0x102b));
+        let mut env = Self::world_env(&table, second, &mut self.world_unported);
+        crate::progress_flags::world_drain(&mut self.world, &mut env, call_hook)
     }
 
     /// `FUN_001b6870`, the boot of the world flags (run once by `FUN_00187d20` from the game-state constructor `FUN_00105638`,
@@ -3180,15 +3225,12 @@ impl Story {
     /// queue count, sets world flag 0 (`FUN_001b68f8(0)`) and drains the queue with hook argument 0 (`FUN_001b6e60`). It is the
     /// start-up state of the process, so it is the new game's world state; a loaded save replaces the whole region afterwards.
     /// No other caller exists (scan of `jal` to 0x1b6870 and 0x1b6e60: none; the save block's static initialiser `FUN_001057b8`
-    /// clears the region without calling it). Returns the flags the drain ran.
-    /// orig 0x1b6870
+    /// clears the region without calling it). Returns the flags the drain ran. The routine is `progress_flags::world_boot`.
     pub fn world_boot(&mut self) -> Vec<u8> {
-        for k in 0..8 {
-            self.world_set_word(world::FLAGS + 4 * k, 0);
-        }
-        self.world_set(world::QUEUE_COUNT, 0);
-        self.world_flag_set(0);
-        self.world_drain(false)
+        self.world_ensure();
+        let (table, second) = (self.world_table.clone(), self.test(0x102b));
+        let mut env = Self::world_env(&table, second, &mut self.world_unported);
+        crate::progress_flags::world_boot(&mut self.world, &mut env)
     }
 
     fn lock_entry(&mut self, i: usize) -> &mut [u16; 2] {
@@ -3375,7 +3417,7 @@ impl Progress {
             ),
             ("shop_seen", nums(shop_seen)),
             ("shop_visits", nums(shop_visits)),
-            ("record_bits", nums(self.record_bits.iter().copied())),
+            ("record_bits", nums(self.record_words())),
             ("journal_seen", seen_pairs),
             ("minigames", games),
             ("enemy_kills", kills),
@@ -4103,7 +4145,7 @@ mod tests {
         assert!(r.apply_json("{\"record_bits\": [4294967296]}").is_err());
         assert!(r.apply_json("{\"new_seen\": [-5]}").is_err());
         r.apply_json("{\"record_bits\": [4294967295, 7]}").unwrap();
-        assert_eq!(r.record_bits, vec![u32::MAX, 7]);
+        assert_eq!(r.record_words(), vec![u32::MAX, 7]);
         assert_eq!((r.moogle.clone(), r.shop_seen(3), r.shop_visit(1)), (Moogle::default(), false, false));
         // The party settings: a byte past 255 and a style past 5 are refused, not truncated.
         assert!(r.apply_json("{\"party_settings\": {\"2\": 256}}").is_err());

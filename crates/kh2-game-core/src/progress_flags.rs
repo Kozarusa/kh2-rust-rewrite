@@ -276,6 +276,315 @@ pub fn recom_is_off(t: &[u8], id: i32, aux: i32) -> bool {
     recom_has(t, id, aux, false)
 }
 
+// --- the world map's flags and queue (core.save, WP-L1-P17) ----------------------------------------------------------------
+
+/// Offsets inside the world map's region, the bytes from `0x341858` (`save_block::at::WORLD_RECORDS` in the save block): four bytes per
+/// world, then the world flag bits, the queue of flags just set and its count byte.
+pub mod world_at {
+    /// Eight words of world flag bits (`0x3418a4`), read by `FUN_001b6a18`, set by `FUN_001b68f8`.
+    pub const FLAGS: usize = 0x4c;
+    /// The queue of world flags just set (`0x3418c4`), 255 bytes; the count byte follows it.
+    pub const QUEUE: usize = 0x6c;
+    /// The queue's count byte (`0x3419c3`).
+    pub const QUEUE_COUNT: usize = 0x16b;
+}
+
+/// What the world flag routines reach outside the world region: the `wldf` record lookup (`FUN_001b68c0`), story flag `0x102b`
+/// (`FUN_00180330`) and the action list runner (`FUN_001b6a48`).
+pub trait WorldEnv {
+    /// Byte `offset` of the `wldf` record with index `index` (`FUN_001b68c0` finds the record by binary search); 0 for a missing record
+    /// [inferred: the game reads address `offset`].
+    fn record_byte(&self, index: u32, offset: usize) -> u8;
+    /// `FUN_00180330`: story flag `0x102b` is set.
+    fn second_part(&self) -> bool;
+    /// `FUN_001b6a48(record, hook)` for the record of `key`: runs its action list on the world region.
+    fn run_list(&mut self, world: &mut [u8], key: u8, hook: bool);
+}
+
+/// orig 0x1b6a18: world flag `i` is set (bit `i & 31` of word `i >> 5` of the flag words). A word past the slice reads as clear [inferred].
+pub fn world_flag_check(world: &[u8], i: u32) -> bool {
+    le32(world, world_at::FLAGS + (i >> 5) as usize * 4).is_some_and(|w| w & (1u32 << (i & 31)) != 0)
+}
+
+/// orig 0x1b68f8: sets world flag `i` and queues it. Four indexes (0x25, 0x2a, 0x2d, 0x2e) are skipped while their rival flag (0x73,
+/// 0x56, 0x54, 0x72) is set; a flag already set changes nothing; a record of kind 1 (byte +1 of the `wldf` record) is not queued while
+/// story flag 0x102b is set. The queue count goes up first, then the byte is written at the old count, so a count of 255 writes the
+/// count byte itself.
+pub fn world_flag_set(world: &mut [u8], env: &impl WorldEnv, i: u32) {
+    let rival = match i {
+        0x25 => Some(0x73),
+        0x2a => Some(0x56),
+        0x2d => Some(0x54),
+        0x2e => Some(0x72),
+        _ => None,
+    };
+    if rival.is_some_and(|r| world_flag_check(world, r)) {
+        return;
+    }
+    let o = world_at::FLAGS + (i >> 5) as usize * 4;
+    let Some(w) = le32(world, o) else { return };
+    let bit = 1u32 << (i & 31);
+    if w & bit != 0 {
+        return;
+    }
+    put32(world, o, w | bit);
+    if env.record_byte(i, 1) != 1 || !env.second_part() {
+        let n = world[world_at::QUEUE_COUNT];
+        world[world_at::QUEUE_COUNT] = n.wrapping_add(1);
+        world[world_at::QUEUE + n as usize] = i as u8;
+    }
+}
+
+/// orig 0x1b6e20: copies the queue out (oldest first) and zeroes its count byte.
+pub fn world_take_queue(world: &mut [u8]) -> Vec<u8> {
+    let n = world[world_at::QUEUE_COUNT] as usize;
+    world[world_at::QUEUE_COUNT] = 0;
+    world[world_at::QUEUE..world_at::QUEUE + n].to_vec()
+}
+
+/// orig 0x1b6e60: takes the queue (`FUN_001b6e20`) and runs the action list of each queued flag in order with the hook argument 0
+/// (`hook` false; the consuming half of `FUN_002c6bf8` passes 1). Returns the flags taken.
+pub fn world_drain(world: &mut [u8], env: &mut impl WorldEnv, hook: bool) -> Vec<u8> {
+    let queue = world_take_queue(world);
+    for &key in &queue {
+        env.run_list(world, key, hook);
+    }
+    queue
+}
+
+/// orig 0x1b6870: the boot of the world flags: the eight flag words and the queue count are cleared, world flag 0 is set
+/// (`FUN_001b68f8(0)`) and the queue drained with hook argument 0 (`FUN_001b6e60`). Returns the flags the drain ran.
+pub fn world_boot(world: &mut [u8], env: &mut impl WorldEnv) -> Vec<u8> {
+    world[world_at::FLAGS..world_at::FLAGS + 32].fill(0);
+    world[world_at::QUEUE_COUNT] = 0;
+    world_flag_set(world, env, 0);
+    world_drain(world, env, false)
+}
+
+/// orig 0x2c6d60: the order of two queued world flags in the menu's sort: byte +2 of the `wldf` record of the first minus that of the second.
+pub fn world_record_order(env: &impl WorldEnv, a: u8, b: u8) -> i32 {
+    i32::from(env.record_byte(u32::from(a), 2)) - i32::from(env.record_byte(u32::from(b), 2))
+}
+
+// --- the full story flag setter ------------------------------------------------------------------------------------------
+
+/// Offsets in the save block that the setter's side effects write (the same numbers as `save_block::at`, with the per-world row sizes).
+mod save_at {
+    /// `0x33e86f`: the first (map, btl, evt) triple of the area program table, 0xc0 bytes per world.
+    pub const PROGRAMS: usize = 0xf;
+    pub const PROGRAM_WORLD: usize = 0xc0;
+    /// `0x33f6b0`: the flag pages.
+    pub const FLAGS: usize = 0xe50;
+    /// `0x33f910`: the world-point bits (two words).
+    pub const WORLD_POINTS: usize = 0x10b0;
+    /// `0x33f918`: the exit-lock halfword pairs (state, message).
+    pub const LOCKS: usize = 0x10b8;
+    /// `0x33fdb0`: the record bits; `FUN_001a7730` writes the byte `+ world + 0x5c`.
+    pub const RECORD_BITS: usize = 0x1550;
+    /// `0x341858`: the world map's records; `FUN_001b4e80(world)` is `+ 4 * world`.
+    pub const WORLD_RECORDS: usize = 0x2ff8;
+    /// The 19 pairs of words `FUN_0019d890` clears.
+    pub const PAIRS: usize = 0x14b8;
+    pub const PAIRS_WORDS: usize = 38;
+}
+
+/// What the setter `FUN_0017ff60` reads from the executable's loaded tables: the per-world side-effect lists of `00progress.bin`
+/// (`0x35ccc0` holds a pointer to each), the table of two bytes per exit lock that names its world point (`DAT_01c8a988`, entry `i` at
+/// `+ 2 + 2 * i`), and the world point table (`DAT_01c8a984`, 0x36 entries of four bytes whose first two bytes are compared).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SetterTables<'a> {
+    pub entries: &'a [&'a [u8]],
+    pub locks: &'a [u8],
+    pub points: &'a [u8],
+}
+
+/// The calls the setter makes that act outside the save block, in the original's order after its list: `FUN_001803b0` (flag),
+/// `FUN_00180450`, `FUN_001805d0` (flag), `FUN_00180558`, `FUN_001d39d0`, `FUN_001d3238` (flag), `FUN_001b6da0` (flag), `FUN_001be9c8`
+/// (flag), `FUN_001d5718` and, last, `FUN_00195130` (flag); `FUN_001d39d0` also runs once after each record bit set by list op 8. `addr`
+/// is the callee's address in the original, `arg` the flag id (0 for the calls without one).
+pub trait SetterTail {
+    fn call(&mut self, save: &mut [u8], addr: u32, arg: i32);
+}
+
+fn le16(b: &[u8], o: usize) -> u16 {
+    b.get(o..o + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
+}
+
+fn set_byte(b: &mut [u8], o: usize, v: u8) {
+    if let Some(x) = b.get_mut(o) {
+        *x = v;
+    }
+}
+
+/// orig 0x104b90: copies three bytes to the program triple, each unless it is 0xff.
+fn merge_program(dst: &mut [u8], o: usize, src: [u8; 3]) {
+    for (k, &v) in src.iter().enumerate() {
+        if v != 0xff {
+            set_byte(dst, o + k, v);
+        }
+    }
+}
+
+/// orig 0x195260: the exit lock entry `idx` gets its state and message halfwords.
+fn lock_set(save: &mut [u8], idx: usize, state: u16, message: u16) {
+    let o = save_at::LOCKS + 4 * idx;
+    if let Some(s) = save.get_mut(o..o + 4) {
+        s[..2].copy_from_slice(&state.to_le_bytes());
+        s[2..].copy_from_slice(&message.to_le_bytes());
+    }
+}
+
+/// orig 0x195288: the exit lock entry's state is 0.
+fn lock_open(save: &mut [u8], idx: usize) {
+    let o = save_at::LOCKS + 4 * idx;
+    if let Some(s) = save.get_mut(o..o + 2) {
+        s.fill(0);
+    }
+}
+
+/// `value - 1` goes to the byte `world + 0x5c` of the record bit words (`0x33fe0c + world`).
+///
+/// orig 0x1a7730
+fn store_world_byte(save: &mut [u8], world: usize, value: u8) {
+    set_byte(save, save_at::RECORD_BITS + world + 0x5c, value.wrapping_sub(1));
+}
+
+/// The world point named by lock `idx` loses its bit, as `FUN_001952a0` / `FUN_00195300` do it: the lookup `FUN_00194f68` in the point
+/// table by the lock's two bytes, then the bit clear `FUN_00194fd8`.
+///
+/// orig 0x194f68
+/// orig 0x194fd8
+fn lock_clear_point(save: &mut [u8], t: &SetterTables, idx: usize) {
+    let (a, b) = (t.locks.get(2 + 2 * idx).copied().unwrap_or(0), t.locks.get(3 + 2 * idx).copied().unwrap_or(0));
+    let hit = t.points.chunks(4).take(0x36).position(|e| e.len() >= 2 && e[0] == a && e[1] == b);
+    if let Some(i) = hit {
+        let o = save_at::WORLD_POINTS + 4 * (i >> 5);
+        if let Some(w) = le32(save, o) {
+            put32(save, o, w & !(1u32 << (i & 31)));
+        }
+    }
+}
+
+/// Record bit `n` (word `n >> 5` of the words at `0x33fdb0`) set (`FUN_001a52b0`, which then calls `FUN_001d39d0`) or cleared.
+///
+/// orig 0x1a52b0
+/// orig 0x1a52f0
+fn record_bit(save: &mut [u8], n: u16, on: bool) {
+    let o = save_at::RECORD_BITS + 4 * (n >> 5) as usize;
+    if let Some(w) = le32(save, o) {
+        let m = 1u32 << (n & 31);
+        put32(save, o, if on { w | m } else { w & !m });
+    }
+}
+
+/// orig 0x17ff60: the story flag setter on the save block `save` (the bytes from `0x33e860`). Sets the flag's bit, then runs the
+/// side-effect list the flag's world has for it (the list starts at the entry's halfword `id & 0x3ff`; ops, each `op, count` and `count`
+/// halfwords, end at op 0):
+/// 1 writes `count / 2` area program triples (area byte then map, btl, evt; 0xff keeps a byte, `FUN_00104b90`), 2 sets an exit lock's
+/// state and message (`FUN_00195260`), 3 opens a lock (`FUN_00195288`), 4 locks it with state 0xffff and clears its world point
+/// (`FUN_001952a0`), 5 opens it and clears the point (`FUN_00195300`), 6 stores `value - 1` in the record byte of the world
+/// (`FUN_001a7730`), 7 clears each flag (`FUN_00180298`), 8 sets each record bit and calls `FUN_001d39d0` (`FUN_001a52b0`), 9 clears each
+/// record bit (`FUN_001a52f0`), 0xc sets each flag that is clear (recursively), 0xd stores the halfword's high and low byte in bytes 1
+/// and 2 of the world's record (`FUN_001b4e80`); any other op does nothing. After the list the calls of [`SetterTail`] run, and for
+/// flag 0x8d0 `FUN_0019d890` clears the pair table before the last of them. A world without an entry has an empty list [inferred: the game
+/// reads the pointer table past its 19 entries].
+pub fn set_flag_full(save: &mut [u8], t: &SetterTables, tail: &mut impl SetterTail, id: i32) {
+    let page = (id >> 10) as isize;
+    // The flag word: page * 0x20 + word * 4 from 0x33f6b0. A negative page or a word past the block is outside the layout; nothing is set.
+    let word = (id as u32 & 0x3ff) >> 5;
+    if let Some(o) = usize::try_from(page * 0x20 + word as isize * 4).ok().map(|d| save_at::FLAGS + d)
+        && let Some(w) = le32(save, o)
+    {
+        put32(save, o, w | 1u32 << (id as u32 & 0x1f));
+    }
+    let entry = usize::try_from(page).ok().and_then(|p| t.entries.get(p)).copied().unwrap_or(&[]);
+    let world = page.max(0) as usize;
+    let mut p = le16(entry, (id as usize & 0x3ff) * 2) as usize;
+    loop {
+        let op = entry.get(p).copied().unwrap_or(0);
+        if op == 0 {
+            break;
+        }
+        let n = entry.get(p + 1).copied().unwrap_or(0) as usize;
+        let h = |k: usize| le16(entry, p + 2 + 2 * k);
+        match op {
+            1 => {
+                for k in 0..n >> 1 {
+                    let r = p + 2 + 4 * k;
+                    let b = |j: usize| entry.get(r + j).copied().unwrap_or(0);
+                    let o = save_at::PROGRAMS + world * save_at::PROGRAM_WORLD + b(0) as usize * 3;
+                    merge_program(save, o, [b(1), b(2), b(3)]);
+                }
+            }
+            2 => lock_set(save, h(0) as usize, h(1), h(2)),
+            3 => lock_open(save, h(0) as usize),
+            4 => {
+                let i = h(0) as usize;
+                if let Some(s) = save.get_mut(save_at::LOCKS + 4 * i..save_at::LOCKS + 4 * i + 2) {
+                    s.copy_from_slice(&0xffffu16.to_le_bytes());
+                }
+                lock_clear_point(save, t, i);
+            }
+            5 => {
+                lock_open(save, h(0) as usize);
+                lock_clear_point(save, t, h(0) as usize);
+            }
+            6 => store_world_byte(save, world, h(0) as u8),
+            7 => {
+                for k in 0..n {
+                    clear_flag_in(save, h(k) as i32);
+                }
+            }
+            8 => {
+                for k in 0..n {
+                    record_bit(save, h(k), true);
+                    tail.call(save, 0x1d39d0, 0);
+                }
+            }
+            9 => {
+                for k in 0..n {
+                    record_bit(save, h(k), false);
+                }
+            }
+            0xc => {
+                for k in 0..n {
+                    let f = h(k) as i32;
+                    if !check_flag(save.get(save_at::FLAGS..).unwrap_or(&[]), f) {
+                        set_flag_full(save, t, tail, f);
+                    }
+                }
+            }
+            0xd => {
+                let o = save_at::WORLD_RECORDS + 4 * world;
+                set_byte(save, o + 1, (h(0) >> 8) as u8);
+                set_byte(save, o + 2, h(0) as u8);
+            }
+            _ => {}
+        }
+        p += n * 2 + 2;
+    }
+    for (addr, arg) in [(0x1803b0, id), (0x180450, 0), (0x1805d0, id), (0x180558, 0), (0x1d39d0, 0), (0x1d3238, id), (0x1b6da0, id), (0x1be9c8, id), (0x1d5718, 0)] {
+        tail.call(save, addr, arg);
+    }
+    if id == 0x8d0 {
+        clear_pair_words(save);
+    }
+    tail.call(save, 0x195130, id);
+}
+
+fn clear_flag_in(save: &mut [u8], id: i32) {
+    if let Some(f) = save.get_mut(save_at::FLAGS..) {
+        clear_flag(f, id);
+    }
+}
+
+/// The 38 words (19 pairs) from save `+0x14b8` are cleared (`FUN_0019d890`, ported as `save_block::clear_pair_table`).
+fn clear_pair_words(save: &mut [u8]) {
+    if let Some(s) = save.get_mut(save_at::PAIRS..save_at::PAIRS + 4 * save_at::PAIRS_WORDS) {
+        s.fill(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

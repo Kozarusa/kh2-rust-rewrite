@@ -240,7 +240,8 @@ impl Vsync {
     }
 
     /// One vblank as the handler `FUN_0014cc88` counts it: both frame counters and the pause-gated timer ticks. (The handler also
-    /// adds to the play time in the save block, `FUN_0014ca28`, and signals the vblank semaphore; neither is here.)
+    /// adds to the play time in the save block, `FUN_0014ca28`, ported as `save_block::play_time_tick` and not called from here, and signals the
+    /// vblank semaphore, which is not here.)
     pub fn vblank(&mut self) {
         self.tick_timer();
         self.set_vblanks(self.vblanks().wrapping_add(1));

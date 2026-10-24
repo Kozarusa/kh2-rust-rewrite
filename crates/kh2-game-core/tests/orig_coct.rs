@@ -6,13 +6,16 @@
 //! `FUN_00141500` (nothing is stubbed; the moving-object list `DAT_005210c0` stays empty, so `FUN_00143840`
 //! runs the map path only, which is what a plain field does). The same file bytes go to `Oct::new`. Colliders
 //! are random records around the generated polygons; the port and the original run on copies and every field
-//! of the record (floats with a relative tolerance of 1e-5) is compared, together with the return value.
+//! of the record (the floats bit for bit) is compared, together with the return value.
 //! Skips without a disc (KH2_ISO or local/iso.txt); fails without one when KH2_REQUIRE_DISC=1.
 
 use kh2_ee::Ee;
 use kh2_factory::fuzz::*;
 use kh2_map::geom::*;
 use kh2_map::oct::*;
+use kh2_map::pool::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------------------------------------
 // Leaves (pure functions)
@@ -336,8 +339,15 @@ struct Rig {
     ee: Ee,
     oct: Oct,
     polys: usize,
-    /// The centre of each polygon, so colliders and rays can be put where something is.
+    /// The centre of each polygon (in world space once the object is placed), so colliders and rays can be put where
+    /// something is.
     centres: Vec<[f32; 3]>,
+    /// The moving-object pool of the port, when the world has one (the game's lives in the emulator's memory).
+    pool: MovingPool,
+    /// The owner ids of the pool's entries.
+    owners: Vec<u32>,
+    /// The second map collision object (slot 0x355938) the test built, if any.
+    aux_slot: Option<Oct>,
 }
 
 fn feq(a: f32, b: f32) -> bool {
@@ -379,7 +389,7 @@ impl Rig {
         ee.w32(0x5210c0, 0);
         ee.w32(0x5210c4, 0);
         let oct = Oct::new(file, groups).expect("port object");
-        Rig { ee, oct, polys: centres.len(), centres }
+        Rig { ee, oct, polys: centres.len(), centres, pool: MovingPool::empty(), owners: Vec::new(), aux_slot: None }
     }
 
     /// A random collider around a random polygon.
@@ -430,7 +440,7 @@ impl Rig {
     }
 }
 
-/// Every record field compared: floats with a relative tolerance, the rest byte for byte.
+/// Every record field compared bit for bit (the w lanes of the vectors below 0x60 are not part of the record's contract).
 fn coll_diff(game: &Collider, port: &Collider) -> Option<String> {
     let float_word = |o: usize| (o < 0x28) || (0x30..0x60).contains(&o) || o == 0x68 || o == 0x6c || o == 0x80;
     let mut o = 0;
@@ -441,7 +451,7 @@ fn coll_diff(game: &Collider, port: &Collider) -> Option<String> {
             o += 4;
         } else if o % 4 == 0 && float_word(o) {
             let (a, b) = (game.f32_at(o), port.f32_at(o));
-            if !feq(a, b) {
+            if a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan()) {
                 return Some(format!("float +{o:#x}: game {a} port {b}"));
             }
             o += 4;
@@ -455,17 +465,162 @@ fn coll_diff(game: &Collider, port: &Collider) -> Option<String> {
     None
 }
 
-fn rigs(what: &str, worlds: usize, per: usize, mut body: impl FnMut(&mut Rig, &mut Rng, usize)) {
+fn rigs(what: &str, worlds: usize, per: usize, body: impl FnMut(&mut Rig, &mut Rng, usize)) {
+    rigs_with(what, worlds, per, Mode::Plain, body)
+}
+
+/// What the world of a rig is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    /// The map object with the identity placement, no moving objects.
+    Plain,
+    /// The map object placed with a random matrix (`FUN_00142858`), no moving objects.
+    Placed,
+    /// The map object (identity) and a pool of moving objects, each with a random placement.
+    Pool,
+}
+
+fn rigs_with(what: &str, worlds: usize, per: usize, mode: Mode, mut body: impl FnMut(&mut Rig, &mut Rng, usize)) {
     let Some(elf) = kh2_factory::exe_or_skip(what) else { return };
-    let mut r = Rng::new(0x0c0c_7001 ^ worlds as u64);
+    let mut r = Rng::new(0x0c0c_7001 ^ worlds as u64 ^ (mode as u64) << 32);
     let t0 = std::time::Instant::now();
     for w in 0..worlds {
         let mut rig = Rig::new(&elf, &mut r);
+        match mode {
+            Mode::Plain => {}
+            Mode::Placed => {
+                let m = random_placement(&mut r, false);
+                rig.place_map(&m);
+            }
+            Mode::Pool => rig.add_pool(&mut r),
+        }
         for k in 0..per {
             body(&mut rig, &mut r, w * per + k);
         }
     }
-    eprintln!("{what}: {} cases in {:.2} s", worlds * per, t0.elapsed().as_secs_f64());
+    eprintln!("{what} ({mode:?}): {} cases in {:.2} s", worlds * per, t0.elapsed().as_secs_f64());
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Placements and the moving-object pool (WP-L1-P15)
+// ---------------------------------------------------------------------------------------------------------
+
+const MAT_AT: u32 = 0x019d_0000;
+const POOL_FILE_AT: u32 = 0x0150_0000;
+const POOL_ALLOC_OBJ: u32 = 0x016f_0000;
+const POOL_HEAP: u32 = 0x0170_0000;
+
+fn mul3(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    std::array::from_fn(|i| std::array::from_fn(|k| (a[i][0] * b[0][k] + a[i][1] * b[1][k]) + a[i][2] * b[2][k]))
+}
+
+/// A placement matrix as the game builds them: row vectors (the basis rows, then the translation), a yaw and a pitch,
+/// rows scaled by 0.8 or 1.3 now and then, and with `tiny` one row scaled towards a collapse.
+fn random_placement(r: &mut Rng, tiny: bool) -> M4 {
+    let yaw = urange(r, 0.0, std::f32::consts::TAU);
+    let pitch = if r.below(2) == 0 { 0.0 } else { urange(r, -0.4, 0.4) };
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let rx = [[1.0, 0.0, 0.0], [0.0, cp, sp], [0.0, -sp, cp]];
+    let ry = [[cy, 0.0, -sy], [0.0, 1.0, 0.0], [sy, 0.0, cy]];
+    let rot = mul3(rx, ry);
+    let mut s = [pick(r, &[1.0f32, 1.0, 1.0, 0.8, 1.3]), pick(r, &[1.0f32, 1.0, 1.0, 0.8, 1.3]), pick(r, &[1.0f32, 1.0, 1.0, 0.8, 1.3])];
+    if tiny {
+        s[r.below(3) as usize] = pick(r, &[0.05f32, 0.09, 0.1, 0.11, 0.2]);
+    }
+    let mut m = [[0.0; 4]; 4];
+    for i in 0..3 {
+        for k in 0..3 {
+            m[i][k] = rot[i][k] * s[i];
+        }
+    }
+    m[3] = [urange(r, -300.0, 300.0), urange(r, -40.0, 40.0), urange(r, -300.0, 300.0), 1.0];
+    m
+}
+
+fn put_m4(ee: &mut Ee, at: u32, m: &M4) {
+    for (i, row) in m.iter().enumerate() {
+        for (k, f) in row.iter().enumerate() {
+            ee.wf32(at + 16 * i as u32 + 4 * k as u32, *f);
+        }
+    }
+}
+
+fn get_m4(ee: &mut Ee, at: u32) -> M4 {
+    std::array::from_fn(|i| std::array::from_fn(|k| ee.f32_at(at + 16 * i as u32 + 4 * k as u32)))
+}
+
+impl Rig {
+    /// Places the map object (game and port) and moves the polygon centres into world space.
+    fn place_map(&mut self, m: &M4) {
+        put_m4(&mut self.ee, MAT_AT, m);
+        self.ee.call(0x142858, &[OBJ_AT as u64, MAT_AT as u64], &[], STACK).expect("FUN_00142858");
+        self.oct.place(m);
+        for c in self.centres.iter_mut() {
+            let w = xf(m, [c[0], c[1], c[2], 1.0]);
+            *c = [w[0], w[1], w[2]];
+        }
+    }
+
+    /// The game's allocator (`LoadDataAlloc`, a vtable call on an allocator object) is replaced by a bump allocator and
+    /// its free by nothing; the pool is built by the game's `FUN_001652b8` and the port's `MovingPool::new` over the
+    /// same base.
+    fn add_pool(&mut self, r: &mut Rng) {
+        let bump = Rc::new(Cell::new(POOL_HEAP));
+        let b = bump.clone();
+        self.ee.hooks.insert(0x106220, move |ee: &mut Ee| {
+            let size = ee.gpr[kh2_ee::reg::A0] as u32;
+            let p = b.get();
+            b.set(p + ((size + 15) & !15));
+            ee.gpr[kh2_ee::reg::V0] = p as u128;
+        });
+        self.ee.hooks.insert(0x106280, |_ee: &mut Ee| {});
+        self.ee.call(0x1652b8, &[POOL_ALLOC_OBJ as u64], &[], STACK).expect("FUN_001652b8");
+        let base = self.ee.r32(0x35a8a0);
+        assert_eq!(self.ee.r32(0x35a8a4), POOL_ALLOC_OBJ);
+        self.pool = MovingPool::new(base, POOL_ALLOC_OBJ);
+        let n = 1 + r.below(4) as usize;
+        for k in 0..n {
+            self.add_moving(r, k);
+        }
+    }
+
+    /// One moving object over a random COCT file, owner `0x7000 + k`, a random placement (the identity one time in
+    /// four, a collapsing one now and then) and sometimes disabled.
+    fn add_moving(&mut self, r: &mut Rng, k: usize) {
+        let polys: Vec<Poly> = (0..4 + r.below(6) as usize).map(|_| random_poly(r, 250.0)).collect();
+        let level = r.below(4) as u32;
+        let file = build_file(r, &polys, level);
+        let at = POOL_FILE_AT + 0x1_0000 * k as u32;
+        self.ee.write(at, &file);
+        let owner = 0x7000 + k as u32;
+        let handle = self.ee.call(0x1653d8, &[at as u64, owner as u64], &[], STACK).expect("FUN_001653d8") as u32;
+        let mine = self.pool.alloc(&file, owner).expect("port entry");
+        assert_eq!(handle, mine, "entry handle");
+        let m = if r.below(4) == 0 { M4_IDENTITY } else { { let t = r.below(6) == 0; random_placement(r, t) } };
+        put_m4(&mut self.ee, MAT_AT, &m);
+        self.ee.call(0x165250, &[handle as u64, MAT_AT as u64], &[], STACK).expect("FUN_00165250");
+        self.pool.place(mine, &m);
+        if r.below(6) == 0 {
+            self.ee.call(0x165290, &[handle as u64], &[], STACK).expect("FUN_00165290");
+            self.pool.set_disabled(mine, true);
+        }
+        self.owners.push(owner);
+        for p in &polys {
+            let b = bounds(&p.v);
+            let w = xf(&m, [(b[0] + b[3]) / 2.0, (b[1] + b[4]) / 2.0, (b[2] + b[5]) / 2.0, 1.0]);
+            self.centres.push([w[0], w[1], w[2]]);
+        }
+        self.polys = self.centres.len();
+    }
+
+    /// A collider whose owner is one of the pool's owners or a stranger.
+    fn pool_collider(&mut self, r: &mut Rng) -> Collider {
+        let mut c = self.collider(r);
+        let owner = if self.owners.is_empty() || r.below(3) == 0 { 0x1234 } else { self.owners[r.below(self.owners.len() as u64) as usize] };
+        c.set_u32(coll::OWNER, owner);
+        c
+    }
 }
 
 /// orig 0x141b50: the polygon walker (filter armed by 0x141b30, handler table 0x32e3b8), over all attribute filters and handler kinds.
@@ -508,41 +663,46 @@ fn orig_141b50_matches_the_game() {
 fn orig_164138_matches_the_game() {
     let mut contacts = 0;
     let mut moved = 0;
-    rigs("0x164138", 40, 60, |rig, r, n| {
-        let c0 = rig.collider(r);
-        rig.put(&c0);
-        let ret = rig.ee.call(0x164138, &[OBJ_AT as u64, COLL_AT as u64], &[], STACK).unwrap();
-        let game = rig.get();
-        let mut mine = c0.clone();
-        let out = rig.oct.sweep(&mut mine);
-        if let Some(d) = coll_diff(&game, &mine) {
-            panic!("case {n}: {d}\nstart {:?} delta {:?} r {} lift {} flags {:#x}", c0.v4(0), c0.v4(0x10), c0.f32_at(0x20), c0.f32_at(0x6c), c0.flags());
-        }
-        assert_eq!(ret & 1, out, "case {n}: return");
-        contacts += (game.flags() >> 34 & 1) as usize;
-        moved += (game.v4(coll::END)[0] != c0.v4(coll::START)[0] + c0.v4(coll::DELTA)[0]) as usize;
-    });
-    assert!(contacts > 100 && moved > 100, "contacts {contacts}, pushed {moved}: the test checks too little");
+    // The map object with the identity placement, and placed with a matrix (the frame mapping of a moved object).
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x164138", 40, 60, mode, |rig, r, n| {
+            let c0 = rig.collider(r);
+            rig.put(&c0);
+            let ret = rig.ee.call(0x164138, &[OBJ_AT as u64, COLL_AT as u64], &[], STACK).unwrap();
+            let game = rig.get();
+            let mut mine = c0.clone();
+            let out = rig.oct.sweep(&mut mine);
+            if let Some(d) = coll_diff(&game, &mine) {
+                panic!("{mode:?} case {n}: {d}\nstart {:?} delta {:?} r {} lift {} flags {:#x}", c0.v4(0), c0.v4(0x10), c0.f32_at(0x20), c0.f32_at(0x6c), c0.flags());
+            }
+            assert_eq!(ret & 1, out, "{mode:?} case {n}: return");
+            contacts += (game.flags() >> 34 & 1) as usize;
+            moved += (game.v4(coll::END)[0] != c0.v4(coll::START)[0] + c0.v4(coll::DELTA)[0]) as usize;
+        });
+    }
+    assert!(contacts > 200 && moved > 200, "contacts {contacts}, pushed {moved}: the test checks too little");
 }
 
 /// orig 0x1423d8 (the floor ray with 0x141910 and the ray cast 0x141f08).
 #[test]
 fn orig_1423d8_matches_the_game() {
     let mut hits = 0;
-    rigs("0x1423d8", 40, 60, |rig, r, n| {
-        let c0 = rig.collider(r);
-        rig.put(&c0);
-        let ret = rig.ee.call(0x1423d8, &[OBJ_AT as u64, COLL_AT as u64], &[], STACK).unwrap();
-        let game = rig.get();
-        let mut mine = c0.clone();
-        let out = rig.oct.floor_ray(&mut mine);
-        if let Some(d) = coll_diff(&game, &mine) {
-            panic!("case {n}: {d}");
-        }
-        assert_eq!(ret & 1, out as u64, "case {n}: return");
-        hits += out as usize;
-    });
-    assert!(hits > 100, "only {hits} floor hits");
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x1423d8", 40, 60, mode, |rig, r, n| {
+            let c0 = rig.collider(r);
+            rig.put(&c0);
+            let ret = rig.ee.call(0x1423d8, &[OBJ_AT as u64, COLL_AT as u64], &[], STACK).unwrap();
+            let game = rig.get();
+            let mut mine = c0.clone();
+            let out = rig.oct.floor_ray(&mut mine);
+            if let Some(d) = coll_diff(&game, &mine) {
+                panic!("{mode:?} case {n}: {d}");
+            }
+            assert_eq!(ret & 1, out as u64, "{mode:?} case {n}: return");
+            hits += out as usize;
+        });
+    }
+    assert!(hits > 200, "only {hits} floor hits");
 }
 
 /// orig 0x142760: the vertical probe.
@@ -590,29 +750,32 @@ fn orig_1425a0_matches_the_game() {
 /// orig 0x141910: taking a floor polygon into the collider, in both modes of flag bit 0.
 #[test]
 fn orig_141910_matches_the_game() {
-    rigs("0x141910", 30, 80, |rig, r, n| {
-        let c0 = rig.collider(r);
-        rig.put(&c0);
-        let poly = if r.below(6) == 0 { 0xffff } else { r.below(rig.polys as u64) as u16 };
-        let hit = [urange(r, -600.0, 600.0), urange(r, -150.0, 150.0), urange(r, -600.0, 600.0), 1.0];
-        for (k, f) in hit.iter().enumerate() {
-            rig.ee.wf32(OUT_AT + 4 * k as u32, *f);
-        }
-        rig.ee.call(0x141910, &[OBJ_AT as u64, poly as u64, COLL_AT as u64, OUT_AT as u64], &[], STACK).unwrap();
-        let game = rig.get();
-        let mut mine = c0.clone();
-        rig.oct.accept_floor(&mut mine, poly, hit);
-        if let Some(d) = coll_diff(&game, &mine) {
-            panic!("case {n}: {d} (poly {poly:#x}, flags {:#x})", c0.flags());
-        }
-    });
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x141910", 30, 80, mode, |rig, r, n| {
+            let c0 = rig.collider(r);
+            rig.put(&c0);
+            let poly = if r.below(6) == 0 { 0xffff } else { r.below(rig.polys as u64) as u16 };
+            let hit = [urange(r, -600.0, 600.0), urange(r, -150.0, 150.0), urange(r, -600.0, 600.0), 1.0];
+            for (k, f) in hit.iter().enumerate() {
+                rig.ee.wf32(OUT_AT + 4 * k as u32, *f);
+            }
+            rig.ee.call(0x141910, &[OBJ_AT as u64, poly as u64, COLL_AT as u64, OUT_AT as u64], &[], STACK).unwrap();
+            let game = rig.get();
+            let mut mine = c0.clone();
+            rig.oct.accept_floor(&mut mine, poly, hit);
+            if let Some(d) = coll_diff(&game, &mine) {
+                panic!("{mode:?} case {n}: {d} (poly {poly:#x}, flags {:#x})", c0.flags());
+            }
+        });
+    }
 }
 
 /// orig 0x141f08: the ray cast under each attribute filter.
 #[test]
 fn orig_141f08_matches_the_game() {
     let mut hits = 0;
-    rigs("0x141f08", 40, 60, |rig, r, n| {
+    for mode in [Mode::Plain, Mode::Placed] {
+    rigs_with("0x141f08", 40, 60, mode, |rig, r, n| {
         let filt = if r.below(2) == 0 { Filter::WALK } else { Filter::ALL };
         let kind = r.below(16) as u32;
         let near = rig.centres[r.below(rig.polys as u64) as usize];
@@ -633,11 +796,12 @@ fn orig_141f08_matches_the_game() {
             hits += 1;
             for (k, f) in h.iter().enumerate().take(3) {
                 let g = rig.ee.f32_at(OUT_AT + 0x60 + 4 * k as u32);
-                assert!(feq(g, *f), "case {n}: hit lane {k} game {g} port {f}");
+                assert!(feq(g, *f), "{mode:?} case {n}: hit lane {k} game {g} port {f}");
             }
         }
     });
-    assert!(hits > 100, "only {hits} ray hits");
+    }
+    assert!(hits > 200, "only {hits} ray hits");
 }
 
 /// orig 0x143840 (the full walking step on a map with no moving collision objects).
@@ -645,21 +809,23 @@ fn orig_141f08_matches_the_game() {
 fn orig_143840_matches_the_game() {
     let mut contacts = 0;
     let mut floors = 0;
-    rigs("0x143840", 40, 60, |rig, r, n| {
-        let c0 = rig.collider(r);
-        rig.put(&c0);
-        let ret = rig.ee.call(0x143840, &[COLL_AT as u64], &[], STACK).unwrap();
-        let game = rig.get();
-        let mut mine = c0.clone();
-        let out = rig.oct.walk_step(&mut mine);
-        if let Some(d) = coll_diff(&game, &mine) {
-            panic!("case {n}: {d}\nstart {:?} delta {:?} r {} lift {} flags {:#x}", c0.v4(0), c0.v4(0x10), c0.f32_at(0x20), c0.f32_at(0x6c), c0.flags());
-        }
-        assert_eq!(ret & 1, out, "case {n}: return");
-        contacts += (game.flags() >> 34 & 1) as usize;
-        floors += (game.flags() >> 33 & 1 == 0) as usize;
-    });
-    assert!(contacts > 100 && floors > 100, "contacts {contacts}, floors {floors}");
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x143840", 40, 60, mode, |rig, r, n| {
+            let c0 = rig.collider(r);
+            rig.put(&c0);
+            let ret = rig.ee.call(0x143840, &[COLL_AT as u64], &[], STACK).unwrap();
+            let game = rig.get();
+            let mut mine = c0.clone();
+            let out = rig.oct.walk_step(&mut mine);
+            if let Some(d) = coll_diff(&game, &mine) {
+                panic!("{mode:?} case {n}: {d}\nstart {:?} delta {:?} r {} lift {} flags {:#x}", c0.v4(0), c0.v4(0x10), c0.f32_at(0x20), c0.f32_at(0x6c), c0.flags());
+            }
+            assert_eq!(ret & 1, out, "{mode:?} case {n}: return");
+            contacts += (game.flags() >> 34 & 1) as usize;
+            floors += (game.flags() >> 33 & 1 == 0) as usize;
+        });
+    }
+    assert!(contacts > 200 && floors > 200, "contacts {contacts}, floors {floors}");
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -813,7 +979,7 @@ fn orig_162678_matches_the_game() {
         let (ok, contact) = face_contact(p, &v, plane, gap);
         assert_eq!(ret & 1, ok as u64, "case {n}");
         // The w lane is not compared (the VU ops write xyz only).
-        assert!(same4(game, contact, 3), "case {n}: contact {game:?} vs {contact:?}");
+        assert!(same4(game, contact, 4), "case {n}: contact {game:?} vs {contact:?}");
         if ok {
             inside += 1
         } else {
@@ -1064,12 +1230,12 @@ fn orig_1632b8_matches_the_game() {
         }
         let ret = rig.ee.call(0x1632b8, &[OBJ_AT as u64, all.len() as u64, LAB_RAY as u64, LAB_PLANE as u64, (COLL_AT + 0x30) as u64, COLL_AT as u64], &[], STACK).unwrap() as i32;
         let game = rig.get();
-        let game_centre = [rig.ee.f32_at(LAB_RAY), rig.ee.f32_at(LAB_RAY + 4), rig.ee.f32_at(LAB_RAY + 8), 0.0];
+        let game_centre = [rig.ee.f32_at(LAB_RAY), rig.ee.f32_at(LAB_RAY + 4), rig.ee.f32_at(LAB_RAY + 8), rig.ee.f32_at(LAB_RAY + 12)];
         let mut mine = c0.clone();
         let mut s = Sphere { c: centre, r: radius };
         let res = rig.oct.solve(&mut mine, &mut s, &all, &sbox);
         assert_eq!(ret, res, "case {n}: contacts");
-        assert!(same4(game_centre, [s.c[0], s.c[1], s.c[2], 0.0], 3), "case {n}: centre {game_centre:?} vs {:?}", s.c);
+        assert!(same4(game_centre, s.c, 4), "case {n}: centre {game_centre:?} vs {:?}", s.c);
         if let Some(d) = coll_diff(&game, &mine) {
             panic!("case {n}: {d}");
         }
@@ -1356,4 +1522,705 @@ fn the_built_object_matches_the_game() {
         }
     });
     assert!(five > 0, "no world had an attribute with nibble 5");
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// WP-L1-P15: placement, the frame mapping of a moved object, the edge helpers
+// ---------------------------------------------------------------------------------------------------------
+
+const LAB_OBJ: u32 = LAB_AT + 0x1000;
+const LAB_MAT: u32 = LAB_AT + 0x800;
+
+fn tiny_file() -> Vec<u8> {
+    use kh2_map::build::{BuildPoly, coct_file};
+    coct_file(&[BuildPoly::new(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0]], 1)])
+}
+
+/// orig 0x142858: the placement matrix, its inverse and the identity flag, over rigid and scaled matrices, the exact
+/// identity, and matrices a hair off it.
+#[test]
+fn orig_142858_matches_the_game() {
+    let (mut ident, mut other) = (0, 0);
+    let file = tiny_file();
+    lab_cases("0x142858", 3000, |lab, r, n| {
+        let m = match r.below(8) {
+            0 => M4_IDENTITY,
+            1 => {
+                let mut m = M4_IDENTITY;
+                m[r.below(4) as usize][r.below(4) as usize] += pick(r, &[1e-6f32, -1e-6, 0.5]);
+                m
+            }
+            _ => random_placement(r, false),
+        };
+        put_m4(&mut lab.ee, LAB_MAT, &m);
+        lab.ee.write(LAB_OBJ + 0x50, &[0xaa; 0x90]);
+        lab.call(0x142858, &[LAB_OBJ as u64, LAB_MAT as u64]);
+        let game_m = get_m4(&mut lab.ee, LAB_OBJ + 0x50);
+        let game_inv = get_m4(&mut lab.ee, LAB_OBJ + 0x90);
+        let game_flag = lab.ee.r8(LAB_OBJ + 0xd1);
+        let mut o = Oct::new(&file, 1).unwrap();
+        o.place(&m);
+        assert_eq!(game_m, m, "case {n}: the matrix is copied");
+        assert_eq!(game_flag != 0, o.is_identity(), "case {n}: identity flag for {m:?}");
+        for i in 0..4 {
+            for k in 0..4 {
+                assert_eq!(game_inv[i][k].to_bits(), o.placement_inverse()[i][k].to_bits(), "case {n}: inverse [{i}][{k}] game {} port {} for {m:?}", game_inv[i][k], o.placement_inverse()[i][k]);
+            }
+        }
+        if o.is_identity() {
+            ident += 1
+        } else {
+            other += 1
+        }
+    });
+    assert!(ident > 200 && other > 2000, "{ident} / {other}");
+}
+
+/// orig 0x142a88: a collapsed object (a basis row shorter than the limit).
+#[test]
+fn orig_142a88_matches_the_game() {
+    let (mut yes, mut no) = (0, 0);
+    let file = tiny_file();
+    lab_cases("0x142a88", 3000, |lab, r, n| {
+        let m = { let t = r.below(2) == 0; random_placement(r, t) };
+        put_m4(&mut lab.ee, LAB_OBJ + 0x50, &m);
+        let ret = lab.call(0x142a88, &[LAB_OBJ as u64]);
+        let mut o = Oct::new(&file, 1).unwrap();
+        o.place(&m);
+        assert_eq!(ret & 1, o.collapsed() as u64, "case {n}: {m:?}");
+        if o.collapsed() {
+            yes += 1
+        } else {
+            no += 1
+        }
+    });
+    assert!(yes > 300 && no > 300, "{yes} / {no}");
+}
+
+/// orig 0x164780: the foot of the perpendicular on each edge, the nearest of the qualifying ones.
+#[test]
+fn orig_164780_matches_the_game() {
+    let (mut found, mut none) = (0, 0);
+    lab_cases("0x164780", 4000, |lab, r, n| {
+        // The function builds its epsilon vector on the first call (guard byte 0x5210a0) and registers an exit handler;
+        // the vector is written here as it would have been.
+        lab.ee.write(0x5210a0, &[1]);
+        for k in 0..3 {
+            let e = lab.ee.f32_at(0x379548);
+            lab.ee.wf32(0x5210b0 + 4 * k, e);
+        }
+        let w = lab.ee.f32_at(0x37954c);
+        lab.ee.wf32(0x5210bc, w);
+        let v = rand_verts(r);
+        let plane = unit_plane(r, &v);
+        let mut p = point_near(r, &v, plane, 60.0);
+        if r.below(2) == 0 {
+            for lane in p.iter_mut().take(3) {
+                *lane += urange(r, -400.0, 400.0);
+            }
+        }
+        lab.put_verts(LAB_VERTS, &v);
+        lab.put(LAB_P, p);
+        lab.put(LAB_OUT, [7.0, 8.0, 9.0, 10.0]);
+        lab.put(LAB_OUT + 0x20, [1.0, 2.0, 3.0, 4.0]);
+        lab.put(LAB_OUT + 0x40, [5.0, 6.0, 7.0, 8.0]);
+        let ret = lab.call(0x164780, &[0, LAB_VERTS as u64, LAB_P as u64, LAB_OUT as u64, (LAB_OUT + 0x20) as u64, (LAB_OUT + 0x40) as u64]);
+        let (g_foot, g_a, g_b) = (lab.get(LAB_OUT), lab.get(LAB_OUT + 0x20), lab.get(LAB_OUT + 0x40));
+        let (edge, foot) = nearest_edge(&v, p);
+        assert_eq!(ret & 1, edge.is_some() as u64, "case {n}");
+        assert!(same4(g_foot, foot, 4), "case {n}: foot {g_foot:?} vs {foot:?}");
+        match edge {
+            Some((a, b)) => {
+                assert!(same4(g_a, a, 4) && same4(g_b, b, 4), "case {n}: edge ends");
+                found += 1;
+            }
+            None => {
+                assert!(same4(g_a, [1.0, 2.0, 3.0, 4.0], 4) && same4(g_b, [5.0, 6.0, 7.0, 8.0], 4), "case {n}: ends untouched");
+                none += 1;
+            }
+        }
+    });
+    assert!(found > 400 && none > 50, "{found} / {none}");
+}
+
+/// orig 0x164690: the gap between an edge's direction and a given direction.
+#[test]
+fn orig_164690_matches_the_game() {
+    lab_cases("0x164690", 3000, |lab, r, n| {
+        let (a, b) = (v3(r, 200.0), v3(r, 200.0));
+        let mut dir = v3(r, 1.0);
+        if r.below(2) == 0 {
+            let d = normalize4(sub(b, a));
+            dir = [d[0], d[1], d[2], dir[3]];
+        }
+        lab.put(LAB_P, a);
+        lab.put(LAB_P + 0x10, dir);
+        lab.put(LAB_P + 0x20, b);
+        lab.ee.fpr[0] = -1.0;
+        lab.call(0x164690, &[0, LAB_P as u64, (LAB_P + 0x10) as u64, (LAB_P + 0x20) as u64]);
+        let game = lab.ee.fpr[0];
+        let mine = edge_direction_gap(a, dir, b);
+        assert!(feq(game, mine), "case {n}: game {game} port {mine}");
+    });
+}
+
+/// orig 0x1421b8 (the polygon normal) over an object with the identity placement and over a placed one (rotated and
+/// scaled rows are renormalized).
+#[test]
+fn orig_1421b8_matches_the_game_for_a_moved_object() {
+    let mut moved = 0;
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x1421b8", 25, 12, mode, |rig, r, n| {
+            let p = r.below(rig.polys as u64) as u16;
+            rig.ee.call(0x1421b8, &[OUT_AT as u64, OBJ_AT as u64, p as u64], &[], STACK).unwrap();
+            let g4: V4 = std::array::from_fn(|l| rig.ee.f32_at(OUT_AT + 4 * l as u32));
+            let mine = rig.oct.normal(p);
+            assert!(same4(g4, mine, 4), "{mode:?} case {n}: normal {g4:?} vs {mine:?}");
+            moved += !rig.oct.is_identity() as usize;
+        });
+    }
+    assert!(moved > 100, "{moved} placed normals");
+}
+
+/// orig 0x1422d8: the polygon vertices in world space.
+#[test]
+fn orig_1422d8_matches_the_game() {
+    let mut seen = 0;
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x1422d8", 25, 12, mode, |rig, r, n| {
+            let p = if r.below(8) == 0 { 0xffff } else { r.below(rig.polys as u64) as u16 };
+            let count = rig.ee.call(0x1422d8, &[OBJ_AT as u64, p as u64, OUT_AT as u64], &[], STACK).unwrap() as usize;
+            let mine = rig.oct.verts_world(p);
+            assert_eq!(count, mine.len(), "{mode:?} case {n}: vertex count");
+            for (k, v) in mine.iter().enumerate() {
+                let g: V4 = std::array::from_fn(|l| rig.ee.f32_at(OUT_AT + 16 * k as u32 + 4 * l as u32));
+                assert!(same4(g, *v, 4), "{mode:?} case {n}: vertex {k} {g:?} vs {v:?}");
+            }
+            seen += mine.len();
+        });
+    }
+    assert!(seen > 500, "{seen} vertices");
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// WP-L1-P15: the moving collision objects
+// ---------------------------------------------------------------------------------------------------------
+
+/// orig 0x165430: the sphere sweep against every moving object but the collider's own.
+#[test]
+fn orig_165430_matches_the_game() {
+    let (mut touched, mut total) = (0, 0);
+    rigs_with("0x165430", 40, 60, Mode::Pool, |rig, r, n| {
+        let c0 = rig.pool_collider(r);
+        rig.put(&c0);
+        let ret = rig.ee.call(0x165430, &[COLL_AT as u64], &[], STACK).unwrap() as u32;
+        let game = rig.get();
+        let mut mine = c0.clone();
+        let out = rig.pool.sweep_all(&mut mine);
+        if let Some(d) = coll_diff(&game, &mine) {
+            panic!("case {n}: {d}\nstart {:?} delta {:?} r {} lift {} flags {:#x} owner {:#x}", c0.v4(0), c0.v4(0x10), c0.f32_at(0x20), c0.f32_at(0x6c), c0.flags(), c0.owner());
+        }
+        assert_eq!(ret, out as u32, "case {n}: return");
+        touched += out as usize;
+        total += 1;
+    });
+    assert!(touched > 100 && touched < total, "{touched} of {total} sweeps touched a moving object");
+}
+
+/// orig 0x1654f8: the floor ray against every moving object, the highest floor wins.
+#[test]
+fn orig_1654f8_matches_the_game() {
+    let (mut found, mut moving_set, mut floor_out) = (0, 0, 0);
+    rigs_with("0x1654f8", 40, 60, Mode::Pool, |rig, r, n| {
+        let c0 = rig.pool_collider(r);
+        rig.put(&c0);
+        rig.ee.wf32(OUT_AT, 1234.5);
+        let ret = rig.ee.call(0x1654f8, &[COLL_AT as u64, OUT_AT as u64], &[], STACK).unwrap() as u32;
+        let game = rig.get();
+        let game_floor = rig.ee.f32_at(OUT_AT);
+        let mut mine = c0.clone();
+        let mut floor = 1234.5;
+        let out = rig.pool.floor_ray_all(&mut mine, &mut floor);
+        if let Some(d) = coll_diff(&game, &mine) {
+            panic!("case {n}: {d}\nstart {:?} delta {:?} flags {:#x} owner {:#x}", c0.v4(0), c0.v4(0x10), c0.flags(), c0.owner());
+        }
+        assert_eq!(ret, out, "case {n}: return");
+        assert!(feq(game_floor, floor), "case {n}: floor out game {game_floor} port {floor}");
+        found += out as usize;
+        moving_set += (game.u32_at(coll::MOVING) != 0) as usize;
+        floor_out += (game_floor < 9.0e6) as usize;
+    });
+    assert!(found > 50 && moving_set > 100 && floor_out > 20, "found {found}, moving {moving_set}, floor out {floor_out}");
+}
+
+/// orig 0x143840 with moving collision objects in the pool: both sweeps, the moving floor ray, the map floor ray.
+#[test]
+fn orig_143840_matches_the_game_with_moving_objects() {
+    let (mut contacts, mut standing, mut redo) = (0, 0, 0);
+    rigs_with("0x143840 with moving objects", 40, 60, Mode::Pool, |rig, r, n| {
+        let c0 = rig.pool_collider(r);
+        rig.put(&c0);
+        let ret = rig.ee.call(0x143840, &[COLL_AT as u64], &[], STACK).unwrap();
+        let game = rig.get();
+        let mut mine = c0.clone();
+        let out = rig.oct.walk_step_with(&rig.pool, &mut mine);
+        if let Some(d) = coll_diff(&game, &mine) {
+            panic!("case {n}: {d}\nstart {:?} delta {:?} r {} lift {} flags {:#x} owner {:#x}", c0.v4(0), c0.v4(0x10), c0.f32_at(0x20), c0.f32_at(0x6c), c0.flags(), c0.owner());
+        }
+        assert_eq!(ret & 1, out, "case {n}: return");
+        contacts += (game.flags() >> 34 & 1) as usize;
+        standing += (game.u32_at(coll::MOVING) != 0) as usize;
+        redo += (game.v4(coll::DELTA) != c0.v4(coll::DELTA)) as usize;
+    });
+    assert!(contacts > 100 && standing > 50 && redo > 50, "contacts {contacts}, standing on a moving object {standing}, delta rewritten {redo}");
+}
+
+const V_SENTINEL: V4 = [7.0, 8.0, 9.0, 10.0];
+
+impl Rig {
+    fn put_hit(&mut self, v: V4) {
+        for (k, f) in v.iter().enumerate() {
+            self.ee.wf32(HIT_AT + 4 * k as u32, *f);
+        }
+    }
+    fn hit_at(&mut self) -> V4 {
+        std::array::from_fn(|l| self.ee.f32_at(HIT_AT + 4 * l as u32))
+    }
+    /// A random segment near a polygon centre of the rig's world, written at `LAB_RAY` (p0 then p1).
+    fn random_segment(&mut self, r: &mut Rng) -> [V4; 2] {
+        let near = self.centres[r.below(self.polys as u64) as usize];
+        let p0 = [near[0] + urange(r, -200.0, 200.0), near[1] + urange(r, -300.0, 0.0), near[2] + urange(r, -200.0, 200.0), 1.0];
+        let p1 = [near[0] + urange(r, -200.0, 200.0), near[1] + urange(r, 0.0, 300.0), near[2] + urange(r, -200.0, 200.0), 1.0];
+        self.put_ray(p0, p1);
+        [p0, p1]
+    }
+}
+
+/// orig 0x1657d8: the segment against every moving object under an attribute filter; each hit shortens the segment.
+#[test]
+fn orig_1657d8_matches_the_game() {
+    let (mut hits, mut owner_cases) = (0, 0);
+    rigs_with("0x1657d8", 40, 60, Mode::Pool, |rig, r, n| {
+        let filt = match r.below(3) {
+            0 => Filter::ALL,
+            1 => Filter { mask: 0x200, value: 0x200, invert: false, b: false },
+            _ => Filter { mask: r.word() as u32 & 0xf, value: r.below(16) as u32, invert: r.below(2) == 0, b: false },
+        };
+        let kind = pick(r, &[0u32, 1, 3, 6, 0xf, 0xf]);
+        let owner = if r.below(3) == 0 { 0x1234 } else { rig.owners[r.below(rig.owners.len() as u64) as usize] };
+        let [p0, p1] = rig.random_segment(r);
+        rig.ee.write(OUT_AT + 0x60, &[0u8; 16]);
+        rig.ee.write(OUT_AT + 0x40, &0x5555u16.to_le_bytes());
+        rig.ee.w32(OUT_AT + 0x50, 0x6666);
+        // The ninth argument travels on the stack.
+        rig.ee.w32(STACK, owner);
+        rig.ee.w32(STACK + 4, 0);
+        let ret = rig
+            .ee
+            .call(0x1657d8, &[LAB_RAY as u64, (OUT_AT + 0x60) as u64, (OUT_AT + 0x40) as u64, filt.mask as u64, filt.value as u64, filt.invert as u64, (OUT_AT + 0x50) as u64, kind as u64], &[], STACK)
+            .unwrap();
+        let g_hit: V4 = std::array::from_fn(|l| rig.ee.f32_at(OUT_AT + 0x60 + 4 * l as u32));
+        let g_end: V4 = std::array::from_fn(|l| rig.ee.f32_at(LAB_RAY + 16 + 4 * l as u32));
+        let g_poly = u16::from_le_bytes(rig.ee.read::<2>(OUT_AT + 0x40));
+        let g_entry = rig.ee.r32(OUT_AT + 0x50);
+        let mut seg = [p0, p1];
+        let mut hit = [0.0; 4];
+        let res = rig.pool.ray_all(&mut seg, &mut hit, filt, kind, Some(owner));
+        assert_eq!(ret & 1, res.found as u64, "case {n}: return");
+        assert_eq!(g_poly, res.poly, "case {n}: polygon");
+        assert_eq!(g_entry, res.entry, "case {n}: entry");
+        assert!(same4(g_end, seg[1], 4), "case {n}: shortened end {g_end:?} vs {:?}", seg[1]);
+        if res.found {
+            assert!(same4(g_hit, hit, 4), "case {n}: hit {g_hit:?} vs {hit:?}");
+            hits += 1;
+        } else {
+            assert_eq!(g_hit, [0.0; 4], "case {n}: the hit buffer is written only on a hit");
+        }
+        owner_cases += rig.owners.contains(&owner) as usize;
+    });
+    assert!(hits > 100 && owner_cases > 100, "hits {hits}, owner cases {owner_cases}");
+}
+
+/// orig 0x143b80: the segment against the attribute-0x200 polygons of the moving objects and then the map.
+#[test]
+fn orig_143b80_matches_the_game() {
+    let (mut hits, mut shortened) = (0, 0);
+    rigs_with("0x143b80", 40, 60, Mode::Pool, |rig, r, n| {
+        let seg0 = rig.random_segment(r);
+        rig.put_hit(V_SENTINEL);
+        // The callee's ninth argument (the owner to skip) is whatever lies in its caller's frame: the stack is cleared so
+        // that it reads 0, which no entry's owner is.
+        rig.ee.write(STACK - 0x400, &[0u8; 0x400]);
+        let ret = rig.ee.call(0x143b80, &[LAB_RAY as u64, HIT_AT as u64], &[], STACK).unwrap();
+        let g_hit = rig.hit_at();
+        let g_end: V4 = std::array::from_fn(|l| rig.ee.f32_at(LAB_RAY + 16 + 4 * l as u32));
+        let mut seg = seg0;
+        let mut hit = V_SENTINEL;
+        let found = ray_attr_200(&rig.oct, &rig.pool, &mut seg, &mut hit);
+        assert_eq!(ret & 1, found as u64, "case {n}: return");
+        assert!(same4(g_hit, hit, 4), "case {n}: hit {g_hit:?} vs {hit:?}");
+        assert!(same4(g_end, seg[1], 4), "case {n}: segment end {g_end:?} vs {:?}", seg[1]);
+        hits += found as usize;
+        shortened += (g_end != seg0[1]) as usize;
+    });
+    assert!(hits > 100 && shortened > 20, "hits {hits}, shortened segments {shortened}");
+}
+
+/// orig 0x143c28: the segment against the second map collision (slot 0x355938), which may be empty.
+#[test]
+fn orig_143c28_matches_the_game() {
+    let (mut hits, mut empty) = (0, 0);
+    rigs("0x143c28", 40, 60, |rig, r, n| {
+        if n % 60 == 0 {
+            let aux = rig.aux(r);
+            rig.aux_slot = Some(aux);
+        }
+        let slot_filled = n % 3 != 0;
+        rig.ee.w32(0x355938, if slot_filled { OBJ2_AT } else { 0 });
+        let seg = rig.random_segment(r);
+        rig.put_hit(V_SENTINEL);
+        rig.ee.write(OUT_AT + 0x40, &0x5555u16.to_le_bytes());
+        rig.ee.w32(OUT_AT + 0x50, 0x6666);
+        let ret = rig.ee.call(0x143c28, &[LAB_RAY as u64, HIT_AT as u64, (OUT_AT + 0x40) as u64, (OUT_AT + 0x50) as u64], &[], STACK).unwrap();
+        let g_hit = rig.hit_at();
+        let g_poly = u16::from_le_bytes(rig.ee.read::<2>(OUT_AT + 0x40));
+        let mine = ray_second(if slot_filled { rig.aux_slot.as_ref() } else { None }, &seg);
+        assert_eq!(ret & 1, mine.is_some() as u64, "case {n}: return");
+        assert_eq!(rig.ee.r32(OUT_AT + 0x50), 0, "case {n}: the fourth output is zeroed");
+        match mine {
+            Some((h, p)) => {
+                assert_eq!(g_poly, p, "case {n}: polygon");
+                assert!(same4(g_hit, h, 4), "case {n}: hit");
+                hits += 1;
+            }
+            None => {
+                assert!(same4(g_hit, V_SENTINEL, 4) && g_poly == 0x5555, "case {n}: outputs untouched on a miss");
+                empty += !slot_filled as usize;
+            }
+        }
+    });
+    assert!(hits > 100 && empty > 100, "hits {hits}, empty-slot cases {empty}");
+}
+
+/// orig 0x143960: the ray cast of the walking filter with the nibble-5 exception armed, on the map.
+#[test]
+fn orig_143960_matches_the_game() {
+    let mut hits = 0;
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x143960", 40, 60, mode, |rig, r, n| {
+            let seg = rig.random_segment(r);
+            let kind = pick(r, &[0u32, 1, 3, 6, 0xf]);
+            rig.put_hit(V_SENTINEL);
+            rig.ee.call(0x143960, &[LAB_RAY as u64, HIT_AT as u64, kind as u64], &[], STACK).unwrap();
+            let g = rig.hit_at();
+            let (h, _) = rig.oct.ray_walk_b(seg[0], seg[1], kind);
+            assert!(same4(g, h.unwrap_or(V_SENTINEL), 4), "{mode:?} case {n}: hit {g:?} vs {h:?}");
+            hits += h.is_some() as usize;
+        });
+    }
+    assert!(hits > 100, "{hits} hits");
+}
+
+/// orig 0x143ce8: the ray cast that keeps one floor kind only.
+#[test]
+fn orig_143ce8_matches_the_game() {
+    let mut hits = 0;
+    for mode in [Mode::Plain, Mode::Placed] {
+        rigs_with("0x143ce8", 40, 60, mode, |rig, r, n| {
+            let seg = rig.random_segment(r);
+            let kind = pick(r, &[0u32, 1, 3, 6, 0xf]);
+            let floor_kind = r.below(12) as u32;
+            rig.put_hit(V_SENTINEL);
+            rig.ee.write(OUT_AT + 0x40, &0x5555u16.to_le_bytes());
+            rig.ee.call(0x143ce8, &[LAB_RAY as u64, HIT_AT as u64, (OUT_AT + 0x40) as u64, floor_kind as u64, kind as u64], &[], STACK).unwrap();
+            let g = rig.hit_at();
+            let g_poly = u16::from_le_bytes(rig.ee.read::<2>(OUT_AT + 0x40));
+            let (h, poly) = rig.oct.ray_floor_kind(seg[0], seg[1], floor_kind, kind);
+            assert_eq!(g_poly, poly, "{mode:?} case {n}: polygon");
+            assert!(same4(g, h.unwrap_or(V_SENTINEL), 4), "{mode:?} case {n}: hit {g:?} vs {h:?}");
+            hits += h.is_some() as usize;
+        });
+    }
+    assert!(hits > 100, "{hits} hits");
+}
+
+/// orig 0x143560 with a moving object under the foot: the normal, the attribute flag and the material come from it.
+#[test]
+fn orig_143560_matches_the_game_over_a_moving_object() {
+    let (mut moving, mut total) = (0, 0);
+    rigs_with("0x143560 moving", 40, 60, Mode::Pool, |rig, r, n| {
+        let c0 = rig.pool_collider(r);
+        rig.put(&c0);
+        rig.ee.call(0x143840, &[COLL_AT as u64], &[], STACK).unwrap();
+        let c1 = rig.get();
+        rig.ee.w32(0x35593c, 0);
+        rig.ee.w32(0x355944, 0);
+        rig.ee.write(OUT_AT, &[0xccu8; 0x40]);
+        rig.ee.call(0x143560, &[COLL_AT as u64, OUT_AT as u64], &[], STACK).unwrap();
+        let game: Vec<u8> = rig.ee.read::<0x40>(OUT_AT).to_vec();
+        let info = rig.oct.floor_info_on(&c1, None, None, rig.pool.oct_of(c1.u32_at(coll::MOVING)));
+        let f = |o: usize| f32::from_le_bytes(game[o..o + 4].try_into().unwrap());
+        let u = |o: usize| u32::from_le_bytes(game[o..o + 4].try_into().unwrap());
+        for k in 0..3 {
+            assert!(feq(f(4 * k), info.normal[k]), "case {n}: normal lane {k}: {} vs {}", f(4 * k), info.normal[k]);
+            assert!(feq(f(0x10 + 4 * k), info.opposite[k]), "case {n}: opposite lane {k}");
+        }
+        assert_eq!(u(0x24), info.poly, "case {n}: polygon");
+        assert_eq!(u(0x28), info.material, "case {n}: material");
+        assert_eq!(game[0x34], info.flag, "case {n}: flag");
+        moving += (c1.u32_at(coll::MOVING) != 0 && info.poly != 0xffff) as usize;
+        total += 1;
+    });
+    assert!(moving > 50 && moving < total, "{moving} of {total} floors on a moving object");
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The pool's own bookkeeping: the constructor, allocation, the list, the flags
+// ---------------------------------------------------------------------------------------------------------
+
+/// The game's pool and the port's compared field by field: the globals, the free stack and every entry (owner, whether
+/// it holds a collision object, flags, link) with each collision object's placement.
+fn pool_diff(rig: &mut Rig) -> Option<String> {
+    let base = rig.ee.r32(0x35a8a0);
+    let (head, tail) = rig.pool.ends();
+    if rig.ee.r32(0x5210c0) != head || rig.ee.r32(0x5210c4) != tail {
+        return Some(format!("list ends game {:#x} {:#x} port {head:#x} {tail:#x}", rig.ee.r32(0x5210c0), rig.ee.r32(0x5210c4)));
+    }
+    let count = rig.ee.r32(base + 0x500) as i32;
+    if count != rig.pool.free_count() {
+        return Some(format!("free count game {count} port {}", rig.pool.free_count()));
+    }
+    for (k, idx) in rig.pool.free_stack().to_vec().into_iter().enumerate() {
+        let g = rig.ee.r32(base + 0x400 + 4 * k as u32);
+        if g != idx {
+            return Some(format!("free stack [{k}] game {g} port {idx}"));
+        }
+    }
+    for i in 0..POOL_ENTRIES {
+        let h = rig.pool.handle(i);
+        let g = [rig.ee.r32(h), rig.ee.r32(h + 4), rig.ee.r32(h + 8), rig.ee.r32(h + 12)];
+        let live = rig.pool.oct_of(h).is_some();
+        let (owner, flags, next) = (rig.pool.owner_of(h).unwrap(), rig.pool.flags_of(h).unwrap(), rig.pool.next_of(h).unwrap());
+        if g[0] != owner || (g[1] != 0) != live || g[2] != flags || g[3] != next {
+            return Some(format!("entry {i}: game {g:x?} port owner {owner:#x} live {live} flags {flags:#x} next {next:#x}"));
+        }
+        if let Some(o) = rig.pool.oct_of(h) {
+            let oct = g[1];
+            if get_m4(&mut rig.ee, oct + 0x50) != *o.placement() {
+                return Some(format!("entry {i}: placement matrix differs"));
+            }
+            let inv = get_m4(&mut rig.ee, oct + 0x90);
+            for a in 0..4 {
+                for b in 0..4 {
+                    if inv[a][b].to_bits() != o.placement_inverse()[a][b].to_bits() {
+                        return Some(format!("entry {i}: inverse [{a}][{b}] game {} port {}", inv[a][b], o.placement_inverse()[a][b]));
+                    }
+                }
+            }
+            if (rig.ee.r8(oct + 0xd1) != 0) != o.is_identity() {
+                return Some(format!("entry {i}: identity flag"));
+            }
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Op {
+    /// `FUN_001653d8`: pop an index and build.
+    Alloc,
+    /// `FUN_001650f0` called directly after popping the index by hand (what `FUN_001653d8` does).
+    AllocDirect,
+    Free,
+    Disable,
+    Enable,
+    Hide,
+    Next,
+    Place,
+}
+
+/// Runs random operations on the game's pool and the port's in step and compares the state after each.
+fn pool_ops(what: &str, ops: &[Op], worlds: usize) {
+    let Some(elf) = kh2_factory::exe_or_skip(what) else { return };
+    let mut r = Rng::new(0x9001 ^ ops.len() as u64 ^ (ops[0] as u64) << 8);
+    let mut seen = [0usize; 8];
+    for w in 0..worlds {
+        let mut rig = Rig::new(&elf, &mut r);
+        rig.add_pool(&mut r);
+        if let Some(d) = pool_diff(&mut rig) {
+            panic!("{what}: world {w} after the constructor and the first objects: {d}");
+        }
+        let mut files = rig.owners.len();
+        for step in 0..60 {
+            let op = ops[r.below(ops.len() as u64) as usize];
+            let live: Vec<u32> = {
+                let mut v = Vec::new();
+                let mut cur = rig.pool.ends().0;
+                while cur != 0 && v.len() <= POOL_ENTRIES {
+                    v.push(cur);
+                    cur = rig.pool.next_of(cur).unwrap();
+                }
+                v
+            };
+            let pick_live = |r: &mut Rng| live[r.below(live.len() as u64) as usize];
+            match op {
+                Op::Alloc | Op::AllocDirect if rig.pool.free_count() > 0 && files < 20 => {
+                    let polys: Vec<Poly> = (0..3 + r.below(4) as usize).map(|_| random_poly(&mut r, 250.0)).collect();
+                    let level = r.below(4) as u32;
+                    let file = build_file(&mut r, &polys, level);
+                    let at = POOL_FILE_AT + 0x1_0000 * files as u32;
+                    files += 1;
+                    rig.ee.write(at, &file);
+                    let owner = 0x8000 + step as u32;
+                    let pool_at = rig.ee.r32(0x35a8a0);
+                    let handle = if op == Op::Alloc {
+                        rig.ee.call(0x1653d8, &[at as u64, owner as u64], &[], STACK).unwrap() as u32
+                    } else {
+                        let cnt = rig.ee.r32(pool_at + 0x500) - 1;
+                        rig.ee.w32(pool_at + 0x500, cnt);
+                        let idx = rig.ee.r32(pool_at + 0x400 + 4 * cnt);
+                        let entry = pool_at + 16 * idx;
+                        rig.ee.call(0x1650f0, &[entry as u64, at as u64, owner as u64], &[], STACK).unwrap();
+                        entry
+                    };
+                    let mine = rig.pool.alloc(&file, owner).unwrap();
+                    assert_eq!(handle, mine, "{what}: world {w} step {step}: entry handle");
+                }
+                Op::Free if !live.is_empty() => {
+                    let h = pick_live(&mut r);
+                    rig.ee.call(0x165188, &[h as u64], &[], STACK).unwrap();
+                    rig.pool.free(h);
+                }
+                Op::Disable if !live.is_empty() => {
+                    let h = pick_live(&mut r);
+                    rig.ee.call(0x165290, &[h as u64], &[], STACK).unwrap();
+                    rig.pool.set_disabled(h, true);
+                }
+                Op::Enable if !live.is_empty() => {
+                    let h = pick_live(&mut r);
+                    rig.ee.call(0x1652a0, &[h as u64], &[], STACK).unwrap();
+                    rig.pool.set_disabled(h, false);
+                }
+                Op::Hide if !live.is_empty() => {
+                    let h = pick_live(&mut r);
+                    let hidden = r.below(2) == 0;
+                    let f = rig.ee.r32(h + 8);
+                    rig.ee.w32(h + 8, if hidden { f | 2 } else { f & !2 });
+                    rig.pool.set_hidden(h, hidden);
+                }
+                Op::Next => {
+                    let from = if live.is_empty() || r.below(4) == 0 { 0 } else { pick_live(&mut r) };
+                    let g = rig.ee.call(0x165910, &[from as u64], &[], STACK).unwrap() as u32;
+                    assert_eq!(g, rig.pool.next_visible(from), "{what}: world {w} step {step}: next visible after {from:#x}");
+                }
+                Op::Place if !live.is_empty() => {
+                    let h = pick_live(&mut r);
+                    let m = if r.below(5) == 0 { M4_IDENTITY } else { { let t = r.below(5) == 0; random_placement(&mut r, t) } };
+                    put_m4(&mut rig.ee, MAT_AT, &m);
+                    rig.ee.call(0x165250, &[h as u64, MAT_AT as u64], &[], STACK).unwrap();
+                    rig.pool.place(h, &m);
+                }
+                _ => continue,
+            }
+            seen[op as usize] += 1;
+            if let Some(d) = pool_diff(&mut rig) {
+                panic!("{what}: world {w} step {step} after {op:?}: {d}");
+            }
+        }
+    }
+    for op in ops {
+        assert!(seen[*op as usize] > worlds, "{what}: {op:?} ran only {} times", seen[*op as usize]);
+    }
+}
+
+/// orig 0x1652b8: the constructor leaves 64 empty entries, the free stack 0..63 (count 64), an empty list, and the
+/// allocator tag stored.
+#[test]
+fn orig_1652b8_matches_the_game() {
+    let Some(elf) = kh2_factory::exe_or_skip("0x1652b8") else { return };
+    let mut r = Rng::new(0x1652);
+    let mut fresh = Rig::new(&elf, &mut r);
+    let bump = Rc::new(Cell::new(POOL_HEAP));
+    let b = bump.clone();
+    fresh.ee.hooks.insert(0x106220, move |ee: &mut Ee| {
+        let p = b.get();
+        b.set(p + (((ee.gpr[kh2_ee::reg::A0] as u32) + 15) & !15));
+        ee.gpr[kh2_ee::reg::V0] = p as u128;
+    });
+    fresh.ee.call(0x1652b8, &[POOL_ALLOC_OBJ as u64], &[], STACK).unwrap();
+    let base = fresh.ee.r32(0x35a8a0);
+    fresh.pool = MovingPool::new(base, POOL_ALLOC_OBJ);
+    assert_eq!(fresh.ee.r32(0x35a8a4), fresh.pool.tag());
+    assert_eq!(pool_diff(&mut fresh), None);
+    assert_eq!(fresh.pool.free_count(), 64);
+    assert_eq!(fresh.pool.ends(), (0, 0));
+}
+
+/// orig 0x1653d8: allocation (pop the index, build the entry, link it at the tail).
+#[test]
+fn orig_1653d8_matches_the_game() {
+    pool_ops("0x1653d8", &[Op::Alloc, Op::Free, Op::Alloc], 20);
+}
+
+/// orig 0x1650f0: building an entry (the collision object over the file with every group on, the tail link).
+#[test]
+fn orig_1650f0_matches_the_game() {
+    pool_ops("0x1650f0", &[Op::AllocDirect, Op::Free, Op::AllocDirect], 20);
+}
+
+/// orig 0x1650e0: clearing an entry before it is built again: a freed entry that was disabled comes back with its flags
+/// clear and its new owner.
+#[test]
+fn orig_1650e0_matches_the_game() {
+    pool_ops("0x1650e0", &[Op::Alloc, Op::Free, Op::Disable, Op::Hide, Op::Alloc], 20);
+}
+
+/// orig 0x165188: unlinking an entry from the list (head, middle, tail), freeing its object and pushing its index.
+#[test]
+fn orig_165188_matches_the_game() {
+    pool_ops("0x165188", &[Op::Alloc, Op::Free, Op::Free, Op::Alloc], 30);
+}
+
+/// orig 0x165290
+#[test]
+fn orig_165290_matches_the_game() {
+    pool_ops("0x165290", &[Op::Alloc, Op::Disable, Op::Enable, Op::Disable], 15);
+}
+
+/// orig 0x1652a0
+#[test]
+fn orig_1652a0_matches_the_game() {
+    pool_ops("0x1652a0", &[Op::Disable, Op::Enable, Op::Disable, Op::Enable, Op::Alloc], 15);
+}
+
+/// orig 0x165250: placing an entry's collision object.
+#[test]
+fn orig_165250_matches_the_game() {
+    pool_ops("0x165250", &[Op::Place, Op::Alloc, Op::Place], 15);
+}
+
+/// orig 0x165910: the list walk that skips entries with flag bit 1.
+#[test]
+fn orig_165910_matches_the_game() {
+    pool_ops("0x165910", &[Op::Next, Op::Hide, Op::Free, Op::Alloc, Op::Next], 25);
+}
+
+/// orig 0x165388: freeing the pool block clears `DAT_0035a8a0`; the list globals stay.
+#[test]
+fn orig_165388_matches_the_game() {
+    let Some(elf) = kh2_factory::exe_or_skip("0x165388") else { return };
+    let mut r = Rng::new(0x1653);
+    let mut rig = Rig::new(&elf, &mut r);
+    rig.add_pool(&mut r);
+    let ends = rig.pool.ends();
+    assert_ne!(rig.ee.r32(0x35a8a0), 0);
+    rig.ee.call(0x165388, &[], &[], STACK).unwrap();
+    rig.pool.release();
+    assert_eq!(rig.ee.r32(0x35a8a0), rig.pool.base());
+    assert_eq!(rig.pool.base(), 0);
+    assert_eq!((rig.ee.r32(0x5210c0), rig.ee.r32(0x5210c4)), ends);
+    assert_eq!(rig.pool.ends(), ends);
+    // A second release finds nothing to free (the guard `DAT_0035a8a0 != 0`).
+    rig.ee.call(0x165388, &[], &[], STACK).unwrap();
+    assert_eq!(rig.ee.r32(0x35a8a0), 0);
 }

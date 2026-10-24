@@ -231,12 +231,12 @@ impl Pol {
             }
             0x16b858 => ((mix(self.seed, addr as u64, k as u64) % 5) as i64 - 1) as u64,
             0x16ece0 => 1990 + mix(self.seed, addr as u64, k as u64) % 20,
-            0x195358 => (mix(self.seed, addr as u64, k as u64) % 4 == 0) as u64,
+            0x195358 => mix(self.seed, addr as u64, k as u64).is_multiple_of(4) as u64,
             0x1d88a0 => mix(self.seed, addr as u64, k as u64) % 2,
             0x102c30 => MODE as u64,
             0x102f18 => MODE as u64 + 0x40,
             0x1802e0 => (mix(self.seed, args[0] as u32 as u64, 1) >> 7) & 1,
-            0x1039d0 | 0x2f4c40 => ((mix(self.seed, addr as u64, k as u64) >> 9) % 3 == 0) as u64,
+            0x1039d0 | 0x2f4c40 => (mix(self.seed, addr as u64, k as u64) >> 9).is_multiple_of(3) as u64,
             _ => mix(self.seed, addr as u64, k as u64) % 3,
         }
     }

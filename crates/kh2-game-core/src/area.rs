@@ -1695,12 +1695,8 @@ pub mod ctl {
                 host.call(0x1942c8, &[0x35d278, serial]);
                 let way = host.call(0x16b858, &[obj as u64]) as u32;
                 if (way as i32) >= 0 {
-                    let mut empties = false;
-                    if (way as i32) < 2 {
-                        empties = true;
-                    } else if way == 3 {
-                        empties = true;
-                    }
+                    // Ways 0, 1 and 3 empty the unit's place; 2 and the rest do not.
+                    let empties = (way as i32) < 2 || way == 3;
                     if empties && host.read32(obj.wrapping_add(0x588)) & 0x800 != 0 {
                         host.call(0x199518, &[rec as u64]);
                     }
@@ -1938,8 +1934,7 @@ pub mod ctl {
             loop {
                 let hdr = self.recs[idx].w(8);
                 let e = i.wrapping_mul(0x40).wrapping_add(hdr);
-                let n;
-                if host.read8(e.wrapping_add(0x48)) == 2 {
+                let n = if host.read8(e.wrapping_add(0x48)) == 2 {
                     let serial = host.read16(e.wrapping_add(0x4a));
                     if host.call(0x16b0d8, &[serial as u64]) == 0 {
                         let unit = self.recs[idx].w(8).wrapping_add(i.wrapping_mul(0x40)).wrapping_add(0x2c);
@@ -1951,10 +1946,10 @@ pub mod ctl {
                             host.call(0x1abf40, &[o.wrapping_add(0x82c) as u64, 0, a as u64, b as u64]);
                         }
                     }
-                    n = host.read16(self.recs[idx].w(8).wrapping_add(4));
+                    host.read16(self.recs[idx].w(8).wrapping_add(4))
                 } else {
-                    n = host.read16(hdr.wrapping_add(4));
-                }
+                    host.read16(hdr.wrapping_add(4))
+                };
                 i += 1;
                 if i as i32 >= n as i32 {
                     break;

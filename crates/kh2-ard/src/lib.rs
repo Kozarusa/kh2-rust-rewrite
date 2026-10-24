@@ -88,7 +88,10 @@ pub struct Trigger {
 /// FUN_00180ff8 steps by (in halfwords, sub-opcode included): 0 four (u16, u32), 1 eight (one
 /// unread halfword, then the six of the jump record, FUN_0019d8f0), 2..5, 7, 8 two, 6 two plus
 /// twice its count.
-/// `None` when a sub-opcode is unknown or the sizes overrun.
+/// `None` when a sub-opcode is unknown or the sizes overrun. This is the decoding half of the function: the trigger record it
+/// fills is [`Trigger`] here, and sub-commands 4, 5, 7 and 8 are written into the record by `kh2_event::area_jump::JumpExtras::from_subs`.
+///
+/// orig 0x180ff8
 pub fn parse_trigger(args: &[u32]) -> Option<Trigger> {
     let h: Vec<u16> = args.iter().flat_map(|w| [*w as u16, (*w >> 16) as u16]).collect();
     let (event, arg) = (*h.first()?, *h.get(1)?);

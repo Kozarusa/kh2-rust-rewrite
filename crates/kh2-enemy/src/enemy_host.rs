@@ -42,6 +42,38 @@ fn no_ground_pull(dash_running: bool) -> bool {
     MOVER_NO_GROUND.contains(&(if dash_running { 5 } else { 0 }))
 }
 
+/// Sets bit `n` of the word array at `base` in an object's memory: the word at `base + 4 * (n >> 5)` gets bit `n & 31`.
+/// A word outside `mem` is left alone (the app keeps only part of the object).
+///
+/// orig 0x19dd88
+pub fn bit_array_set(mem: &mut [u8], base: usize, n: u32) {
+    let o = base + (n >> 5) as usize * 4;
+    if let Some(w) = mem.get_mut(o..o + 4) {
+        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) | 1 << (n & 31);
+        w.copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Sets bit `n` of the array that follows the first one (the word at `base + 4 + 4 * (n >> 5)`).
+///
+/// orig 0x19ddb0
+pub fn bit_array_set_second(mem: &mut [u8], base: usize, n: u32) {
+    bit_array_set(mem, base + 4, n);
+}
+
+/// Clears bit `n` in both arrays (the words at `base + 4 * (n >> 5)` and `base + 4 + 4 * (n >> 5)`).
+///
+/// orig 0x19dde0
+pub fn bit_array_clear_both(mem: &mut [u8], base: usize, n: u32) {
+    let o = base + (n >> 5) as usize * 4;
+    for at in [o, o + 4] {
+        if let Some(w) = mem.get_mut(at..at + 4) {
+            let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) & !(1 << (n & 31));
+            w.copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Drops (host 1.92)
 
@@ -1016,37 +1048,20 @@ impl BevyHost<'_> {
             // +0x47c and +0x480 (set by 1.52 / 1.53, which none of the app's scripts call). No reader of
             // either array was traced. N_EX500_BTL clears bit 2 (R1447).
             Call::Func { group: 1, index: 54, args } if args[0].int() as u32 == me => {
-                let n = args[1].int() as u32;
-                let o = 0x47c + (n >> 5) as usize * 4;
-                for base in [o, o + 4] {
-                    if let Some(w) = self.obj.mem.get_mut(base..base + 4) {
-                        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) & !(1 << (n & 31));
-                        w.copy_from_slice(&v.to_le_bytes());
-                    }
-                }
+                bit_array_clear_both(&mut self.obj.mem, 0x47c, args[1].int() as u32);
                 stub(Value::None, "bit arrays +0x47c / +0x480 cleared in the object memory; their reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.52 bits_47c_set (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): bit n of the word at +0x47c + 4 * (n >> 5) set (the
             // collision part n forced on, docs/systems/script-host/contract.md; `summon.rs` keeps the same bit). M_EX550 and about ten other kinds call it in their
             // init. The reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app, so the bit is only kept.
             Call::Func { group: 1, index: 52, args } if args[0].int() as u32 == me => {
-                let n = args[1].int() as u32;
-                let o = 0x47c + (n >> 5) as usize * 4;
-                if let Some(w) = self.obj.mem.get_mut(o..o + 4) {
-                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) | 1 << (n & 31);
-                    w.copy_from_slice(&v.to_le_bytes());
-                }
+                bit_array_set(&mut self.obj.mem, 0x47c, args[1].int() as u32);
                 stub(Value::None, "bit array +0x47c set in the object memory; its reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.53 bits_480_set (0x1728e8 -> FUN_0019ddb0 on object +0x47c): bit n of the word at +0x480 + 4 * (n >> 5).
             // M_EX940 sets bits 5 and 7 in its init. No reader was traced (see 1.54).
             Call::Func { group: 1, index: 53, args } if args[0].int() as u32 == me => {
-                let n = args[1].int() as u32;
-                let o = 0x480 + (n >> 5) as usize * 4;
-                if let Some(w) = self.obj.mem.get_mut(o..o + 4) {
-                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) | 1 << (n & 31);
-                    w.copy_from_slice(&v.to_le_bytes());
-                }
+                bit_array_set_second(&mut self.obj.mem, 0x47c, args[1].int() as u32);
                 stub(Value::None, "bit array +0x480 set in the object memory; its reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.97 obj_part_110 (0x173070): the address of the object's block at +0x110 (M_EX940 stores a float at

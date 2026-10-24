@@ -23,4 +23,5 @@ kh2-ard = { path = "../kh2-ard" }
 bevy = "0.19"
 
 [dev-dependencies]
+kh2-factory.workspace = true
 kh2-ee.workspace = true

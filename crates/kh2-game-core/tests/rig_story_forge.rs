@@ -72,7 +72,14 @@ fn a_forged_story_flag_leaves_the_same_flags_programs_and_locks_in_the_app_story
 
     let mut different = Vec::new();
     let mut with_effects = 0usize;
+    // Only the ids the world's offset table lists: past it the original reads list bytes as offsets (nothing in the game sets those).
+    let counts: Vec<usize> = entries.iter().map(|e| kh2_ard::progress::flag_count(e)).collect();
+    let mut checked = 0usize;
     for id in 0..(story::WORLDS * 1024) as u16 {
+        if usize::from(id & 0x3ff) >= counts[usize::from(id >> 10)] {
+            continue;
+        }
+        checked += 1;
         let mut block = vec![0u8; LEN];
         set_flag_full(&mut block, &tables, &mut NoTail, i32::from(id));
         let mut app = Story::with_effects(effects.clone());
@@ -82,10 +89,19 @@ fn a_forged_story_flag_leaves_the_same_flags_programs_and_locks_in_the_app_story
             with_effects += 1;
         }
         if a != b {
+            if different.len() < 3 {
+                let (w, p, l) = (a.0 != b.0, a.1 != b.1, a.2 != b.2);
+                eprintln!("story-forge: flag {id:#x} differs in words {w}, programs {p}, locks {l}");
+                let nz = |v: &[u8]| v.iter().enumerate().filter(|(_, b)| **b != 0).map(|(i, b)| (i, *b)).collect::<Vec<_>>();
+                let wz = |v: &[u32]| v.iter().enumerate().filter(|(_, b)| **b != 0).map(|(i, b)| (i, *b)).collect::<Vec<_>>();
+                eprintln!("  app words {:x?} orig words {:x?}
+  app programs {:?}
+  orig programs {:?}", wz(&a.0), wz(&b.0), nz(&a.1), nz(&b.1));
+            }
             different.push(id);
         }
     }
-    eprintln!("story-forge: {with_effects} flags with a visible side effect; {} differ: {:x?}", different.len(), &different[..different.len().min(40)]);
+    eprintln!("story-forge: {checked} listed flags checked, {with_effects} flags with a visible side effect; {} differ: {:x?}", different.len(), &different[..different.len().min(40)]);
     assert!(with_effects > 100, "the lists of the disc must be doing something ({with_effects} flags changed a program, lock or other flag)");
     assert!(different.is_empty(), "{} flags leave a different story block in the app than in the original setter, first: {:x?}", different.len(), &different[..different.len().min(40)]);
 }

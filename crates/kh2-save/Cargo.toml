@@ -1,0 +1,13 @@
+[package]
+name = "kh2-save"
+description = "kh2-rs memory card unit: the original's save body checks and CRC, the slot table, the directory scans, icon.sys, and a reader and writer for PCSX2 .ps2 card images"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-game-core.workspace = true
+
+[dev-dependencies]
+kh2-ee.workspace = true
+kh2-factory.workspace = true

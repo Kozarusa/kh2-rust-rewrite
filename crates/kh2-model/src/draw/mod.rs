@@ -17,6 +17,7 @@
 
 pub mod frustum;
 pub mod pass;
+pub mod props;
 pub mod shadow;
 
 /// The address of the view index word (`0x349e40`).

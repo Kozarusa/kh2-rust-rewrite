@@ -61,6 +61,8 @@ controller's view (`sora::Abilities`, `sora::Growth`) in step with the block (`s
 
 ## Default equipment
 
+**GAP (WP-FIX-BASE).** The original gives Sora Guard (82) and Aerial Recovery (158) early, through something other than the `lvup` rows (the user's states .04/.05/.06 carry [158, 82, ...] before the level-4 ability 138). Likely a script item grant (the trap_item_get op `FUN_0016e0e8` -> `FUN_001a18d8(id, count, 0)`), unconfirmed [inferred]. A fresh port game therefore has no way to get Guard except `KH2_DEV`, a state file or `KH2_ABILITY_START=baseline`. No grant is guessed.
+
 The data gives Sora nothing learned at the start of the story: only the Kingdom Key and the ability it
 grants. The app, though, has always started Sora with Guard so the guard motion works (`start_abilities`
 in `sora.rs`). The old default added Guard (id 82, bit 1) as equipped and says so: it is an

@@ -705,7 +705,12 @@ pub const MAX_WALLET: u32 = 999_999;
 /// Whether the new game also hands Sora Guard and Dodge Roll level 1: only with `KH2_ABILITY_START=baseline` (an app invention kept
 /// for scenarios); by default they come from the level-ups like in the original.
 fn start_with_guard() -> bool {
-    std::env::var("KH2_ABILITY_START").as_deref() == Ok("baseline")
+    guard_start(std::env::var("KH2_ABILITY_START").ok().as_deref())
+}
+
+/// The env selection as a pure function of the `KH2_ABILITY_START` value.
+fn guard_start(value: Option<&str>) -> bool {
+    value == Some("baseline")
 }
 
 impl Progress {
@@ -5003,6 +5008,14 @@ mod tests {
         // reserve something the stock has take it (item 1: one in stock, slot 0 gets it; item 2: none).
         assert_eq!(p.battle_items(SORA), vec![(1, 1), (1, 1), (2, 2), (0, 2)]);
         assert_eq!(p.item_count(1), 0);
+    }
+
+    #[test]
+    fn the_start_is_the_data_path_unless_baseline_is_asked() {
+        assert!(!guard_start(None), "unset: the data path");
+        assert!(!guard_start(Some("data")));
+        assert!(!guard_start(Some("")));
+        assert!(guard_start(Some("baseline")));
     }
 
     #[test]

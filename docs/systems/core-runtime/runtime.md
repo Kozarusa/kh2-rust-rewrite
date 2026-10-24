@@ -86,6 +86,10 @@ the USA executable; field names are ours.
   order: it adds the vblank to the ported `frame::Vsync` (`schedule::FrameClock`) and, when the frame is complete, runs the logic
   (`FixedUpdate`) as many times as the step: field limit 1 (`FUN_0014cd38`) gives 0, 2, 0, 2 runs (30 Hz, step 2.0); while the pause
   menu is up the cadence is type 1, limit 0 (`FUN_00239e78` saves type and limit, `FUN_00239ec0` restores them), one run per vblank.
+- Field rate (FIX-HZ): `KH2_FIELD_HZ=30|60`, F9 in game (the window title shows it for 2 seconds). 60 is the smooth default for play: field
+  limit 0, one logic tick per vblank, step 1.0 (as before L1-P4). 30 is the faithful mode, the original's limit 1 described above.
+  Rig and turbo runs (`KH2_TURBO`, `KH2_PAD`, `KH2_TRACE`, `KH2_STATE`) default to 30, so rig scenarios compare against the original
+  at its cadence. `KH2_VSYNC=0` or F8 turns vsync off (uncapped rendering; vsync is the default for play; F10 is the sound viewer's).
 - decided: a step of 2.0 is two 60 Hz logic ticks back to back, not one tick with every speed doubled: every system of the app moves
   by a 60 Hz unit per tick. Linear motion is identical at every frame boundary (rig tt-run-06: k 42 now 0.18 off, was 6.7);
   integrating motion (gravity, turns) takes two half steps where the original takes one [inferred: no oracle compares it].
@@ -141,3 +145,17 @@ the USA executable; field names are ours.
   the game speed (`FUN_0014eca0`, `FUN_0014ed20`), the helper thread entry `0x14d008`.
 - Thread `+0xf0..+0xf8` writers (the sleep and wait calls) not read.
 - Game-mode list layout at `DAT_003990c0` (`+0xc` next, `+0x14` bits, `+0x1c` state) only seen from `FUN_00102070`.
+
+### Uncapped rendering (FIX-HZ; `KH2_VSYNC=0`, F8)
+- The logic (`FixedMain`: the vblank, `FixedUpdate`) runs on the fixed 60 Hz clock whatever the render rate; only `Update`, `PreUpdate`
+  and `PostUpdate` run per rendered frame. Audit of those schedules for per-frame counting:
+  - Time based already (`Time` or `Time<Real>`, a 1/60 s accumulator, `delta * 60`): menu scene (`MenuScene::advance`, menu `tick`s,
+    model animation in preview, journal model view and game over), area-change fade and keyhole wipe, world-map fade, struggle and
+    prize orbs, HUD popups and tutorial, the harness shots (turbo already runs unvsynced with one tick per frame).
+  - Counts rendered frames, so faster than 60 Hz when uncapped (listed, not changed: a time-based form is not byte-identical at 60 Hz):
+    the menu hold-repeat of the party and status screens (`menu_party.rs`, `menu_status.rs`: `ui.held.1`, delay 24 and every 6
+    frames, in `PreUpdate`); the world-map event `quiet` countdown (`worldmap.rs`); the journal page-turn fail-safe (`t.age`, only a
+    fail-safe that builds the page early); the pause log counter (debug only). Follow-up: count these in 1/60 s units from `Time<Real>`.
+  - Camera smoothing, animation playback, enemy and player logic, effects and the keyhole's logic side run in `FixedUpdate`: unaffected.
+- Input: the latch (`schedule::latch_input`, `PreUpdate`) gathers the button edges of every rendered frame, also of a frame whose vblank
+  runs no `FixedMain`; the next logic tick takes them (tested: `a_tap_in_a_frame_without_logic_reaches_the_next_logic_tick`).

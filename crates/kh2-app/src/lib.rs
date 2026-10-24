@@ -50,7 +50,8 @@ pub fn run() {
             std::env::set_var("KH2_NO_MUSIC", "1");
         }
     }
-    let present_mode = if turbo { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
+    let no_vsync = turbo || std::env::var("KH2_VSYNC").is_ok_and(|v| v.trim() == "0");
+    let present_mode = if no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::AutoVsync };
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window { title: "kh2-rs".into(), focused: front, window_level: level, present_mode, ..default() }),
@@ -59,5 +60,32 @@ pub fn run() {
     if turbo {
         kh2_game_core::harness::configure_turbo(&mut app);
     }
+    if !turbo {
+        app.add_systems(Update, window_modes);
+    }
     app.add_plugins(plugins::GamePlugins { iso, start }).run();
+}
+
+/// F8 toggles uncapped rendering (`KH2_VSYNC=0` starts it); the window title names the vsync mode and, for 2 seconds after F9, the
+/// field rate (F9 is `schedule::toggle_field_hz`; F10 stays the sound viewer's).
+fn window_modes(
+    keys: Res<ButtonInput<KeyCode>>,
+    clock: Res<kh2_game_core::schedule::FrameClock>,
+    shown: Res<kh2_game_core::schedule::FieldHzShown>,
+    mut windows: Query<&mut Window>,
+) {
+    let Ok(mut w) = windows.single_mut() else { return };
+    if keys.just_pressed(KeyCode::F8) {
+        w.present_mode = if matches!(w.present_mode, bevy::window::PresentMode::AutoNoVsync) {
+            bevy::window::PresentMode::AutoVsync
+        } else {
+            bevy::window::PresentMode::AutoNoVsync
+        };
+        w.title = format!("kh2-rs [{}]", if matches!(w.present_mode, bevy::window::PresentMode::AutoNoVsync) { "vsync off" } else { "vsync on" });
+    }
+    if keys.just_pressed(KeyCode::F9) {
+        w.title = format!("kh2-rs [field {} Hz]", clock.field_hz());
+    } else if shown.0 == 1 && w.title.contains("field") {
+        w.title = "kh2-rs".into();
+    }
 }

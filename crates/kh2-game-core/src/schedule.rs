@@ -98,6 +98,8 @@ pub struct FrameClock {
     pub runs: u32,
     /// The frame type and limit the menu saved when it opened (`DAT_0036ca40`, `DAT_0036ca44`); `None` while no menu is up.
     saved: Option<(u8, u32)>,
+    /// The field's frame limit: 1 = the original's 30 Hz field, 0 = a logic frame per vblank (60 Hz).
+    field_limit: u32,
     /// The clock the logic sees as `Time` (see [`vblank_step`]).
     logic_time: Time,
     /// The app frame in which the logic ran last (see [`hold_messages`]).
@@ -109,7 +111,28 @@ impl FrameClock {
     pub fn new() -> FrameClock {
         let mut vsync = crate::frame::Vsync::default();
         vsync.init();
-        FrameClock { vsync, runs: 0, saved: None, logic_time: Time::default(), logic_frame: None }
+        FrameClock { vsync, runs: 0, saved: None, field_limit: 1, logic_time: Time::default(), logic_frame: None }
+    }
+
+    /// The clock with the field at `hz` (30 = the original's limit 1, 60 = limit 0, one logic tick per vblank, step 1.0).
+    pub fn with_field_hz(hz: u32) -> FrameClock {
+        let mut c = FrameClock::new();
+        c.set_field_hz(hz);
+        c
+    }
+
+    /// Switch the field cadence (30 or 60). While a menu is up the menu cadence stays and the field's is restored on close.
+    pub fn set_field_hz(&mut self, hz: u32) {
+        self.field_limit = if hz >= 60 { 0 } else { 1 };
+        match self.saved {
+            Some((t, _)) => self.saved = Some((t, self.field_limit)),
+            None => self.vsync.set_frame_limit(self.field_limit),
+        }
+    }
+
+    /// The field's rate in Hz (30 or 60).
+    pub fn field_hz(&self) -> u32 {
+        if self.field_limit == 0 { 60 } else { 30 }
     }
 
     /// The step of the last completed frame (`0x356f40`).
@@ -328,13 +351,64 @@ pub fn vblank_step(world: &mut World) {
     run_logic(world, runs);
 }
 
+/// The field rate: `KH2_FIELD_HZ=30|60` wins; else 30 for rig and turbo runs (they compare against the original) and 60 for play.
+pub fn field_hz_for(var: Option<&str>, rig_or_turbo: bool) -> u32 {
+    match var.map(str::trim) {
+        Some("30") => 30,
+        Some("60") => 60,
+        _ if rig_or_turbo => 30,
+        _ => 60,
+    }
+}
+
+/// [`field_hz_for`] on the process environment.
+pub fn field_hz_from_env() -> u32 {
+    let rig = ["KH2_TURBO", "KH2_PAD", "KH2_TRACE", "KH2_STATE"].iter().any(|k| std::env::var_os(k).is_some_and(|v| v != "0"));
+    field_hz_for(std::env::var("KH2_FIELD_HZ").ok().as_deref(), rig)
+}
+
+/// F9 switches the field between 30 and 60 Hz (not in turbo runs).
+pub fn toggle_field_hz(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<FrameClock>, mut shown: ResMut<FieldHzShown>) {
+    if keys.just_pressed(KeyCode::F9) && !crate::harness::turbo() {
+        let hz = if clock.field_hz() == 60 { 30 } else { 60 };
+        clock.set_field_hz(hz);
+        shown.0 = 120;
+    }
+    shown.0 = shown.0.saturating_sub(1);
+}
+
+/// Update frames left to show the field rate (about 2 seconds after F9).
+#[derive(Resource, Default)]
+pub struct FieldHzShown(pub u32);
+
+/// Gathers the button edges of every rendered frame into the latch, also of a frame whose vblank runs no `FixedMain` (at an uncapped
+/// frame rate most frames run none): the next logic tick takes them, so a tap is never lost. A frame already gathered is skipped.
+fn latch_input(
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    frame: Option<Res<bevy::diagnostic::FrameCount>>,
+    mut latch: ResMut<InputLatch>,
+) {
+    let frame = frame.map(|f| f.0);
+    if let Some(k) = keys {
+        latch.keys.gather(&k, frame);
+    }
+    if let Some(m) = mouse {
+        latch.mouse.gather(&m, frame);
+    }
+}
+
 pub struct SchedulePlugin;
 
 impl Plugin for SchedulePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(data::LOGIC_HZ as f64))
             .init_resource::<Pause>()
-            .insert_resource(FrameClock::new())
+            .insert_resource(FrameClock::with_field_hz(field_hz_from_env()))
+            .init_resource::<FieldHzShown>()
+            .init_resource::<InputLatch>()
+            .add_systems(PreUpdate, latch_input.after(bevy::input::InputSystems))
+            .add_systems(Update, toggle_field_hz)
             .add_systems(Vblank, vblank_step)
             .add_systems(FixedLast, hold_messages);
         // `FixedUpdate` leaves the fixed order: `Vblank` runs it (absent in a bare test app without the main schedules).
@@ -419,11 +493,58 @@ mod tests {
         assert_eq!((runs, c.step()), (vec![0, 2, 0, 2], 2.0));
     }
 
+    /// A tap in a rendered frame that runs no logic is still seen by the next logic tick (uncapped rendering).
+    #[test]
+    fn a_tap_in_a_frame_without_logic_reaches_the_next_logic_tick() {
+        #[derive(Resource, Default)]
+        struct Seen(Vec<bool>);
+        let mut app = App::new();
+        app.add_plugins(SchedulePlugin).init_resource::<Seen>().init_resource::<ButtonInput<KeyCode>>();
+        app.add_systems(FixedUpdate, |k: Res<ButtonInput<KeyCode>>, mut s: ResMut<Seen>| s.0.push(k.just_pressed(KeyCode::KeyJ)));
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyJ);
+        app.update(); // a frame with no logic: the latch takes the edge
+        {
+            let mut k = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            k.clear();
+            k.release(KeyCode::KeyJ);
+            k.clear();
+        }
+        app.update(); // the key is up and the edge is gone from the input
+        run_logic(app.world_mut(), 1);
+        assert_eq!(app.world().resource::<Seen>().0, [true], "the tap survived the frames without logic");
+        run_logic(app.world_mut(), 1);
+        assert_eq!(app.world().resource::<Seen>().0, [true, false], "and is seen once");
+    }
+
+    #[test]
+    fn the_field_rate_is_selected_by_the_variable_and_the_environment() {
+        assert_eq!(field_hz_for(None, false), 60, "play defaults to the smooth field");
+        assert_eq!(field_hz_for(None, true), 30, "rig and turbo runs keep the original's cadence");
+        assert_eq!(field_hz_for(Some("30"), false), 30);
+        assert_eq!(field_hz_for(Some("60"), true), 60);
+        assert_eq!(field_hz_for(Some("x"), false), 60);
+    }
+
+    /// Limit 0 in the field: one tick per vblank, step 1.0, and it survives a menu.
+    #[test]
+    fn a_sixty_hertz_field_runs_one_tick_per_vblank() {
+        let mut c = FrameClock::with_field_hz(60);
+        assert_eq!((0..4).map(|_| c.vblank()).collect::<Vec<_>>(), [1, 1, 1, 1]);
+        assert_eq!(c.step(), 1.0);
+        c.set_menu(true);
+        c.set_field_hz(30);
+        c.set_menu(false);
+        assert_eq!(c.field_hz(), 30);
+        let runs: Vec<u32> = (0..4).map(|_| c.vblank()).collect();
+        assert!(runs.iter().sum::<u32>() == 4 && runs.contains(&0), "30 Hz again: {runs:?}");
+    }
+
     /// In the app the fixed order runs `Vblank` instead of `FixedUpdate`, and `FixedUpdate` runs as often as the step says.
     #[test]
     fn the_fixed_order_runs_the_logic_through_the_vblank() {
         let mut app = App::new();
         app.add_plugins(SchedulePlugin).init_resource::<Ran>();
+        app.world_mut().resource_mut::<FrameClock>().set_field_hz(30);
         app.add_systems(FixedUpdate, (|mut r: ResMut<Ran>| r.0.push("sora")).in_set(Sim::Sora));
         let order = app.world().resource::<bevy::app::FixedMainScheduleOrder>();
         assert!(order.labels.iter().any(|l| (**l).eq(&Vblank)) && !order.labels.iter().any(|l| (**l).eq(&FixedUpdate)));

@@ -2,10 +2,11 @@
 //! section 9). `FUN_00141500` builds the object from a COCT file (the map BAR entry of type 6); every
 //! query below takes the object and a collider record and mirrors one original function.
 //!
-//! Scope. The object here is the identity-placed one (the map's own collision): the placement matrices of
-//! `FUN_00142858` and the branches the original takes for a moved object (`oct +0xd1 == 0`) belong to the
-//! moving collision objects (lifts and platforms: the pool at 0x35a8a0), which this package leaves out.
-//! `FUN_00143840` therefore runs with an empty moving-object list, which is what a plain field has.
+//! Placement. Every object carries a placement matrix (`oct +0x50`), its inverse (`+0x90`) and the identity flag
+//! (`+0xd1`, WP-L1-P15). The map's own collision is the identity case and takes the original's short paths; a
+//! moving collision object (the pool of `pool.rs`) maps the points of every query into its frame with the inverse
+//! and the results back with the matrix, exactly where the original does. `FUN_00143840` over the moving-object
+//! pool is `Oct::walk_step_with`; `walk_step` is the empty-pool case a plain field has.
 //!
 //! Layout. The queries read the file in place by byte offsets like the original (a polygon record is 16
 //! bytes, a mesh 0x14, a tree node 0x20), the collider is the 0x88-byte record every query takes (the actor
@@ -13,6 +14,7 @@
 //! shape by `FUN_00169af0`, 90 for Sora).
 
 use crate::geom::*;
+use crate::pool::MovingPool;
 
 /// Offsets inside the collider record.
 pub mod coll {
@@ -43,6 +45,8 @@ pub mod coll {
     pub const FLAGS: usize = 0x70;
     /// The moving object under the foot (u32).
     pub const MOVING: usize = 0x78;
+    /// The owner id (u32): moving objects of the same owner are not collided with.
+    pub const OWNER: usize = 0x7c;
     /// The extra step height (float).
     pub const EXTRA: usize = 0x80;
     /// Size of the record.
@@ -88,6 +92,13 @@ impl Collider {
     }
     pub fn set_u32(&mut self, o: usize, v: u32) {
         self.0[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    pub fn u32_at(&self, o: usize) -> u32 {
+        u32::from_le_bytes(self.0[o..o + 4].try_into().unwrap())
+    }
+    /// The owner of the collider (`coll +0x7c`): the moving-object sweeps skip the objects with the same owner.
+    pub fn owner(&self) -> u32 {
+        self.u32_at(coll::OWNER)
     }
     pub fn flags(&self) -> u64 {
         u64::from_le_bytes(self.0[coll::FLAGS..coll::FLAGS + 8].try_into().unwrap())
@@ -192,6 +203,18 @@ const PUSH_EPS: f32 = 0.008;
 const PLANE_SIDE: f32 = 0.001;
 const INSIDE_EPS: f32 = 0.01;
 const SWEEP_BOX: f32 = 1.5;
+/// 0x378f78: a placement basis row shorter than this (squared) collapses the object.
+const COLLAPSE_LIMIT: f32 = 0.01;
+/// 0x379538: the w lane of the sweep's end point.
+const SWEEP_END_W: f32 = ONE;
+/// 0x378fc8 and 0x37955c: the floor height the walking step starts its moving-object floor with (they hold the same
+/// value, so the step's "floor changed" test fires only when a moving floor was found).
+pub(crate) const FLOOR_OUT_NONE: f32 = 10_000_000.0;
+/// 0x379550: the start of the nearest-foot search of `nearest_edge`.
+const NEAREST_EDGE_START: f32 = f32::from_bits(0x56b5_e620);
+/// 0x379540 and 0x379544: the w lane and the scale of `edge_direction_gap`.
+const EDGE_DIR_W: f32 = 1.0;
+const EDGE_DIR_SCALE: f32 = 10.0;
 const NEXT3: [usize; 3] = [1, 2, 0];
 const NEXT4: [usize; 4] = [1, 2, 3, 0];
 
@@ -217,6 +240,12 @@ pub struct Oct {
     has_five: bool,
     /// The group word the enabled bytes stand for (bit `g` set: the meshes of group `g` are on).
     word: u64,
+    /// `oct +0x50`: the placement matrix (the identity for the map).
+    m: M4,
+    /// `oct +0x90`: its inverse.
+    inv: M4,
+    /// `oct +0xd1`: the placement is the identity (the queries skip the frame mapping).
+    identity: bool,
 }
 
 fn rd32(b: &[u8], o: usize) -> u32 {
@@ -248,6 +277,9 @@ impl Oct {
             on: Vec::new(),
             has_five: false,
             word: 0,
+            m: M4_IDENTITY,
+            inv: M4_IDENTITY,
+            identity: true,
         };
         o.on = vec![false; o.n_meshes];
         o.set_groups(groups);
@@ -278,6 +310,60 @@ impl Oct {
                 self.on[m] = on;
             }
         }
+    }
+
+    /// orig 0x142858: places the object. Stores the matrix (`+0x50`) and its inverse (`+0x90`: the outer products of
+    /// the three basis rows, one divide by the determinant, the translation row negated through the inverse) and sets
+    /// the identity flag (`+0xd1`) when the matrix is the identity exactly.
+    pub fn place(&mut self, m: &M4) {
+        self.identity = *m == M4_IDENTITY;
+        self.m = *m;
+        let (a, b, c, d) = (m[0], m[1], m[2], m[3]);
+        let r0 = cross_qe(b, c);
+        let r1 = cross_qe(c, a);
+        let r2 = cross_qe(a, b);
+        let det = dot3(a, r0);
+        // The z lane sums z first, then x, then y (the add-broadcast pair of that lane); x and y sum in dot order.
+        let t = [dot3(d, r0), dot3(d, r1), (d[2] * r2[2] + d[0] * r2[0]) + d[1] * r2[1]];
+        let q = vu_div(ONE, det);
+        // The scaling multiplies the three direction lanes of each row; the w lanes are 0, 0, 0 and the matrix's own w (1 for every placement the game builds) [inferred from the oracle].
+        let row = |x: f32, y: f32, z: f32, w: f32| [x * q, y * q, z * q, w];
+        self.inv = [
+            row(r0[0], r1[0], r2[0], 0.0),
+            row(r0[1], r1[1], r2[1], 0.0),
+            row(r0[2], r1[2], r2[2], 0.0),
+            row(0.0 - t[0], 0.0 - t[1], 0.0 - t[2], d[3]),
+        ];
+    }
+
+    /// The placement matrix (`oct +0x50`).
+    pub fn placement(&self) -> &M4 {
+        &self.m
+    }
+
+    /// The inverse placement (`oct +0x90`).
+    pub fn placement_inverse(&self) -> &M4 {
+        &self.inv
+    }
+
+    /// `oct +0xd1`: the placement is the identity.
+    pub fn is_identity(&self) -> bool {
+        self.identity
+    }
+
+    /// orig 0x142a88: a collapsed object: some basis row of the placement has a squared length below the limit.
+    pub fn collapsed(&self) -> bool {
+        self.m.iter().take(3).any(|row| dot3(*row, *row) < COLLAPSE_LIMIT)
+    }
+
+    /// A point into the object's frame (the inverse placement, skipped for the identity).
+    fn to_local(&self, v: V4) -> V4 {
+        if self.identity { v } else { xf(&self.inv, v) }
+    }
+
+    /// A point back out of the object's frame.
+    fn to_world(&self, v: V4) -> V4 {
+        if self.identity { v } else { xf(&self.m, v) }
     }
 
     /// Whether the walker visits mesh `m` (its enabled byte).
@@ -416,7 +502,10 @@ impl Oct {
     /// under `filt` and `kind`. Returns the hit point and polygon (0xffff when none).
     ///
     /// orig 0x141d90: the nearest-hit search over the collected polygons.
+    ///
+    /// A moved object maps both points into its frame first and the hit back out (orig 0x142858's inverse and matrix).
     pub fn ray(&self, filt: Filter, p0: V4, p1: V4, kind: u32) -> (Option<V4>, u16) {
+        let (p0, p1) = (self.to_local(p0), self.to_local(p1));
         let b = fbox_corners([p0[0], p0[1], p0[2]], [p1[0], p1[1], p1[2]]);
         let q = fbox_to_qbox(&b, self.level());
         let mut hits = Vec::new();
@@ -439,7 +528,19 @@ impl Oct {
                 best_d2 = d2;
             }
         }
-        (best, poly)
+        (best.map(|h| self.to_world(h)), poly)
+    }
+
+    /// orig 0x143960: the ray cast of the floor-style walking filter (the sweep's filter with the nibble-5 exception
+    /// armed, `oct +0xd3`) on the walking map (slot 0x355934).
+    pub fn ray_walk_b(&self, p0: V4, p1: V4, kind: u32) -> (Option<V4>, u16) {
+        self.ray(Filter { b: true, ..Filter::WALK }, p0, p1, kind)
+    }
+
+    /// orig 0x143ce8: the ray cast that keeps one floor kind only (attribute nibble equal to `floor_kind`) on the
+    /// walking map.
+    pub fn ray_floor_kind(&self, p0: V4, p1: V4, floor_kind: u32, kind: u32) -> (Option<V4>, u16) {
+        self.ray(Filter { mask: 0xf, value: floor_kind, invert: false, b: false }, p0, p1, kind)
     }
 
     /// orig 0x142760: the polygons under the collider's end point, every polygon of kind 0xf, from one lift above
@@ -506,7 +607,7 @@ impl Oct {
             flags |= FLAG_NO_FLOOR_AHEAD;
         } else {
             let verts = self.poly_verts(poly);
-            let end = c.v4(coll::END);
+            let end = self.to_local(c.v4(coll::END));
             let plane = self.plane(poly);
             if plane_side(end, verts.v[0], plane) == 0 {
                 flags = if self.attr(poly) & 0xf == 2 { flags | FLAG_NO_FLOOR_AHEAD } else { flags & !FLAG_NO_FLOOR_AHEAD };
@@ -562,7 +663,10 @@ impl Oct {
         let mut start = c.v4(coll::START);
         start[1] -= lift;
         let mut end = add(start, c.v4(coll::DELTA));
-        end[3] = ONE;
+        end[3] = SWEEP_END_W;
+        // A moved object sweeps in its own frame: both ends through the inverse placement (orig 0x142858).
+        start = self.to_local(start);
+        end = self.to_local(end);
         let delta = sub(end, start);
         let len = dot3(delta, delta).sqrt();
         let whole = (len / radius) as i32;
@@ -575,7 +679,7 @@ impl Oct {
         let mut hits = Vec::new();
         self.collect(Filter::WALK, &q, c.kind(), &mut hits);
         if hits.is_empty() {
-            c.set_v4(coll::END, end);
+            c.set_v4(coll::END, self.to_world(end));
             let y = c.f32_at(coll::END + 4);
             c.set_f32(coll::END + 4, y + lift);
             return 0;
@@ -589,6 +693,9 @@ impl Oct {
             self.step_sphere(half, c, &mut s, &hits, &mut depth, prev);
             s.c = c.v4(coll::END);
             left -= 1;
+        }
+        if !self.identity {
+            c.set_v4(coll::END, self.to_world(c.v4(coll::END)));
         }
         let flags = c.flags();
         if flags & 0x78 != 0x30 {
@@ -646,8 +753,9 @@ impl Oct {
             if attr & 0x100000 != 0 {
                 continue;
             }
+                // The body-height probe passes run for the identity-placed object only (the original tests oct +0xd1).
             let plane = self.plane(p);
-            if mode == 1 && attr & 0xf != 1 {
+            if self.identity && mode == 1 && attr & 0xf != 1 {
                 // The extra body-height probe: the same face test with the centre moved down.
                 let shift = if walking { c.f32_at(coll::RADIUS) } else { c.f32_at(coll::LIFT) - c.f32_at(coll::HEIGHT) * 0.5 };
                 let mut probe = s.c;
@@ -657,7 +765,7 @@ impl Oct {
                     if fbox_overlap(&fbox_of_polygon(&verts.v, verts.n), sbox) {
                         let (inside, contact) = face_contact(probe, &verts, plane, d);
                         if inside {
-                            let moved = add(contact, scale(plane, s.r + PUSH_EPS));
+                            let moved = add(contact, mul_xyz(plane, s.r + PUSH_EPS));
                             hit_callback(c, attr, p, contact);
                             let mut centre = moved;
                             centre[1] -= shift;
@@ -677,7 +785,9 @@ impl Oct {
                         deferred.push(p);
                     } else {
                         hit_callback(c, attr, p, contact);
-                        s.c = add(contact, scale(plane, s.r + PUSH_EPS));
+                        // The multiplies write x, y and z only: the plane keeps its distance in w, so w ends as
+                        // (centre w - distance) + distance (VU dest masks, read from the instruction words).
+                        s.c = add(contact, mul_xyz(plane, s.r + PUSH_EPS));
                         contacts += 1;
                         if walking && 9 < contacts {
                             return -1;
@@ -692,13 +802,13 @@ impl Oct {
                 continue;
             }
             let verts = self.poly_verts(p);
-            if mode == 1 && attr & 0xf != 1 && !walking {
+            if self.identity && mode == 1 && attr & 0xf != 1 && !walking {
                 let shift = c.f32_at(coll::LIFT) - c.f32_at(coll::HEIGHT) * 1.02;
                 let mut probe = s.c;
                 probe[1] += shift;
                 if let Some(contact) = edge_contact(&Sphere { c: probe, r: s.r }, &verts) {
-                    let toward = normalize4(sub(probe, contact));
-                    let moved = add(contact, scale(toward, s.r + PUSH_EPS));
+                    let toward = normalize_xyz(sub(probe, contact));
+                    let moved = add(mul_xyz(toward, s.r + PUSH_EPS), contact);
                     hit_callback(c, attr, p, contact);
                     let mut centre = moved;
                     centre[1] -= shift;
@@ -710,8 +820,8 @@ impl Oct {
             }
             if let Some(contact) = edge_contact(s, &verts) {
                 hit_callback(c, attr, p, contact);
-                let toward = normalize4(sub(s.c, contact));
-                s.c = add(contact, scale(toward, s.r + PUSH_EPS));
+                let toward = normalize_xyz(sub(s.c, contact));
+                s.c = add(mul_xyz(toward, s.r + PUSH_EPS), contact);
                 contacts += 1;
                 if walking && 9 < contacts {
                     return -1;
@@ -732,12 +842,29 @@ impl Oct {
         }
     }
 
-    /// orig 0x1421b8: the unit plane normal of polygon `p` as the original hands it out (w = 1; the moved-object
-    /// branch that rotates and renormalizes it is not ported).
+    /// orig 0x1421b8: the unit plane normal of polygon `p` as the original hands it out (w = 1). A moved object
+    /// rotates it by the placement's basis rows (the translation row replaced by `(0, 0, 0, 1)`) and renormalizes.
     pub fn normal(&self, p: u16) -> V4 {
         let mut n = self.plane(p);
         n[3] = ONE;
-        n
+        if self.identity {
+            return n;
+        }
+        let rows = [self.m[0], self.m[1], self.m[2], [0.0, 0.0, 0.0, ONE]];
+        let rotated = xf(&rows, n);
+        // The divide scales the three direction lanes; w stays as the rotation left it.
+        let q = vu_div(ONE, dot3(rotated, rotated).sqrt());
+        [rotated[0] * q, rotated[1] * q, rotated[2] * q, rotated[3]]
+    }
+
+    /// orig 0x1422d8: the vertices of polygon `p` in world space (a moved object maps each through the placement).
+    /// Empty for the polygon index 0xffff.
+    pub fn verts_world(&self, p: u16) -> Vec<V4> {
+        if p == 0xffff {
+            return Vec::new();
+        }
+        let v = self.poly_verts(p);
+        v.v.iter().take(v.n).map(|x| self.to_world(*x)).collect()
     }
 
     /// orig 0x143560: what stands under the collider, from the floor polygon `coll +0x60` that the floor ray
@@ -746,6 +873,13 @@ impl Oct {
     /// The colour table words themselves (`FUN_0015c690` and `FUN_00153540`, the lighting colour of the floor)
     /// are not ported: the result carries the colour map polygon's class byte for the caller to look up.
     pub fn floor_info(&self, c: &Collider, colour: Option<&Oct>, kinds: Option<&Oct>) -> FloorInfo {
+        self.floor_info_on(c, colour, kinds, None)
+    }
+
+    /// orig 0x143560 with a moving object under the foot: `moving` is the collision object of the entry `coll +0x78`
+    /// names (the normal, the attribute flag and the material byte then come from it instead of the map).
+    pub fn floor_info_on(&self, c: &Collider, colour: Option<&Oct>, kinds: Option<&Oct>, moving: Option<&Oct>) -> FloorInfo {
+        let floor = moving.unwrap_or(self);
         let mut out = FloorInfo { normal: [0.0; 4], opposite: [0.0; 4], poly: 0, material: 0, colour_byte: 0, colour_class: 0, kind: 0, flag: 0 };
         if let Some(map) = colour {
             let hits = map.vertical_probe(c);
@@ -763,9 +897,9 @@ impl Oct {
             out.normal = [0.0, -ONE, 0.0, ONE];
             out.opposite = [0.0, ONE, 0.0, ONE];
         } else {
-            out.normal = self.normal(poly);
-            out.flag = (self.attr(poly) >> 16 & 1) as u8;
-            out.material = self.poly_bytes(poly).0 as u32;
+            out.normal = floor.normal(poly);
+            out.flag = (floor.attr(poly) >> 16 & 1) as u8;
+            out.material = floor.poly_bytes(poly).0 as u32;
             out.opposite = sub([0.0, 0.0, 0.0, ONE], out.normal);
         }
         out
@@ -774,13 +908,32 @@ impl Oct {
     /// orig 0x143840 on a map with no moving collision objects: the sweep, then the floor ray.
     /// Returns the sweep's contact bit.
     pub fn walk_step(&self, c: &mut Collider) -> u64 {
+        self.walk_step_with(&MovingPool::empty(), c)
+    }
+
+    /// orig 0x143840: the full walking step over the map and the moving collision objects of `pool`. The pool sweep
+    /// comes first (a hit rewrites the delta so the map sweep continues from the pushed end), then the map sweep, then
+    /// the floor ray against every moving object (the highest floor wins; a hit rewrites the delta and sweeps the map
+    /// again) or, with none, against the map. Returns the OR of the sweeps' contact bits.
+    pub fn walk_step_with(&self, pool: &MovingPool, c: &mut Collider) -> u64 {
         c.set_u16(coll::POLY_A, 0xffff);
         c.set_flags(c.flags() & !FLAG_CONTACT);
         c.set_u16(coll::POLY_B, 0xffff);
-        let r = self.sweep(c);
+        let mut floor = FLOOR_OUT_NONE;
+        let mut r = pool.sweep_all(c);
+        r |= self.sweep(c);
         c.set_u32(coll::MOVING, 0);
-        if self.floor_ray(c) {
-            c.set_u32(coll::MOVING, 0);
+        if pool.floor_ray_all(c, &mut floor) == 0 {
+            if self.floor_ray(c) {
+                c.set_u32(coll::MOVING, 0);
+            }
+        } else {
+            c.set_v4(coll::DELTA, sub(c.v4(coll::END), c.v4(coll::START)));
+            r |= self.sweep(c);
+        }
+        if floor != FLOOR_OUT_NONE {
+            c.set_f32(coll::FLOOR_Y, floor);
+            c.set_flags(c.flags() & !FLAG_NO_FLOOR_POLY);
         }
         r
     }
@@ -822,7 +975,7 @@ pub fn plane_gap(centre: V4, plane: V4, radius: f32) -> Option<f32> {
 
 /// orig 0x162678: the centre projected onto the plane, and whether that point lies inside the polygon.
 pub fn face_contact(centre: V4, verts: &Verts, plane: V4, gap: f32) -> (bool, V4) {
-    let contact = sub(centre, scale(plane, gap));
+    let contact = sub(centre, mul_xyz(plane, gap));
     (inside_edges(verts, contact, plane), contact)
 }
 
@@ -934,6 +1087,65 @@ pub fn edge_contact_out(s: &Sphere, verts: &Verts) -> (Option<V4>, V4) {
 
 fn edge_contact(s: &Sphere, verts: &Verts) -> Option<V4> {
     edge_contact_out(s, verts).0
+}
+
+/// orig 0x164780: of the polygon's edges, the foot of the perpendicular from `p` on each edge line that falls inside the
+/// edge's box widened by the epsilon vector; with several the foot nearest `p` wins. Returns the winning edge's two end
+/// vertices (`None` when no foot qualifies) and the foot record as the original leaves it (the last edge's foot when
+/// none qualifies, written by every edge pass).
+pub fn nearest_edge(verts: &Verts, p: V4) -> (Option<(V4, V4)>, V4) {
+    let eps = [EDGE_EPS, EDGE_EPS, EDGE_EPS, ONE];
+    let mut found: Vec<(V4, V4, V4)> = Vec::new();
+    let mut out = [0.0; 4];
+    for (i, &nx) in next_table(verts.n).iter().enumerate().take(verts.n) {
+        let a = verts.v[i];
+        let b = verts.v[nx];
+        let mut d = sub(b, a);
+        d[3] = ONE;
+        let a1 = [a[0], a[1], a[2], ONE];
+        let diff = sub(a1, p);
+        let t = -(dot3(diff, d) / dot3(d, d));
+        let foot = add(scale(d, t), a1);
+        out = foot;
+        let lo = add(a, eps);
+        let hi = add(b, eps);
+        let between = |k: usize| {
+            let f = foot[k];
+            if hi[k] < f { f < lo[k] } else { lo[k] <= f }
+        };
+        if between(0) || between(1) || between(2) {
+            found.push((foot, a, b));
+        }
+    }
+    let pick = match found.len() {
+        0 => return (None, out),
+        1 => 0,
+        _ => {
+            let mut best = NEAREST_EDGE_START;
+            let mut pick = 0;
+            for (j, f) in found.iter().enumerate() {
+                let off = sub(p, f.0);
+                let d2 = dot3(off, off);
+                if d2 < best {
+                    best = d2;
+                    pick = j;
+                }
+            }
+            pick
+        }
+    };
+    let (foot, a, b) = found[pick];
+    (Some((a, b)), foot)
+}
+
+/// orig 0x164690: the length of `normalize(b - a) - dir`, scaled by the angle constant: how far an edge's direction is
+/// from `dir` [inferred: an angle measure; its use inside the sphere pass 0x164ce8 was not read].
+pub fn edge_direction_gap(a: V4, dir: V4, b: V4) -> f32 {
+    let mut d = sub(b, a);
+    d[3] = EDGE_DIR_W;
+    let n = normalize4(d);
+    let off = sub(n, dir);
+    dot3(off, off).sqrt() * EDGE_DIR_SCALE
 }
 
 #[cfg(test)]

@@ -52,12 +52,7 @@ No. It is a re-creation. It aims to behave like the original, and it is checked 
 
 ## For developers
 
-The detailed status list, the developer commands, the project layout and how the work is done are in these files:
-- [docs/TECHNICAL-STATUS.md](docs/TECHNICAL-STATUS.md): the full feature list, what is not done, developer controls and environment variables, tools and crate layout
-- [docs/METHOD.md](docs/METHOD.md): how the project is built
-- [docs/README.md](docs/README.md): index of the system documents
-
-Quick developer start: `cargo run -p kh2 -- set-iso "path\to\Kingdom Hearts II (USA).iso"` then `cargo run --release -p kh2-app`.
+Quick start: `cargo run -p kh2 -- set-iso "path	o\Kingdom Hearts II (USA).iso"` then `cargo run --release -p kh2-app`.
 
 ## Credits and licenses
 

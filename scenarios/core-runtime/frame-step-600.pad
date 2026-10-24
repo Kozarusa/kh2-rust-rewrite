@@ -1,7 +1,0 @@
-# kh2 pad v1   Roxas in the Mansion computer room (state 06): still until k 40, stick up from k 40 to k 119, still after.
-# The field reads the pad every second vsync, so every change is on an even k (the rig warns otherwise).
-# k   buttons   lx  ly  rx  ry
-0     -         127 127 127 127
-40    -         127 0   127 127
-120   -         127 127 127 127
-end 600

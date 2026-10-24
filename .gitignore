@@ -1,10 +1,9 @@
 # WHITELIST. Everything is ignored unless listed below.
-# Only our own source, sheets (structure + status, never game data), docs and license texts are tracked, plus (RULES C5,
-# 2026-10-22) the process tooling: tools/ (scripts), agents/ (rules, guides, brief templates), scenarios/ (rig scenarios) and
-# .cargo/ (build settings). None of them may hold game data, decompiled text, save states, recordings or machine paths
-# (those live in the untracked local/machine.ps1).
-# Never tracked: the ISO, anything extracted or decompiled from it, caches, the OpenKH filename list
-# (downloaded by `kh2 fetch-names` into local/), build output, screenshots.
+# The public repository holds only what the game needs to build and run, plus the licence and credit files the
+# licences require (user decision 2026-10-24). Workflow files (agents/, docs/, scenarios/, the other tools/ scripts)
+# stay on the developer's machine only and are never tracked. Never tracked either: the ISO, anything extracted or
+# decompiled from it, caches, the OpenKH filename list (downloaded by `kh2 fetch-names` into local/), build output,
+# screenshots, machine paths.
 /*
 !/.gitignore
 !/Cargo.toml
@@ -16,11 +15,10 @@
 !/rust-toolchain.toml
 !/crates/
 !/sheets/
-!/docs/
 !/third_party/
 !/tools/
-!/agents/
-!/scenarios/
+/tools/*
+!/tools/package.ps1
 !/.cargo/
 
 # Inside tracked folders: still never commit binaries or game-derived files.

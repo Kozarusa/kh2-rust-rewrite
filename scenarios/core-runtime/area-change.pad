@@ -1,8 +1,0 @@
-# kh2 pad v1   Roxas in the Mansion computer room (state 06) walks into the exit volume at (700, -800) that leads to area 17.
-# The stick is 8-way relative to the camera: up-left for 40 vsyncs turns the heading, then straight up. The original leaves the room at
-# k 166 (see area-change.toml); the pad keeps holding up afterwards, so the player runs up from the entrance of the new area.
-# k   buttons   lx  ly  rx  ry
-0     -         127 127 127 127
-40    -         0   0   127 127
-80    -         127 0   127 127
-end 420

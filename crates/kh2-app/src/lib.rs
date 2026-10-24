@@ -23,23 +23,83 @@ pub use kh2_worldmap::*;
 mod plugins;
 mod asset_viewer;
 mod sound_test;
+mod config;
+mod launcher;
 
 use bevy::prelude::*;
 
-/// Builds the Bevy application and runs it: the disc comes from `KH2_ISO`, the first command-line
-/// argument names the start area (default `tt04`).
+/// The window settings that are remembered between runs, tracked while the game runs and saved when it exits.
+#[derive(Resource)]
+struct WindowMemory {
+    dir: std::path::PathBuf,
+    config: config::Config,
+}
+
+/// F11 and Alt+Enter toggle borderless fullscreen; the current size is noted for the config file.
+fn window_settings(keys: Res<ButtonInput<KeyCode>>, mut memory: ResMut<WindowMemory>, mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
+    let Ok(mut window) = windows.single_mut() else { return };
+    let alt_enter = keys.just_pressed(KeyCode::Enter) && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
+    if keys.just_pressed(KeyCode::F11) || alt_enter {
+        window.mode = if matches!(window.mode, bevy::window::WindowMode::Windowed) {
+            bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+        } else {
+            bevy::window::WindowMode::Windowed
+        };
+    }
+    let full = !matches!(window.mode, bevy::window::WindowMode::Windowed);
+    memory.config.fullscreen = Some(full);
+    if !full {
+        memory.config.width = Some(window.width().round() as u32);
+        memory.config.height = Some(window.height().round() as u32);
+    }
+}
+
+/// Writes the remembered window settings when the game exits.
+fn save_window_settings(mut exits: MessageReader<AppExit>, memory: Res<WindowMemory>) {
+    if exits.read().next().is_some() {
+        let mut cfg = config::Config::load(&memory.dir);
+        cfg.width = memory.config.width;
+        cfg.height = memory.config.height;
+        cfg.fullscreen = memory.config.fullscreen;
+        if let Err(e) = cfg.save(&memory.dir) {
+            eprintln!("could not save {}: {e}", memory.dir.display());
+        }
+    }
+}
+
+/// Builds the Bevy application and runs it. The disc is found by [`launcher::discover`]; the first argument that is
+/// not a flag names the start area (default `tt04`). See [`launcher::HELP`] for the flags.
 pub fn run() {
-    let iso = assets::iso_path().unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1);
-    });
-    let start = std::env::args().nth(1).unwrap_or_else(|| "tt04".into());
+    let opts = launcher::parse_args(std::env::args().skip(1));
+    // The release build is a windows-subsystem program: it has no console unless asked for.
+    let release = cfg!(not(debug_assertions));
+    let dir = config::config_dir();
+    if opts.help {
+        if !release || launcher::attach_console(false) {
+            print!("{}", launcher::HELP);
+        } else {
+            launcher::info_box("kh2-rs help", launcher::HELP);
+        }
+        return;
+    }
+    if release {
+        if opts.console {
+            launcher::attach_console(true);
+        } else {
+            launcher::redirect_log(&dir);
+        }
+    }
+    let env_iso = std::env::var_os("KH2_ISO").map(std::path::PathBuf::from);
+    let local_txt = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
+    let iso = launcher::discover(env_iso, &dir, &local_txt, opts.choose_disc, &mut launcher::pick_disc_dialog).unwrap_or_else(|e| launcher::fail(&e));
+    let start = opts.area.unwrap_or_else(|| "tt04".into());
     // A rig state file (`place` key) names the start area and the entrance.
     let start = kh2_game_core::rig::start_area(start);
     kh2_game_core::start_clock();
-    // The window opens unfocused and below every other window, so background runs never cover the
-    // user's screen. KH2_FRONT=1 (set by tools/playtest.bat) restores a normal window.
-    let front = std::env::var_os("KH2_FRONT").is_some();
+    // Harness runs (the debug exe) open the window unfocused and below every other window, so background runs never
+    // cover the user's screen. KH2_FRONT=1 (set by tools/playtest.bat) restores a normal window; the release build,
+    // which a player starts, and the window flags always do.
+    let front = std::env::var_os("KH2_FRONT").is_some() || release || opts.windowed || opts.fullscreen;
     let level = if front { bevy::window::WindowLevel::Normal } else { bevy::window::WindowLevel::AlwaysOnBottom };
     let turbo = kh2_game_core::harness::turbo();
     if turbo {
@@ -51,11 +111,22 @@ pub fn run() {
         }
     }
     let present_mode = if turbo { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
+    // The remembered window size and fullscreen apply to the release build and the window flags, never to harness runs.
+    let remember = release || opts.windowed || opts.fullscreen;
+    let saved = if remember { config::Config::load(&dir) } else { config::Config::default() };
+    let fullscreen = if opts.fullscreen { true } else if opts.windowed { false } else { saved.fullscreen.unwrap_or(false) };
+    let mut window = Window { title: "kh2-rs".into(), focused: front, window_level: level, present_mode, ..default() };
+    if let (Some(w), Some(h)) = (saved.width, saved.height) {
+        window.resolution = bevy::window::WindowResolution::new(w.clamp(320, 7680), h.clamp(240, 4320));
+    }
+    if fullscreen {
+        window.mode = bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary);
+    }
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window { title: "kh2-rs".into(), focused: front, window_level: level, present_mode, ..default() }),
-        ..default()
-    }));
+    app.add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(window), ..default() }));
+    if remember {
+        app.insert_resource(WindowMemory { dir, config: saved }).add_systems(Update, window_settings).add_systems(Last, save_window_settings);
+    }
     if turbo {
         kh2_game_core::harness::configure_turbo(&mut app);
     }

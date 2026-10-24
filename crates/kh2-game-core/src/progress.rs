@@ -92,6 +92,14 @@ pub mod item_type {
     pub const DRIVE_FORM: u8 = 0x15;
 }
 
+/// A member's ability list, AP bonus and the app's Dodge Roll level (`Progress::ability_snapshot`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbilitySnapshot {
+    pub list: [u16; 64],
+    pub ap: u8,
+    pub dodge_roll: u8,
+}
+
 /// The "inventory" target id (`FUN_001a1768` / `FUN_001a18d8` with 100: no party member).
 pub const INVENTORY: u16 = 100;
 /// Count limit of an item (`FUN_001a1768`: a count above 99 refuses the item).
@@ -1951,6 +1959,51 @@ impl Progress {
         let old = self.u16_at(o);
         self.set_u16(o, old & 0x7fff | (on as u16) << 15);
         true
+    }
+
+    /// Developer aid (`KH2_DEV=1`, docs/systems/combat-effects/abilities.md): learns every id of `ids` the member does not have yet
+    /// (a new slot through `FUN_00187868`, unequipped, as a level-up's gift arrives). With `equip` every slot of those ids is also
+    /// switched on, the write the Abilities page makes (`set_ability_equipped`). Returns how many ids were newly learned.
+    pub fn grant_abilities(&mut self, member: u16, ids: &[u16], equip: bool) -> usize {
+        let Some(r) = Self::member_off(member) else { return 0 };
+        let mut learned = 0;
+        for &id in ids {
+            if !self.ability_slots(member).iter().any(|s| s.1 == id) {
+                self.put_ability(r, id, false);
+                learned += 1;
+            }
+        }
+        if equip {
+            for (slot, id, on) in self.ability_slots(member) {
+                if !on && ids.contains(&id) {
+                    self.set_ability_equipped(member, slot, true);
+                }
+            }
+        }
+        learned
+    }
+
+    /// Developer aid: the member's AP bonus byte (record `+8`, part of the AP maximum of `FUN_0019f920`).
+    pub fn set_ap_bonus(&mut self, member: u16, ap: u8) {
+        if let Some(r) = Self::member_off(member) {
+            self.set_u8(r + rec::AP, ap);
+        }
+    }
+
+    /// Developer aid: the member's raw 64-slot ability list, AP bonus byte and the app's Dodge Roll level, to restore later.
+    pub fn ability_snapshot(&self, member: u16) -> Option<AbilitySnapshot> {
+        let r = Self::member_off(member)?;
+        Some(AbilitySnapshot { list: std::array::from_fn(|i| self.u16_at(r + rec::ABILITIES + 2 * i)), ap: self.u8_at(r + rec::AP), dodge_roll: self.dodge_roll })
+    }
+
+    /// Developer aid: puts back what `ability_snapshot` took.
+    pub fn restore_ability_snapshot(&mut self, member: u16, s: &AbilitySnapshot) {
+        let Some(r) = Self::member_off(member) else { return };
+        for (i, v) in s.list.iter().enumerate() {
+            self.set_u16(r + rec::ABILITIES + 2 * i, *v);
+        }
+        self.set_u8(r + rec::AP, s.ap);
+        self.dodge_roll = s.dodge_roll;
     }
 
     /// `FUN_001d3f18(record + 0x54, 0x40, form, level)` on a member's 64-slot list: the first slot whose

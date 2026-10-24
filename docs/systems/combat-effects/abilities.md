@@ -186,3 +186,16 @@ Tests: `defender_applies_only_at_low_hp`, `berserk_charge_adds_strength_only_whi
 - The special `FUN_001c13b8` override (growth level 5 in world 0x12 area 0x17) is documented, not wired.
 - Ability bits above 127 do not fit the `u128` the attack table uses; `Block::bit` has all 256.
 - Nobody played the result: tests and logs only.
+
+## Developer aids (WP-FIX-ABIL)
+
+`KH2_DEV=1` turns on three keys (F1..F12 are all used by other aids): **Insert** learns every implemented ability (they then
+show on the pause menu Abilities page, equipped there with the real AP rules) and sets the Dodge Roll level to 4; **Home** also equips
+all of them and raises Sora's AP bonus byte to 255 so nothing is refused; **End** puts the ability list, AP bonus and Dodge Roll level
+back to what they were before the first key. A line at the top left names what the key did for 2 seconds. Without `KH2_DEV=1`, or in
+a turbo (`KH2_TURBO`, accept) run, the systems are not registered. The implemented set is `abilities::implemented_abilities`: Guard, the
+16 growth abilities (94..109), the stat abilities of `Block::apply`, Second Chance, Once More, Leaf Bracer, Auto Limit, Auto Healing, plus
+every ability bit the player's attack table gates a record with (and Scan, Aerial Recovery), each only when the disc has a row. Auto
+Change (418) has a rule but no port and is not granted. Dodge Roll is not an ability row on this disc: it is the app's `Progress::dodge_roll`
+level and is not listed on the Abilities page.
+

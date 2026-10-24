@@ -2022,7 +2022,7 @@ fn orig_1048e0_matches_the_game() {
         }
         let thread = r.word() as u32 as u64;
         d.run(&m, n, |ee| call(ee, 0x1048e0, &[thread]), |p| {
-            kh2_game_core::area::ctl::area_thread(p, thread, SCRATCH);
+            t::area_thread(p, thread, SCRATCH);
             0
         });
         let log = d.sh.borrow().log.clone();

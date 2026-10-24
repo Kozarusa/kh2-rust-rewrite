@@ -12,7 +12,7 @@
 //! The setters store the payload address of a BAR entry in a global; nothing reads these globals yet in the port, so nothing here is
 //! wired into the app (the readers are other units: the cost consumers, the item and shop tables, the battle tables).
 
-use crate::area::ctl::{AreaCtl, AreaHost, GroupTable, GROUP_BASE, GROUP_SIZE};
+use crate::area::ctl::{self, AreaCtl, AreaHost, GroupTable, GROUP_BASE, GROUP_SIZE};
 
 fn rd32(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
@@ -732,4 +732,79 @@ pub fn load_system_tables(host: &mut impl AreaHost) {
     for s in BATTLE_STEPS {
         run(host, battle as u32, s);
     }
+}
+
+// ---- the area thread (0x1048e0) --------------------------------------------------------------------------------------------------
+
+/// The area thread: the coroutine that owns the area while it is loaded, as a straight run of its steps. Each round it reads the
+/// area's files (`0x1689c0`), asks whether the story side wants a jump (`0x1051f0` on the current place and the jump record),
+/// and when it does makes the area allocator, waits (yielding to the task manager with `0x102438(thread, 0)`) until the jump record is
+/// ready (`0x1a6b30`, filled by `0x1a6b50`), saves the current place as the saved place (`ctl::G_SAVED`, six bytes), sets the gate byte, plays
+/// the jump, yields once, clears the gate and tears the area down (`0x102678`, `0x1dbfc8`, `0x1052a0`, `0x181af8`, `0x105188` on the saved
+/// place). When no round is wanted any more it makes the allocator for the final area, runs the area's start-up calls and yields until
+/// the byte at 0x355830 (`0x13ee98`) is set, then creates the next task (`0x102bc8`). `rec` is the address of the jump record on the
+/// thread's stack: the destination bytes (+4..+9) start as 0xff and the word at +0x1c as 0 before the record's init `0x19d8d0`.
+/// Every callee goes through the host, so the call log is the thread's sequence; a yield is the host call of `0x102438` returning
+/// (the thread switch itself is not ported: `not-needed:hw`).
+///
+/// orig 0x1048e0
+pub fn area_thread(host: &mut impl AreaHost, thread: u64, rec: u32) {
+    for o in 4..10 {
+        host.write8(rec + o, 0xff);
+    }
+    host.write32(rec + 0x1c, 0);
+    host.call(0x19d8d0, &[rec as u64]);
+    host.call(0x14cbd0, &[]);
+    host.call(0x108f68, &[]);
+    loop {
+        host.call(0x1689c0, &[thread]);
+        if host.call(0x1051f0, &[ctl::G_CUR as u64, rec as u64]) == 0 {
+            break;
+        }
+        host.call(0x16f260, &[6, 0x8c0000]);
+        host.call(0x105250, &[0x380000, 0x100000]);
+        let alloc = host.read32(ctl::G_ALLOC);
+        host.call(0x1dbe90, &[ctl::sx(alloc), 0x80000, 0x20000]);
+        host.call(0x1dbe78, &[]);
+        while host.call(0x1a6b30, &[]) == 0 {
+            let v = host.call(0x1a6b50, &[rec as u64]);
+            host.call(0x138540, &[v]);
+            host.call(0x102438, &[thread, 0]);
+        }
+        for o in 0..6 {
+            let b = host.read8(ctl::G_CUR + o);
+            host.write8(ctl::G_SAVED + o, b);
+        }
+        host.write8(ctl::G_GATE, 1);
+        host.call(0x19d9d8, &[rec as u64, 0]);
+        host.call(0x102438, &[thread, 0]);
+        let mgr = host.read32(ctl::G_TASK_MGR);
+        host.write8(ctl::G_GATE, 0);
+        host.call(0x102678, &[ctl::sx(mgr), 8, 8]);
+        host.call(0x1dbfc8, &[]);
+        host.call(0x1052a0, &[]);
+        host.call(0x16f260, &[6, 0xc0000]);
+        host.call(0x181af8, &[]);
+        host.call(0x105188, &[ctl::G_SAVED as u64]);
+    }
+    let (size, heap) = (host.read32(0x35cd20), host.read32(0x35cd24));
+    host.call(0x105250, &[ctl::sx(size.wrapping_add(heap)), ctl::sx(heap)]);
+    host.call(0x16f260, &[6, 0xc0000]);
+    let v = host.call(0x224b50, &[]);
+    host.call(0x2c1158, &[v]);
+    host.call(0x149ba0, &[]);
+    host.call(0x1368e8, &[thread]);
+    host.call(0x137150, &[]);
+    host.call(0x168ae0, &[thread]);
+    host.call(0x13aaa8, &[]);
+    host.call(0x149b08, &[]);
+    host.call(0x1dbe78, &[]);
+    host.call(0x168b10, &[]);
+    host.call(0x16fb20, &[thread]);
+    host.call(0x136aa0, &[]);
+    host.call(0x136ec0, &[thread]);
+    while byte_355830(&[host.read8(0x355830)]) == 0 {
+        host.call(0x102438, &[thread, 0]);
+    }
+    host.call(0x102bc8, &[0, 1000, 0x104b60]);
 }

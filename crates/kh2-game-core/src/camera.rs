@@ -462,7 +462,7 @@ fn tick(
         }
         let p = std::mem::take(&mut st.pending);
         if p.yaw != 0.0 {
-            let y = rules::app_yaw(rig.yaw) + p.yaw;
+            let y = rig.yaw + p.yaw;
             rig.set_yaw(y);
         }
         let (sticks, pad_reset, pad_select) = match pad_state.as_deref().filter(|p| p.scripted) {
@@ -526,7 +526,7 @@ fn tick(
         info!("camera: talk view placed (FUN_001592d8, a cut): pos {:.0} look {:.0} sora {:.0}", view.pos, view.look, pos);
     }
     if matches!(talk_req, Some(TalkCam::End)) && event.active.is_none() {
-        info!("camera: back to the follow camera: pos {:.0} look {:.0} yaw {:.2} radius {:.0}", view.pos, view.look, rules::app_yaw(rig.yaw), rig.radius);
+        info!("camera: back to the follow camera: pos {:.0} look {:.0} yaw {:.2} radius {:.0}", view.pos, view.look, rig.yaw, rig.radius);
     }
     if (mode_before == Mode::Look) != (rig.mode == Mode::Look) {
         info!("camera: look-around {} (mode {:?} -> {:?})", if rig.mode == Mode::Look { "on" } else { "off" }, mode_before, rig.mode);
@@ -541,7 +541,7 @@ fn tick(
                 st.row,
                 view.pos,
                 view.look,
-                rules::app_yaw(rig.yaw),
+                rig.yaw,
                 rig.radius,
                 view.fov,
                 rig.look_yaw,
@@ -553,7 +553,7 @@ fn tick(
             );
         }
     }
-    o.yaw = rules::wrap(rules::app_yaw(rig.yaw));
+    o.yaw = rig.yaw;
     o.pitch = rig.pitch();
     o.distance = rig.radius * SCALE;
     o.first_person = rig.mode == Mode::Look;

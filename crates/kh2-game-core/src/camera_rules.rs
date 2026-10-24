@@ -3,12 +3,11 @@
 //! Everything here works in the game's units (centimetres) in map-model space, Y up, at the
 //! game's 60 Hz tick: each rule is one tick of the original's camera object (`FUN_00140a80`). The
 //! original keeps Y pointing down; heights below are already converted to Y up. Yaw is the angle
-//! of the camera's offset from its look-at point in the game's convention (`Rig::yaw`): the offset is `(sin yaw, ., -cos yaw) * radius` in
-//! the app's axes (the game's z is the app's negated), and "behind the character" is `atan2(-fx, fz)` for a facing `(fx, ., fz)`. The app's
-//! own yaw (`OrbitCamera::yaw`) is `PI - yaw` ([`app_yaw`]).
+//! of the camera's offset from its look-at point: the offset is `(sin yaw, ., cos yaw) * radius`,
+//! and "behind the character" is `atan2(-fx, -fz)` for a facing `(fx, ., fz)`.
 
 use bevy::math::{Vec2, Vec3, Vec3Swizzles};
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{PI, TAU};
 
 /// Look-at point above the character's feet (`FUN_0013f740`: position y minus 170).
 pub const LOOK_HEIGHT: f32 = 170.0;
@@ -112,8 +111,6 @@ pub struct Params {
     /// Right-stick yaw rate per tick at full tilt; the look-around pitch uses the same number
     /// (`FUN_00141018` copies 0x378f14 to both `DAT_004842e8` and `DAT_004842ec`).
     pub stick_yaw: f32,
-    /// The coefficients of the series the game's sine and cosine use (`FUN_002fb460`, the vector at 0x371ad0), highest power first.
-    pub sin_poly: [f32; 4],
     /// Distance a collided camera is kept off the surface along its normal (`FUN_0013f8f8`,
     /// `DAT_00378e48`), and the larger margin for callers that ask for it (`DAT_00378e44`).
     pub wall_margin: f32,
@@ -151,7 +148,6 @@ impl Params {
             auto_base: f(0x378f0c)?,
             auto_per_speed: f(0x378f10)?,
             stick_yaw: f(0x378f14)?,
-            sin_poly: [f(0x371ad0)?, f(0x371ad4)?, f(0x371ad8)?, f(0x371adc)?],
             wall_margin: f(0x378e48)?,
             wall_margin_far: f(0x378e44)?,
             look: LookParams {
@@ -206,7 +202,6 @@ impl Params {
                 && r.height_k.is_finite()
         }) && self.yaw_step > 0.0
             && self.stick_yaw > 0.0
-            && self.sin_poly.iter().all(|c| c.is_finite() && c.abs() < 1.0)
             && self.auto_base.is_finite()
             && self.auto_per_speed.is_finite()
             && self.wall_margin > 0.0
@@ -231,13 +226,12 @@ impl Params {
     }
 }
 
-/// orig 0x17bbc0. An angle wrapped into the range of one turn around zero: a positive angle `a` becomes `(a + pi) mod 2pi - pi`, any other
-/// `pi - (pi - a) mod 2pi` (the game's float remainder, FUN_00301350, is `%` here).
+/// Angle wrapped into [-pi, pi) (`FUN_0017bbc0`).
 pub fn wrap(a: f32) -> f32 {
-    if 0.0 < a { (a + PI) % TAU - PI } else { PI - (PI - a) % TAU }
+    (a + PI).rem_euclid(TAU) - PI
 }
 
-/// orig 0x17bc30. Moves `cur` toward `target` by at most `step` along the short way round, the result wrapped.
+/// Moves `cur` toward `target` by at most `step` along the short way round (`FUN_0017bc30`).
 pub fn approach_angle(cur: f32, target: f32, step: f32) -> f32 {
     let d = wrap(target - cur);
     wrap(if d < -step {
@@ -249,15 +243,9 @@ pub fn approach_angle(cur: f32, target: f32, step: f32) -> f32 {
     })
 }
 
-/// The yaw (in the game's convention, see [`Rig::yaw`]) that puts the camera behind a character facing `facing` (app axes). The game takes
-/// `atan2(-fx, -fz)` of the facing in its own axes (`FUN_0013fc28`, `FUN_0013fbf0`), whose z is the app's negated.
+/// Yaw that puts the camera behind a character facing `facing` (`FUN_0013fc28`).
 pub fn behind_yaw(facing: Vec3) -> f32 {
-    (-facing.x).atan2(facing.z)
-}
-
-/// The app's yaw (the camera sits at `(sin, ., cos)` of it from the look-at point; movement is relative to it) for a camera yaw of the game's.
-pub fn app_yaw(game_yaw: f32) -> f32 {
-    PI - game_yaw
+    (-facing.x).atan2(-facing.z)
 }
 
 /// orig 0x13f740. The look-at point of the follow camera: the player's position raised by `LOOK_HEIGHT`.
@@ -281,41 +269,11 @@ pub fn spring(cur: Vec3, new: Vec3, prev: Vec3, t: f32, k: f32, c: f32, l: f32) 
     cur + u * ((k * (l - len) + c * (dot / len)) * t)
 }
 
-/// Sine and cosine of an angle the way the game's rotation gets them (`FUN_002fb628`, `FUN_002fb460`): the angle is wrapped by a
-/// subtraction loop first (`FUN_0011be08`: while above pi or below -pi, a turn is taken off or added), a series of `x = pi/2 - |b|` gives the
-/// cosine, and the sine is the square root of one minus its square with the sign of the angle. `poly` is the series' coefficients from the
-/// executable ([`Params::sin_poly`]), the one of the highest power first. Zero is a special case of the caller
-/// (`FUN_0011b4d8` leaves the matrix alone).
-pub fn game_sin_cos(poly: &[f32; 4], angle: f32) -> (f32, f32) {
-    let mut b = angle;
-    if 0.0 < b {
-        while PI < b {
-            b -= TAU;
-        }
-    } else {
-        while b < -PI {
-            b += TAU;
-        }
-    }
-    let x = if b < 0.0 { FRAC_PI_2 + b } else { FRAC_PI_2 - b };
-    let z = x * x;
-    // Terms in the vector unit's order: x, then the coefficients times x times z, z^2, z^3, z^4.
-    let t1 = poly[3] * x * z;
-    let t2 = poly[2] * x * z * z;
-    let t3 = poly[1] * x * z * z * z;
-    let t4 = poly[0] * x * z * z * z * z;
-    let cos = (((x + t1) + t2) + t3) + t4;
-    let q = (1.0 - cos * cos).abs().sqrt();
-    (if b < 0.0 { -q } else { q }, cos)
-}
-
-/// Where the camera wants to be: on a circle of `radius` around the look-at point, at a height that follows a parabola of the radius
-/// (`FUN_0013f7a0`). `yaw` is the game's (see [`Rig::yaw`]): the offset `(0, 0, radius)` of the game's axes is rotated about Y by it
-/// (`FUN_0011b4d8`, a yaw of zero leaves it), and the app's z is the game's negated.
-pub fn wanted_position(poly: &[f32; 4], look: Vec3, radius: f32, yaw: f32, min_radius: f32, height_k: f32) -> Vec3 {
+/// Where the camera wants to be: on a circle of `radius` around the look-at point, at a height
+/// that follows a parabola of the radius (`FUN_0013f7a0`).
+pub fn wanted_position(look: Vec3, radius: f32, yaw: f32, min_radius: f32, height_k: f32) -> Vec3 {
     let d = radius - min_radius;
-    let (s, c) = if yaw == 0.0 { (0.0, 1.0) } else { game_sin_cos(poly, yaw) };
-    Vec3::new(look.x + radius * s, look.y - BASE_DROP + height_k * (d * d), look.z - radius * c)
+    Vec3::new(look.x + radius * yaw.sin(), look.y - BASE_DROP + height_k * d * d, look.z + radius * yaw.cos())
 }
 
 /// Auto-camera: yaw step per tick while the character runs (`FUN_00140128`). `left` is the left
@@ -724,9 +682,6 @@ pub struct Rig {
     pub row: Row,
     pub mode: Mode,
     pub radius: f32,
-    /// The yaw of the camera object (`+0x4c`) and the one it swings toward (`+0x50`), in the game's convention: the camera sits at
-    /// `(sin yaw, ., -cos yaw)` of the look-at point in the app's axes (the game's z is the app's negated), and a stick pushed left
-    /// adds to it. The app's own yaw (`OrbitCamera::yaw`) is `PI - yaw` ([`app_yaw`]).
     pub yaw: f32,
     pub target_yaw: f32,
     /// Smoothed look-at point and position, what is drawn.
@@ -764,7 +719,7 @@ impl Rig {
     pub fn new(p: &Params, row: Row, s: &Subject, cast: Cast) -> Rig {
         let yaw = behind_yaw(s.facing);
         let look = s.pos + Vec3::Y * LOOK_HEIGHT;
-        let mut pos = wanted_position(&p.sin_poly, look, row.radius, yaw, row.min_radius, row.height_k);
+        let mut pos = wanted_position(look, row.radius, yaw, row.min_radius, row.height_k);
         if let Some(c) = collide(p, look, pos, cast, None, false) {
             pos = c;
         }
@@ -778,7 +733,7 @@ impl Rig {
             pos,
             fov: row.fov,
             roll: 0.0,
-            look_yaw: -yaw,
+            look_yaw: yaw + PI,
             look_pitch: 0.0,
             fade: Fade { value: 1.0, step: 0.0 },
             overhead_fixed: false,
@@ -795,9 +750,9 @@ impl Rig {
         }
     }
 
-    /// Sets the yaw directly (the harness and the mouse), given as the app's yaw ([`app_yaw`]).
+    /// Sets the yaw directly (the harness and the mouse).
     pub fn set_yaw(&mut self, yaw: f32) {
-        self.yaw = wrap(app_yaw(yaw));
+        self.yaw = wrap(yaw);
         self.target_yaw = self.yaw;
     }
 
@@ -887,7 +842,7 @@ impl Rig {
     /// Returns the position, also stored as the wanted position.
     pub fn place_wanted(&mut self, p: &Params, look: Vec3, snap: bool, warp: bool, step: f32) -> Vec3 {
         self.yaw = if snap || warp { self.target_yaw } else { approach_angle(self.yaw, self.target_yaw, p.yaw_step * step) };
-        let wp = wanted_position(&p.sin_poly, look, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
+        let wp = wanted_position(look, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
         self.wanted_pos = wp;
         if snap {
             self.prev_wanted_pos = wp;
@@ -943,12 +898,11 @@ impl Rig {
     }
 
     /// Right stick horizontal turns the camera, at `stick_yaw` per tick times the stick's
-    /// magnitude (`FUN_0013fe20`, whose Select, R3 and zoom parts are `enter_look`, `follow_tick` and `stick_zoom`, so it has no `orig`
-    /// mark of its own). Stick left adds to the game's yaw, which moves the camera to its left.
+    /// magnitude (`FUN_0013fe20`). Stick left moves the camera to its left.
     fn stick_turn(&mut self, p: &Params, s: &Sticks, step: f32) {
         if s.right_mag > 0.0 && s.right.x != 0.0 {
             let dir = s.right.x.signum();
-            self.yaw = wrap(self.yaw - dir * (p.stick_yaw * s.right_mag * step));
+            self.yaw = wrap(self.yaw + dir * (p.stick_yaw * s.right_mag * step));
             self.target_yaw = self.yaw;
         }
     }
@@ -989,7 +943,7 @@ impl Rig {
     /// pitch 0, and the player starts fading out.
     fn enter_look(&mut self, p: &Params) {
         self.mode = Mode::Look;
-        self.look_yaw = -self.yaw;
+        self.look_yaw = self.yaw + PI;
         self.look_pitch = 0.0;
         self.fade = Fade::set(p.look.fade_from, 0.0, p.look.fade_out_ticks);
     }
@@ -1013,7 +967,7 @@ impl Rig {
         self.wanted_pos = eye;
         self.yaw = behind_yaw(s.facing);
         self.target_yaw = self.yaw;
-        self.look_yaw = -self.yaw;
+        self.look_yaw = self.yaw + PI;
         if i.sticks.right_mag > 0.0 && i.sticks.right.y != 0.0 {
             // Stick up (y < 0) raises the pitch.
             self.look_pitch -= i.sticks.right.y * i.sticks.right_mag * p.stick_yaw;
@@ -1061,8 +1015,7 @@ impl Rig {
         self.roll = 0.0;
     }
 
-    /// One 60 Hz tick (`FUN_00140a80`). No `orig` mark: the mode switch is the game's, but the port adds the mouse zoom, takes the lock-on
-    /// (mode 2) from the input, and only mode 0 is under the oracle (`tests/orig_l2_p2.rs`); its ported parts carry their own marks.
+    /// One 60 Hz tick (`FUN_00140a80`).
     pub fn tick(&mut self, p: &Params, i: &TickIn) {
         self.blocked = false;
         // The warp flag a talk's end set (`FUN_00140e48` after the mode update snaps the drawn
@@ -1145,7 +1098,7 @@ impl Rig {
                     if i.reset {
                         // Reset button: face along the player-to-look-at line, default lock radius.
                         let d = sub.pos - self.wanted_look;
-                        self.target_yaw = d.x.atan2(-d.z);
+                        self.target_yaw = d.x.atan2(d.z);
                         self.radius = self.row.lock_radius;
                     } else {
                         self.stick_turn(p, &i.sticks, i.step);
@@ -1260,7 +1213,7 @@ impl Rig {
                 };
                 let to = sub.pos - prev_look;
                 // Camera goes along the line from the old look-at point through the character.
-                self.target_yaw = wrap(to.x.atan2(-to.z) + off);
+                self.target_yaw = wrap(to.x.atan2(to.z) - off);
             }
             self.wanted_look = look;
         } else {
@@ -1284,7 +1237,6 @@ mod tests {
             auto_base: 0.004,
             auto_per_speed: 0.0002,
             stick_yaw: 0.05,
-            sin_poly: POLY,
             wall_margin: 5.0,
             wall_margin_far: 30.0,
             look: LookParams {
@@ -1332,9 +1284,6 @@ mod tests {
         (0.0..=1.0).contains(&t).then(|| Hit { point: a + d * t, normal: Vec3::new(a.x.signum(), 0.0, 0.0), attr })
     }
 
-    /// The Taylor series of the sine in the game's form (highest power first): the tests need a series, not the game's own coefficients.
-    const POLY: [f32; 4] = [1.0 / 362_880.0, -1.0 / 5040.0, 1.0 / 120.0, -1.0 / 6.0];
-
     fn subject(pos: Vec3) -> Subject {
         Subject { pos, facing: Vec3::NEG_Z, moved: false, run_speed: 8.0, eye_height: 150.0, can_look: true }
     }
@@ -1359,7 +1308,7 @@ mod tests {
         for a in [0.0f32, 0.7, 2.0, -1.3, 3.0] {
             let f = Vec3::new(a.sin(), 0.0, a.cos());
             let y = behind_yaw(f);
-            let off = Vec3::new(y.sin(), 0.0, -y.cos());
+            let off = Vec3::new(y.sin(), 0.0, y.cos());
             assert!((off + f).length() < 1e-4, "{a}");
         }
     }
@@ -1393,11 +1342,11 @@ mod tests {
     #[test]
     fn height_follows_the_radius_parabola() {
         let look = Vec3::new(0.0, 170.0, 0.0);
-        let near = wanted_position(&POLY, look, 200.0, 0.0, 200.0, 0.01);
-        let far = wanted_position(&POLY, look, 500.0, 0.0, 200.0, 0.01);
+        let near = wanted_position(look, 200.0, 0.0, 200.0, 0.01);
+        let far = wanted_position(look, 500.0, 0.0, 200.0, 0.01);
         assert!((near.y - (170.0 - 150.0)).abs() < 1e-4);
         assert!((far.y - (170.0 - 150.0 + 0.01 * 300.0 * 300.0)).abs() < 1e-3);
-        assert!((near.z + 200.0).abs() < 1e-4, "yaw 0 puts the camera on the game's +z, the app's -z");
+        assert!((near.z - 200.0).abs() < 1e-4, "yaw 0 puts the camera on +z");
     }
 
     #[test]
@@ -1519,7 +1468,7 @@ mod tests {
         inp.sticks.right_mag = 1.0;
         let y0 = rig.yaw;
         rig.tick(&p, &inp);
-        assert!((wrap(y0 - rig.yaw) - p.stick_yaw).abs() < 1e-5, "stick right lowers the game's yaw: the camera moves to its right");
+        assert!((wrap(rig.yaw - y0) - p.stick_yaw).abs() < 1e-5, "stick right moves the camera to its right");
         inp.sticks.right = Vec2::new(0.0, -1.0);
         for _ in 0..100 {
             rig.tick(&p, &inp);
@@ -1869,8 +1818,7 @@ mod tests {
         rig.end_talk();
         rig.tick(&p, &input(s, &no_wall));
         assert_eq!(rig.mode, Mode::Follow);
-        // The yaw here is a half turn (a facing along -z): the game's series is poor at exactly pi, so the sign of the yaw moves x by up to 2.
-        assert!(rig.pos.distance(before_pos) < 3.0 && rig.look.distance(before_look) < 1e-2, "warped back: {} {}", rig.pos, rig.look);
+        assert!(rig.pos.distance(before_pos) < 1e-2 && rig.look.distance(before_look) < 1e-2, "warped back: {} {}", rig.pos, rig.look);
         assert!((rig.fov - row().fov).abs() < 1e-4);
         // From the look-around the talk ends it and the player fades back in.
         let rig = &mut Rig::new(&p, row(), &s, &no_wall);

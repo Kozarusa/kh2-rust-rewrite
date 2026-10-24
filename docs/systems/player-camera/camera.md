@@ -150,18 +150,7 @@ The target point the app uses is the locked enemy's position raised 100; the gam
   drawn ones: `OrbitCamera::wanted` carries them (game units, map-model axes).
 - **Oracle** (`crates/kh2-game-core/tests/orig_l2_p2.rs`): kh2-ee runs 0x13f740, 0x13f600, 0x140768, 0x13fd08, 0x140068, 0x140128,
   0x13f7a0, the smoothing branch of 0x1407b8, 0x1402c8 (collision stubbed) and the task 0x140be0 in mode 0 on a camera object at
-  0x355840, and the port's `Rig` on the same values, now also 0x17bbc0 (the angle wrap) and 0x17bc30 (the swing toward a yaw). The rig's
-  yaw is the game's own (`+0x4c`; the app's `OrbitCamera::yaw` is `PI` minus it, `app_yaw`), the wrap is the game's float remainder form,
-  and the rotation of 0x13f7a0 is the game's: the wrap by subtraction (`FUN_0011be08`), the series of `FUN_002fb460` with its coefficients
-  read from the executable (`Params::sin_poly`, 0x371ad0) and the sine as the root of one minus the cosine squared (`FUN_002fb628`). Positions,
-  the swing, the zoom and the smoothing are compared bit for bit. The one exception is a yaw taken from the facing (the reset, the
-  auto-camera, the look-around): the game's `atan2f` (`FUN_003003e8`, `FUN_00300f18`) is its own routine that is not ported, the port
-  uses the platform's, and those yaws are compared within 4e-6 rad (positions within what that gap moves them, exact where the bits agree).
-  Not ported as a whole, so no `orig` mark: `FUN_0013fe20` (the right stick, Select and R3: the port splits it into `stick_turn`,
-  `stick_zoom`, the reset and `enter_look`, decides left and right by the stick's direction where the game reads the logical bits of
-  `FUN_00158040` and `FUN_00158090`, and has no `FUN_0019ae68` test) and `FUN_00140a80` (the mode switch: `Rig::tick` also runs the port's
-  own mouse zoom and the lock-on mode 2, and the modes other than 0 are not under the oracle). Their parts that are ported whole carry
-  their own marks (`FUN_0013fd08`, `FUN_00140128`, `FUN_0013f7a0`, `FUN_00140768`).
+  0x355840, and the port's `Rig` on the same values. The yaw of the original is `PI` minus the port's yaw (the port's Y-up mirror).
   Not covered: modes 1 to 10 of 0x140a80, the script flag `+0x39`, Select, the event camera. The logical stick bits of the pad layer
   (`FUN_00157f98` and its three siblings) are stubbed from the stick's direction [inferred].
 - **Rig result** (`movement/tt-run-06`, 2026-10-24): the camera rows pass at k 40 to 320 (position within 1.1 cm, look-at point within 2.1 cm,
@@ -174,8 +163,20 @@ The target point the app uses is the locked enemy's position raised 100; the gam
   in progress runs (it restarts there), not against a counter of the camera's own.
 - **Pad branch.** The scripted pad's sticks and the R3 and Select edges are `camera::pad_input`, unit-tested (the pad's y down, the dead zone
   and cap of `rig::stick_vector`, the reverse options, held buttons counting once).
-- **Gaps**: `atan2f` (`FUN_003003e8` -> `FUN_00300f18`, a single-precision routine with its own tables) is the platform's in the port, so a yaw
-  derived from a facing can differ from the game's in the last bits. The script flag `+0x39`
+- **Ledger marks.** `FUN_0013fe20` (the right stick, Select, R3: the port splits it into `stick_turn`, `stick_zoom`, the reset and `enter_look`,
+  and decides left and right by the stick's direction where the game reads the logical bits of `FUN_00158040` and `FUN_00158090`) and
+  `FUN_00140a80` (the mode switch: `Rig::tick` adds the port's mouse zoom and takes the lock-on from the input, and only mode 0 is under the
+  oracle) are not whole ports, so they carry no `orig` mark; their parts that are whole do (`FUN_0013fd08`, `FUN_00140128`, `FUN_0013f7a0`,
+  `FUN_00140768`).
+- **Tried and dropped (WP-L2-F1): the game's rotation.** A version with the yaw in the game's convention (`PI` minus the app's), the game's
+  float-remainder wrap (`FUN_0017bbc0`), the swing `FUN_0017bc30` and the game's sine series (`FUN_002fb460`, `FUN_002fb628`; coefficients at
+  0x371ad0, the wrap loop `FUN_0011be08`) matched the oracle bit for bit (positions, swing, zoom, smoothing; the facing's `atan2f`
+  `FUN_00300f18` not ported, so yaws from a facing within 4e-6) but made `movement/tt-run-06` worse (36/37 to 31/37: the resting camera's
+  position drifted 0.2 cm at radius 600 from the first tick and Sora's run followed the view; cam.pos at k60 off by 2.07 against 1.03). The
+  same happened with libm in place of the series, so the cause is in the convention change, not found. Reverted; a next attempt starts from
+  the unit test that runs old and new rules side by side (equal over 120 ticks without a wall) and then the live run with a wall.
+- **Gaps**: the rotation of `FUN_0013f7a0` is the game's own sine series (`FUN_002fb628`, `FUN_002fb460`; the cosine is the root of one minus
+  the sine squared), the port uses libm: positions differ by up to 5e-4 of the radius near a quarter turn. The script flag `+0x39`
   (`FUN_00140288`) has no port counterpart. `FUN_0019ae68` (the player's up-down flag that skips the zoom unless R2 is held) is not modelled.
 
 ## Area camera types -- verified unless marked

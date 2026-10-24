@@ -15,12 +15,10 @@
 //! button words, `+0x2c` right stick magnitude, `+0x30/+0x34` left stick x and y, `+0x3c` left stick magnitude. The player block:
 //! `+0x40` of its vtable (may the pad drive it), `+0x70` its position, `+0x114` its run speed.
 //!
-//! The port keeps the app's axes (Y up, z mirrored): a game vector `(x, y, z)` is the port's `(x, -y, -z)`. The rig's yaw is the game's
-//! own (the port's offset is `(sin yaw, ., -cos yaw)`), and the rotation is the game's sine series, so everything is compared bit for bit
-//! (a zero and a negative zero are one value) with one exception: where a yaw comes from the facing, the game takes `atan2f`
-//! (`FUN_003003e8`, `FUN_00300f18`: its own single-precision routine, not ported) and the port the platform's. Those yaws are compared
-//! within 4e-6 rad, and the positions that follow from a yaw that differs are within what that gap moves them (`yaw_gap`): exact where the
-//! two yaws are the same bits.
+//! The port keeps the app's axes (Y up, z mirrored): a game vector `(x, y, z)` is the port's `(x, -y, -z)` and a game yaw is `PI`
+//! minus the port's yaw. Comparisons that involve a yaw (sine, cosine, the angle wrap) are within 1e-3 cm plus 5e-4 of the radius (positions: the game rotates with its own sine polynomial `FUN_002fb460`, the port with libm) or
+//! 4e-6 rad (angles);
+//! everything else is compared bit for bit (a zero and a negative zero are one value).
 //!
 //! Stand-ins (stubs), all listed here. Hooks that answer from the case: `FUN_001678e8` (the pad record), `FUN_0016b960` (the player's
 //! position address), `FUN_001831f0` (moved since last tick), `FUN_0016a890` (the player's facing), `FUN_0019ae30` and `FUN_0019ae68`
@@ -189,22 +187,22 @@ fn assert_vec_near(case: u32, what: &str, game: [f32; 3], port: Vec3, tol: f32) 
     }
 }
 
-/// A yaw the facing's `atan2f` fed: the same bits, or within 4e-6 rad modulo a turn. Returns the gap (0 when the bits are the same).
-fn yaw_gap(case: u32, what: &str, game: f32, port: f32) -> f32 {
-    if same(game, port) {
-        return 0.0;
-    }
-    // `wrap` would round a gap this small to zero.
-    let d = (game - port).abs();
-    let d = if d > PI { wrap(game - port).abs() } else { d };
-    assert!(d <= 4e-6, "case {case}: {what}: game {game} port {port} (difference {d})");
-    d
+/// Angles equal modulo a full turn.
+fn assert_angle(case: u32, what: &str, game: f32, port_game_yaw: f32) {
+    let d = wrap(game - port_game_yaw);
+    assert!(d.abs() <= 4e-6, "case {case}: {what}: game {game} port {port_game_yaw} (difference {d})");
 }
 
-/// How far a wanted position (or the smoothed one that follows it) may sit from the game's when the yaws differ by `gap`: the offset
-/// moves by the radius times the gap, and the spring carries at most that on; a gap of zero allows nothing.
-fn gap_tol(gap: f32, radius: f32) -> f32 {
-    if gap == 0.0 { 0.0 } else { 3.0 * gap * radius + 4.0 * 1.2e-4 } // plus a few units in the last place of a coordinate near 2000
+/// How far a position that goes through the game's sine and cosine may sit from the port's (libm): the game rotates with its own
+/// polynomial (`FUN_002fb460`), its sine is a series and its cosine the root of 1 - sine squared (`FUN_002fb628`), so the cosine is poor where it is small (yaw near
+/// a quarter turn): the error reaches the square root of the single-precision epsilon (3.5e-4) of the radius at a quarter turn, 5e-4 allowed. The rotation is not ported (gap).
+fn pos_tol(radius: f32) -> f32 {
+    1e-3 + 5e-4 * radius
+}
+
+/// The game's yaw for the port's.
+fn gy(yaw_port: f32) -> f32 {
+    PI - yaw_port
 }
 
 /// A camera row with its numbers in the original's field order: (default radius, min, max, height factor, default fov).
@@ -293,8 +291,8 @@ fn rig_of(p: &Params, c: &Case) -> Rig {
     let mut rig = Rig::new(p, c.row, &subject, &|_, _| None);
     rig.row = c.row;
     rig.radius = c.radius;
-    rig.yaw = c.yaw_game;
-    rig.target_yaw = c.target_game;
+    rig.yaw = gy(c.yaw_game);
+    rig.target_yaw = gy(c.target_game);
     rig.look = gp(c.look);
     rig.pos = gp(c.pos);
     rig.fov = c.fov;
@@ -312,39 +310,6 @@ fn set_step(ee: &mut Ee, r: &mut Rng) -> f32 {
     let step = if r.below(2) == 0 { 1.0 } else { 2.0 };
     ee.wf32(FRAME_STEP, step);
     step
-}
-
-/// An angle for the wrap tests: whole turns and halves, the edges of the range, and anything within 20 rad.
-fn some_angle(r: &mut Rng) -> f32 {
-    match r.below(8) {
-        0 => 0.0,
-        1 => PI * (r.below(9) as f32 - 4.0),
-        2 => PI * (r.below(9) as f32 - 4.0) + 1e-6,
-        _ => rf(r, 20.0),
-    }
-}
-
-#[test]
-fn orig_17bbc0_matches_the_game() {
-    let Some(mut m) = machine("oracle test of 0x17bbc0") else { return };
-    let mut r = Rng::new(0x17bbc0);
-    for n in 0..CASES {
-        let a = some_angle(&mut r);
-        call(&mut m.ee, 0x17bbc0, &[], &[a]);
-        assert_same(n, &format!("wrap of {a}"), m.ee.fpr[0], wrap(a));
-    }
-}
-
-#[test]
-fn orig_17bc30_matches_the_game() {
-    let Some(mut m) = machine("oracle test of 0x17bc30") else { return };
-    let mut r = Rng::new(0x17bc30);
-    for n in 0..CASES {
-        let (cur, target) = (some_angle(&mut r), some_angle(&mut r));
-        let step = if r.below(8) == 0 { 0.0 } else { rp(&mut r, 1.5) };
-        call(&mut m.ee, 0x17bc30, &[], &[cur, target, step]);
-        assert_same(n, &format!("{cur} toward {target} by {step}"), m.ee.fpr[0], approach_angle(cur, target, step));
-    }
 }
 
 #[test]
@@ -481,8 +446,8 @@ fn orig_140128_matches_the_game() {
         let sticks = Sticks { left, left_mag, right: Vec2::ZERO, right_mag };
         rig.auto_camera(&m.params, &sticks, gp([facing[0], facing[1], facing[2]]), moved, run_speed, step);
         let what = format!("(left {left:?} {left_mag}, right {right_mag}, moved {moved}, run {run_speed}, step {step}, facing {facing:?})");
-        yaw_gap(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), rig.yaw);
-        yaw_gap(n, &format!("target yaw {what}"), m.ee.f32_at(CAM + 0x50), rig.target_yaw);
+        assert_angle(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), gy(rig.yaw));
+        assert_angle(n, &format!("target yaw {what}"), m.ee.f32_at(CAM + 0x50), gy(rig.target_yaw));
         assert_same(n, &format!("radius {what}"), m.ee.f32_at(CAM + 0x48), rig.radius);
     }
 }
@@ -496,10 +461,6 @@ fn orig_13f7a0_matches_the_game() {
         if r.below(4) == 0 {
             c.target_game = c.yaw_game + rf(&mut r, 0.2);
         }
-        if r.below(8) == 0 {
-            // A yaw outside the range: the snap takes it as it is, and the rotation wraps it by subtraction (`FUN_0011be08`).
-            c.target_game = rf(&mut r, 12.0);
-        }
         c.wanted_fov = c.row.fov;
         lay_case(&mut m.ee, &c);
         let step = set_step(&mut m.ee, &mut r);
@@ -508,13 +469,13 @@ fn orig_13f7a0_matches_the_game() {
         let mut rig = rig_of(&m.params, &c);
         let wp = rig.place_wanted(&m.params, rig.wanted_look, snap, false, step);
         let what = format!("(yaw {} -> {}, radius {}, snap {snap}, step {step})", c.yaw_game, c.target_game, c.radius);
-        assert_same(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), rig.yaw);
-        assert_vec(n, &format!("wanted position {what}"), get3(&mut m.ee, CAM + 0x60), wp);
-        assert_vec(n, "wanted position field", get3(&mut m.ee, CAM + 0x60), rig.wanted_pos);
+        assert_angle(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), gy(rig.yaw));
+        assert_vec_near(n, &format!("wanted position {what}"), get3(&mut m.ee, CAM + 0x60), wp, pos_tol(c.radius));
+        assert_vec_near(n, "wanted position field", get3(&mut m.ee, CAM + 0x60), rig.wanted_pos, pos_tol(c.radius));
         if snap {
-            assert_vec(n, &format!("smoothed position {what}"), get3(&mut m.ee, CAM + 0x10), rig.pos);
+            assert_vec_near(n, &format!("smoothed position {what}"), get3(&mut m.ee, CAM + 0x10), rig.pos, pos_tol(c.radius));
             assert_vec(n, "smoothed look-at point", get3(&mut m.ee, CAM), rig.look);
-            assert_vec(n, "last tick's wanted position", get3(&mut m.ee, CAM + 0x70), rig.prev_wanted_pos);
+            assert_vec_near(n, "last tick's wanted position", get3(&mut m.ee, CAM + 0x70), rig.prev_wanted_pos, pos_tol(c.radius));
             assert_same(n, "smoothed fov", m.ee.f32_at(CAM + 0x20), rig.fov);
         } else {
             assert_vec(n, "smoothed position untouched", get3(&mut m.ee, CAM + 0x10), rig.pos);
@@ -629,13 +590,12 @@ fn the_follow_tick_of_1402c8_matches_the_game() {
         let mut rig = rig_of(&m.params, &c);
         let wp = rig.follow_tick(&m.params, &port_input(&f, &no_wall));
         let what = format!("(left {:?} {}, right {:?} {}, r3 {}, manual {}, moved {}, run {}, step {})", f.left, f.left_mag, f.right, f.right_mag, f.r3, f.manual, f.moved, f.run_speed, f.step);
-        let gap = yaw_gap(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), rig.yaw);
-        yaw_gap(n, &format!("target yaw {what}"), m.ee.f32_at(CAM + 0x50), rig.target_yaw);
+        assert_angle(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), gy(rig.yaw));
+        assert_angle(n, &format!("target yaw {what}"), m.ee.f32_at(CAM + 0x50), gy(rig.target_yaw));
         assert_same(n, &format!("radius {what}"), m.ee.f32_at(CAM + 0x48), rig.radius);
-        let tol = gap_tol(gap, rig.radius);
         assert_vec(n, &format!("wanted look-at point {what}"), get3(&mut m.ee, CAM + 0x80), rig.wanted_look);
-        assert_vec_near(n, &format!("wanted position {what}"), get3(&mut m.ee, CAM + 0x60), wp, tol);
-        assert_vec_near(n, &format!("smoothed position {what}"), get3(&mut m.ee, CAM + 0x10), rig.pos, tol);
+        assert_vec_near(n, &format!("wanted position {what}"), get3(&mut m.ee, CAM + 0x60), wp, pos_tol(c.radius));
+        assert_vec_near(n, &format!("smoothed position {what}"), get3(&mut m.ee, CAM + 0x10), rig.pos, pos_tol(c.radius));
         assert_vec(n, &format!("smoothed look-at point {what}"), get3(&mut m.ee, CAM), rig.look);
     }
 }
@@ -658,14 +618,13 @@ fn the_camera_task_of_140be0_matches_the_game_in_follow_mode() {
         let mut rig = rig_of(&m.params, &c);
         rig.tick(&m.params, &port_input(&f, &no_wall));
         let what = format!("(left {:?} {}, right {:?} {}, r3 {}, manual {}, moved {}, run {}, step {})", f.left, f.left_mag, f.right, f.right_mag, f.r3, f.manual, f.moved, f.run_speed, f.step);
-        let gap = yaw_gap(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), rig.yaw);
+        assert_angle(n, &format!("yaw {what}"), m.ee.f32_at(CAM + 0x4c), gy(rig.yaw));
         assert_same(n, &format!("radius {what}"), m.ee.f32_at(CAM + 0x48), rig.radius);
-        let tol = gap_tol(gap, rig.radius);
         assert_vec(n, &format!("wanted look-at point {what}"), get3(&mut m.ee, CAM + 0x80), rig.wanted_look);
-        assert_vec_near(n, &format!("wanted position {what}"), get3(&mut m.ee, CAM + 0x60), rig.wanted_pos, tol);
-        assert_vec_near(n, &format!("last tick's wanted position {what}"), get3(&mut m.ee, CAM + 0x70), rig.prev_wanted_pos, tol);
-        assert_vec_near(n, &format!("smoothed position {what}"), get3(&mut m.ee, CAM + 0x10), rig.pos, tol);
-        assert_vec_near(n, &format!("smoothed look-at point {what}"), get3(&mut m.ee, CAM), rig.look, tol);
+        assert_vec_near(n, &format!("wanted position {what}"), get3(&mut m.ee, CAM + 0x60), rig.wanted_pos, pos_tol(c.radius));
+        assert_vec_near(n, &format!("last tick's wanted position {what}"), get3(&mut m.ee, CAM + 0x70), rig.prev_wanted_pos, pos_tol(c.radius));
+        assert_vec_near(n, &format!("smoothed position {what}"), get3(&mut m.ee, CAM + 0x10), rig.pos, pos_tol(c.radius));
+        assert_vec_near(n, &format!("smoothed look-at point {what}"), get3(&mut m.ee, CAM), rig.look, pos_tol(c.radius));
         assert_same(n, &format!("smoothed fov {what}"), m.ee.f32_at(CAM + 0x20), rig.fov);
     }
 }

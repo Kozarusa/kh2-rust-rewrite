@@ -524,3 +524,49 @@ fn orig_1a4c78_matches_the_game() {
     }
     assert!(some > 500 && none > 300 && later > 100, "{some} rows, {none} none, {later} later rows");
 }
+
+/// Whether the chest with the record at the argument has been opened (`FUN_001a6a90(record)`): the halfword at record `+10` is the chest
+/// index `n`; 0 means none; otherwise bit `n` of the record bit words from `0x33fdcc` (the record array of `0x33fdb0` from bit 224).
+#[test]
+fn orig_1a6a90_matches_the_game() {
+    let Some(mut s) = setup("oracle test of 0x1a6a90") else { return };
+    let mut rng = Rng::new(0x1a6a90);
+    let (mut yes, mut no) = (0, 0);
+    for case in 0..4000 {
+        let mut port = Progress::from_block(&vec![0u8; party::LEN], s.ix.clone());
+        let words: Vec<u32> = (0..8).map(|_| if rng.below(3) == 0 { 0 } else { rng.word() as u32 }).collect();
+        for (i, w) in words.iter().enumerate() {
+            s.tb.ee.w32(0x33fdcc + 4 * i as u32, *w);
+            for b in 0..32u16 {
+                if w >> b & 1 != 0 && i * 32 + b as usize != 0 {
+                    port.set_chest_opened((i * 32) as u16 + b);
+                }
+            }
+        }
+        let n = if rng.below(10) == 0 { 0 } else { rng.below(256) as u16 };
+        let mut rec = [0u8; 16];
+        rec[10..12].copy_from_slice(&n.to_le_bytes());
+        s.tb.ee.write(ROW, &rec);
+        let game = call(&mut s.tb.ee, 0x1a6a90, &[ROW as u64]) & 0xff != 0;
+        assert_eq!(game, port.chest_opened(n), "case {case}: chest {n}");
+        if game { yes += 1 } else { no += 1 }
+    }
+    assert!(yes > 500 && no > 500, "{yes} opened, {no} not");
+}
+
+/// `FUN_00180948` (`AREADATA::Destroy`) is an empty function: `jr ra` and a delay slot with no effect. The port's callers do nothing for it.
+/// The test runs it over random registers and a random memory word, and checks that the return value register and the word are
+/// untouched and that the code is exactly those two instructions.
+#[test]
+fn orig_180948_matches_the_game() {
+    let Some(mut s) = setup("oracle test of 0x180948") else { return };
+    assert_eq!((s.tb.ee.r32(0x180948), s.tb.ee.r32(0x18094c)), (0x03e0_0008, 0), "jr ra, nop");
+    let mut rng = Rng::new(0x180948);
+    for _ in 0..200 {
+        let v = rng.word() as u32;
+        s.tb.ee.w32(ROW, v);
+        let r = call(&mut s.tb.ee, 0x180948, &[rng.word(), rng.word()]);
+        let _ = r;
+        assert_eq!(s.tb.ee.r32(ROW), v);
+    }
+}

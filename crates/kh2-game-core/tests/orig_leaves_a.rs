@@ -286,3 +286,42 @@ fn orig_103a48_matches_the_game() {
     }
     assert!(seen.iter().all(|&s| s > 0), "every branch was reached: {seen:?}");
 }
+
+/// Tables in which the same key occurs several times: the walk does not stop at the first match, the LAST pair with the key wins.
+/// The table is laid over the executable's own at 0x377e50 (key and value as 16-bit halves, a negative key ends it).
+#[test]
+fn orig_103280_last_duplicate_key_wins() {
+    let Some(mut ee) = world("orig_103280 duplicates") else { return };
+    let mut r = Rng::new(0x1032_80);
+    let (mut dups, mut misses) = (0u32, 0u32);
+    for n in 0..1000u32 {
+        let pairs = 1 + r.below(12) as usize;
+        let mut table = Vec::new();
+        for _ in 0..pairs {
+            // Keys 0..=5 only, so most tables repeat a key.
+            table.push((r.below(6) as i16, r.word() as i16));
+        }
+        let mut bytes = Vec::new();
+        for (k, v) in &table {
+            bytes.extend_from_slice(&k.to_le_bytes());
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let end = [-1i16, -(r.below(100) as i16) - 1][r.below(2) as usize];
+        bytes.extend_from_slice(&end.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.resize(0x400, 0);
+        let key = r.below(8) as i32;
+        ee.write(0x377e50, &bytes);
+        let got = ee.call(0x103280, &[key as u64], &[], STACK).expect("original") as u32 as i32;
+        let want = l::table_377e50(&bytes, key);
+        assert_eq!(got, want as i32, "case {n}: key {key}, table {table:?}");
+        let matches = table.iter().filter(|(k, _)| i32::from(*k) == key).count();
+        if matches > 1 {
+            dups += 1;
+            let last = table.iter().rev().find(|(k, _)| i32::from(*k) == key).unwrap().1;
+            assert_eq!(want, last, "case {n}: the last pair wins");
+        }
+        misses += (matches == 0) as u32;
+    }
+    assert!(dups > 200 && misses > 20, "duplicates and misses drawn: {dups} {misses}");
+}

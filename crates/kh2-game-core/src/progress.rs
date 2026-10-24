@@ -17,7 +17,8 @@
 //!    Nothing else is added then.
 //! 3. Without `KH2_STATE`: the app baseline, which is NOT the original's new game: the spells
 //!    Fire, Blizzard, Thunder and Cure at level 1, the four form items (with the spare Kingdom Keys
-//!    the forms take), the Kingdom Key equipped and Guard (`KH2_ABILITY_START=data` drops Guard).
+//!    the forms take), the Kingdom Key equipped; Guard and Dodge Roll only with `KH2_ABILITY_START=baseline`
+//!    (the default is the data path: they come from the level-ups).
 //!    The app had these defaults before `Progress`; they stay until the story gives them.
 //!
 //! The systems read `Progress` and still apply their own environment variables on top
@@ -742,6 +743,17 @@ pub const GAME_MODE_DEFAULT: u32 = 1;
 
 /// The prize munny limit (`FUN_0023e5e0`: a sum below 1,000,000 is kept, else 999,999).
 pub const MAX_WALLET: u32 = 999_999;
+
+/// Whether the new game also hands Sora Guard and Dodge Roll level 1: only with `KH2_ABILITY_START=baseline` (an app invention kept
+/// for scenarios); by default they come from the level-ups like in the original.
+fn start_with_guard() -> bool {
+    guard_start(std::env::var("KH2_ABILITY_START").ok().as_deref())
+}
+
+/// The env selection as a pure function of the `KH2_ABILITY_START` value.
+fn guard_start(value: Option<&str>) -> bool {
+    value == Some("baseline")
+}
 
 impl Progress {
     // --- raw block access -------------------------------------------------------------------
@@ -2222,7 +2234,7 @@ impl Progress {
         }
         added.extend(self.apply_party_weapons());
         // The user's wish (2026-10-06): Sora knows the Dodge Roll. It goes with the Guard switch:
-        // `KH2_ABILITY_START=data` (no Guard) starts without it too, so the original's rules are reachable.
+        // It goes with the Guard switch (`KH2_ABILITY_START=baseline`); by default Sora starts without it.
         if guard && self.dodge_roll == 0 {
             self.dodge_roll = 1;
             added.push("Dodge Roll growth level 1".to_string());
@@ -2815,10 +2827,10 @@ impl Progress {
                     p.story().effects = effects;
                     p.story().world_table = wtable;
                     p.story().world_boot();
-                    p.apply_baseline(std::env::var("KH2_ABILITY_START").as_deref() != Ok("data"));
+                    p.apply_baseline(start_with_guard());
                 }
             },
-            _ => p.apply_baseline(std::env::var("KH2_ABILITY_START").as_deref() != Ok("data")),
+            _ => p.apply_baseline(start_with_guard()),
         }
         Some(p)
     }
@@ -5048,6 +5060,14 @@ mod tests {
     }
 
     #[test]
+    fn the_start_is_the_data_path_unless_baseline_is_asked() {
+        assert!(!guard_start(None), "unset: the data path");
+        assert!(!guard_start(Some("data")));
+        assert!(!guard_start(Some("")));
+        assert!(guard_start(Some("baseline")));
+    }
+
+    #[test]
     fn baseline_gives_the_old_app_defaults() {
         let Some(tb) = tables() else { return };
         let mut p = Progress::new_game(index(&tb), &tb.plrp);
@@ -5062,8 +5082,8 @@ mod tests {
         assert!(!p.keyblades().contains(&KINGDOM_KEY));
         let mut q = Progress::new_game(p.items.clone(), &tb.plrp);
         q.apply_baseline(false);
-        assert!(q.sora().abilities.is_empty(), "KH2_ABILITY_START=data: no Guard");
-        assert_eq!(q.dodge_roll, 0, "KH2_ABILITY_START=data: no Dodge Roll either");
+        assert!(q.sora().abilities.is_empty(), "the data path (default): no Guard");
+        assert_eq!(q.dodge_roll, 0, "the data path (default): no Dodge Roll either");
         q.apply_json(r#"{"dodge_roll": 3}"#).unwrap();
         assert_eq!(q.dodge_roll, 3);
     }

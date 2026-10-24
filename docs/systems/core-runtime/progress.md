@@ -166,10 +166,10 @@ therefore adds, on top of the new game and only where missing:
   the words either, so `Progress::start` applies this same entry to it (`Progress::apply_party_weapons`, logged in
   the `KH2_PROGRESSLOG` baseline list); a file or slot with a `block` keeps its records unchanged;
 - the Kingdom Key in Sora's hand 0;
-- Guard equipped in Sora's ability list, unless `KH2_ABILITY_START=data`;
-- Dodge Roll growth level 1 (`Progress::dodge_roll`, the user's wish 2026-10-06). The USA disc has no Dodge
+- Guard equipped in Sora's ability list only with `KH2_ABILITY_START=baseline` (WP-FIX-BASE: the default is the data path, Guard comes from the level-ups);
+- Dodge Roll growth level 1 only with `KH2_ABILITY_START=baseline` (`Progress::dodge_roll`; the 2026-10-06 wish was withdrawn by the user on 2026-10-24: not given by default). The USA disc has no Dodge
   Roll ability item (Final Mix has it as growth slot 4, docs/systems/foundations/final-mix.md), so the level is an app field
-  beside the save block, not part of the original's records. `KH2_ABILITY_START=data` drops it with the
+  beside the save block, not part of the original's records. The roll it drives is off by default (`KH2_FM_ROLL=1` turns it on; docs/systems/player-camera/movement.md section 2). `KH2_ABILITY_START=baseline` gives it with the
   Guard, and a `KH2_STATE` file sets it with `"dodge_roll": <0..5>` (without the key it is 0). The
   harness `KH2_GROWTH=a,b,c,d,e` fifth value overrides it (docs/systems/player-camera/movement.md section 2).
   A `KH2_STATE` key `sora_items` (array of item ids) gives each item to Sora through FUN_001a18d8(id, 1, 0): free battle item slots first, then the stock; it fills the received list. The helpers `battle_items`, `take_item` (FUN_001a1ba8), `refill_battle_items` (FUN_001877c8), `equip_battle_item` (FUN_0026c698) and `recent_items` are read by items.rs.
@@ -182,7 +182,7 @@ This reproduces the previous defaults exactly (`progress::tests::baseline_gives_
 |---|---|---|
 | magic (`magic.rs` setup) | `spell_levels()`: the six slots' item counts | `KH2_MAGIC=f,b,t,c[,m,r]` |
 | drive (`drive.rs` `DriveState::from_env`) | owned forms (`owns_form`: the form items), form levels (records `+2`), second keyblades (records `+0`), spare keyblades (`keyblades()`), outfit (`outfit(world)`) | `KH2_DRIVE_OWNED`, `KH2_DRIVE_LEVEL`, `KH2_DRIVE_INVENTORY` (either of the first or third switches the keyblades back to the old harness rule), `KH2_DRIVE_OUTFIT` |
-| abilities (`abilities.rs` `with_defaults`, then `follow_progress` whenever `Progress` changes: WP-G8) | `equipment()` (Sora's weapons, armor, accessories), Sora's ability list (the growth levels are the highest equipped growth ability of each group, docs/systems/ui/menus-abilities.md section 17) and `dodge_roll` | `KH2_ABILITY_IDS`, `KH2_ABILITIES` (added on top, kept across the copies); `KH2_ABILITY_START=data` drops the baseline Guard; `KH2_GROWTH` overrides the growth levels outside a form |
+| abilities (`abilities.rs` `with_defaults`, then `follow_progress` whenever `Progress` changes: WP-G8) | `equipment()` (Sora's weapons, armor, accessories), Sora's ability list (the growth levels are the highest equipped growth ability of each group, docs/systems/ui/menus-abilities.md section 17) and `dodge_roll` | `KH2_ABILITY_IDS`, `KH2_ABILITIES` (added on top, kept across the copies); `KH2_ABILITY_START=baseline` adds the old Guard and Dodge Roll start (default: no baseline); `KH2_GROWTH` overrides the growth levels outside a form |
 
 Not wired: HP/MP/stats of the member record (the app takes them from `lvup`/`plrp` in `data.rs`), the saved
 drive gauge bytes (the drive system keeps its own start points), the summon state (no summon system yet).

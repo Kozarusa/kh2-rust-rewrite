@@ -10,7 +10,7 @@
 //!
 //! Environment: `KH2_ABILITIES=bit,bit,...` (ability bits, as the attack table gates them: each is
 //! equipped through the ability row that owns the bit, so `21` really adds a combo hit),
-//! `KH2_ABILITY_IDS=id,...` (item ids), `KH2_ABILITY_START=data` (no Guard baseline, see the doc),
+//! `KH2_ABILITY_IDS=id,...` (item ids), `KH2_ABILITY_START=baseline` (the old Guard and Dodge Roll start; default none, see the doc),
 //! `KH2_ABILITYLOG=1` (log the active abilities and the stat block deltas).
 //!
 //! Readers: the controller's view (`sora::Abilities`, `sora::Growth`) is written by

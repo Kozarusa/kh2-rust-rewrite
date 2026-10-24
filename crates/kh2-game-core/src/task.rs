@@ -1215,6 +1215,13 @@ pub mod field {
         tasks.yield_frames(task, 1);
     }
 
+    /// Makes a task on the field manager (the wrapper over `FUN_00102778` that reads the manager from `0x33e6e4`).
+    ///
+    /// orig 0x102bc8
+    pub fn create_task(tasks: &mut Tasks, ctl: &AreaCtl, bits: u32, priority: i32, function: u32) -> u32 {
+        tasks.create_task(ctl.task_mgr, bits, priority, function)
+    }
+
     /// Makes a coroutine task on the field manager.
     ///
     /// orig 0x102bf8

@@ -278,9 +278,9 @@ impl ObjList {
     /// start value, builds its parts through the other units (every call goes through the host and is logged: the part constructors, the
     /// action and animation set-up, the model data), links the object into the list and copies the start position and rotation. The vector
     /// at +0x620 is the constant (0, 0, 0, 1) the original stores from the vector unit's zero register. `cost` is the 8 bytes of the area
-    /// cost budget (0x1c893b8), to which the entry's byte +0x54 is added. The object's parts are at these offsets: +0x80 and +0x9c (two
-    /// animation sets), +0x110, +0x140, +0x308 (16 pairs), +0x3b4 and +0x414 (the flag tables), +0x478, +0x480, +0x590, +0x670, +0x7a0 (the
-    /// data cache record), +0x8e0 and +0x4a0. `scratch` is the address of a 16-byte stack copy of the start position that the original
+    /// cost budget (0x1c893b8), to which the entry's byte +0x54 is added. The parts the other units build are at these offsets: +0x80 and +0x9c (built by
+    /// `0x1db410`), +0x110, +0x140, +0x308 (16 pairs), +0x3b4 and +0x414 (the two flag tables, cleared here), +0x478, +0x480, +0x590,
+    /// +0x670, +0x7a0 (the data cache record), +0x8e0 and +0x4a0. `scratch` is the address of a 16-byte stack copy of the start position that the original
     /// hands to `0x16a700`. The float argument of `0x16a700`'s sibling `0x16a7f0` (the rotation, in f12) is passed to the host as its bit pattern after the register arguments.
     ///
     /// orig 0x168d30
@@ -404,9 +404,9 @@ impl ObjList {
         }
         self.insert(this);
         host.call(0x16b648, &[this as u64, 0]);
-        let knm = host.call(0x1a79d8, &[(this + 0x7a0) as u64]);
-        put(&mut self.get_mut(this).unwrap().0[..], 0x8b0, knm as u32);
-        if knm == 0 {
+        let aux_obj = host.call(0x1a79d8, &[(this + 0x7a0) as u64]);
+        put(&mut self.get_mut(this).unwrap().0[..], 0x8b0, aux_obj as u32);
+        if aux_obj == 0 {
             let b = &mut self.get_mut(this).unwrap().0[..];
             put(b, 0x670, 0);
             let f = get(b, 0x768);
@@ -416,12 +416,12 @@ impl ObjList {
             let obj = get(&self.get(this).unwrap().0[..], 0x8b0);
             let v = host.vcall(obj, 9, &[alloc]);
             put(&mut self.get_mut(this).unwrap().0[..], 0x670, v as u32);
-            let knt = host.call(0x1a7a10, &[(this + 0x7a0) as u64]);
-            if knt != 0 {
+            let aux_table = host.call(0x1a7a10, &[(this + 0x7a0) as u64]);
+            if aux_table != 0 {
                 let timer = get(&self.get(this).unwrap().0[..], 0x670);
-                host.call(0x11e018, &[timer as i32 as i64 as u64, knt]);
+                host.call(0x11e018, &[timer as i32 as i64 as u64, aux_table]);
                 let b = &mut self.get_mut(this).unwrap().0[..];
-                put(b, 0x69c, knt as u32);
+                put(b, 0x69c, aux_table as u32);
                 let f = get(b, 0x7f8);
                 put(b, 0x7f8, f | 2);
             }

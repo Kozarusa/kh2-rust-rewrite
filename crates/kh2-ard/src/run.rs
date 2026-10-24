@@ -174,7 +174,7 @@ pub fn run_area_with(area: &Area, programs: [u8; 3], entrance: u8, ctx: &mut Scr
     let mut vars = ScriptVars { lcg: ctx.lcg, ..ScriptVars::default() };
     let mut c = Collector { run: ScriptRun::default(), script: "map", program: 0, ctx };
     for (k, script) in SCRIPTS.iter().enumerate() {
-        // FUN_00180a68 (see `find_program`) compares the program's signed halfword id with the record byte.
+        // 0x180a68 (see `find_program`) compares the program's signed halfword id with the record byte.
         let Some(p) = area.scripts.get(*script).and_then(|ps| ps.iter().find(|p| p.id == programs[k] as u16)) else { continue };
         c.script = script;
         c.program = p.id;

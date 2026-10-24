@@ -1573,7 +1573,7 @@ fn orig_181688_matches_the_game() {
 const OBJW: u32 = 0x0190_0000;
 const SPEC_E: u32 = 0x0185_0000;
 const POS: u32 = 0x0186_0000;
-const KNM: u32 = 0x0187_0000;
+const AUXOBJ: u32 = 0x0187_0000;
 const FILE_A: u32 = 0x0188_8000;
 const OBJ_SPAN: u32 = 0x0001_0000;
 
@@ -1627,7 +1627,7 @@ fn ctor_cfg() -> Cfg {
             if h & 3 == 0 {
                 0
             } else {
-                KNM as u64
+                AUXOBJ as u64
             }
         }
         0x1a7a10 => h & 1,
@@ -1658,12 +1658,12 @@ fn ctor_cfg() -> Cfg {
 }
 
 /// The memory a constructor case reads: the entry, the start position, the constants and flag, the cost words, the data cache's entry,
-/// the model file and the knm object.
+/// the model file and the aux_obj object.
 fn ctor_mem(r: &mut Rng) -> Mem {
     let mut m = Mem::new();
     m.win(r, SPEC_E, 0x100).win(r, SPEC_E + 0x100, 0x100).win(r, POS, 0x20).win(r, 0x37a180, 0x10).win(r, 0x35d268, 4).win(r, 0x1c893b8, 8);
-    m.win(r, KNM, 0x100).win(r, 0, 0x100).scratch(SCRATCH, 0x20);
-    vt(&mut m, KNM);
+    m.win(r, AUXOBJ, 0x100).win(r, 0, 0x100).scratch(SCRATCH, 0x20);
+    vt(&mut m, AUXOBJ);
     // The model file behind the object's +0x7ac word: a BAR with entries of type 0x17 (or without).
     m.win(r, FILE_A, 0x100);
     let n = r.below(5) as u32;
@@ -1721,13 +1721,13 @@ fn compare_objects(d: &mut Dual, list: &ObjList, this: u32, what: &str, n: u64) 
 /// stays random and equal, and every byte it sets must match. The call log covers the 33 callees (stand-ins: the part constructors
 /// 0x1db410, 0x1943c8, 0x17d768, 0x32f6a0, 0x330d38, 0x32e458, 0x330bd0, 0x330ce0, the area and model queries 0x1934c0, 0x1a79d8,
 /// 0x104f98, 0x1a7a10, 0x11c268, 0x11e018, the set-ups 0x16b648, 0x193048, 0x169af0, 0x1ae998, 0x16a7f0 (with its float argument),
-/// 0x16a700, 0x1921e8, 0x169be8, 0x1a7b50, the data cache callees and virtual method 9 of the knm object). The list insert, the flag
+/// 0x16a700, 0x1921e8, 0x169be8, 0x1a7b50, the data cache callees and virtual method 9 of the aux_obj object). The list insert, the flag
 /// tables, the data cache record reset, the BAR lookup and the cost add run for real in the original.
 #[test]
 fn orig_168d30_matches_the_game() {
     let Some(mut d) = Dual::new("orig_168d30", ctor_cfg()) else { return };
     let mut r = Rng::new(0x168d30);
-    let (mut knm_cases, mut shadow, mut timer, mut file_hit) = (0, 0, 0, 0);
+    let (mut aux_obj_cases, mut shadow, mut timer, mut file_hit) = (0, 0, 0, 0);
     for n in 0..800u64 {
         let pre = r.below(4) as usize;
         let (mut list, this) = ctor_lists(&mut d, &mut r, pre);
@@ -1745,12 +1745,12 @@ fn orig_168d30_matches_the_game() {
         d.run_cost(&m, n, &a_game, args.rot, &mut list, this, args);
         compare_objects(&mut d, &list, this, "orig_168d30", n);
         let log = d.sh.borrow().log.clone();
-        knm_cases += log.iter().any(|e| e.0 == VTAG | 9) as u32;
+        aux_obj_cases += log.iter().any(|e| e.0 == VTAG | 9) as u32;
         timer += log.iter().any(|e| e.0 == 0x11e018) as u32;
         shadow += log.iter().any(|e| e.0 == 0x1934c0) as u32;
         file_hit += log.iter().any(|e| e.0 == 0x169af0) as u32;
     }
-    assert!(knm_cases > 200 && timer > 50 && shadow > 400 && file_hit > 50, "branches: {knm_cases} with a model object, {timer} with a timer entry, {shadow} shadow queries, {file_hit} file passes");
+    assert!(aux_obj_cases > 200 && timer > 50 && shadow > 400 && file_hit > 50, "branches: {aux_obj_cases} with a model object, {timer} with a timer entry, {shadow} shadow queries, {file_hit} file passes");
 }
 
 impl Dual {

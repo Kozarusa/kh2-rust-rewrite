@@ -7,14 +7,14 @@
 # movement is the one DEVIATIONS 2026-10-23 names: the original moves a full 16 cm per game frame from the frame after the input frame,
 # so Sora's position at k 42 (input written at k 40) is one full step along the stick direction.
 #
-# What it does NOT check, and why: the frame counters (0x356f34 vblanks since init, 0x356f38 vblanks since the last step) and the game
-# speed (0x356f3c) have no entry in scenarios/values.toml (not part of this package's files); add `frame.vblanks` (u32 at 0x356f34),
-# `frame.since_step` (u32 at 0x356f38) and `frame.speed` (f32 at 0x356f3c) there, with getters in rig_values.rs, and add them to the
-# [trace] list and the checks below. The counters read at a pad stop are 0 and 1 or 2 in the original (the step resets the second to 0
-# and the stop comes before the next wait ends) [inferred from docs/systems/core-runtime/runtime.md].
+# The frame counters: 0x356f38 (vblanks since the last step) reads 0 at every pad stop of the field in the original (the step resets it
+# and the pad stop comes before the next wait ends) and the game speed 0x356f3c is 1.0; both are compared exactly at the even k of the
+# checkpoints. The vblank counter 0x356f34 counts since init, so its absolute value depends on the session (the state's was 3368 at k 0
+# in the recorded run): it is compared informationally here, and the real check is the rate, 1 per vsync (the original counted 580 from
+# k 20 to k 600, the port the same). A gap of the port: it starts the counter at 0 and the step at 0 until its first frame completes,
+# where the state carries 2.0 (k 0 of frame.step below), recorded in DEVIATIONS.
 #
-# The port was not run against this scenario by the package that wrote it (see its report): the original's trace for it is not
-# recorded, so every check is a prediction from the tt-run-06 trace until `tools\rig.ps1 core-runtime/frame-step-600` has run.
+# Run by WP-RIG-G3: the original (PCSX2) trace is in local/rig/frame-step-600, the port ran in turbo.
 [scenario]
 name = "frame-step-600"
 state = "06"
@@ -28,7 +28,7 @@ auto_limit = 1
 
 [trace]
 every = 20
-values = ["frame.step", "sora.pos"]
+values = ["frame.step", "frame.vblanks", "frame.since_step", "frame.speed", "sora.pos"]
 
 # The field's step is 2.0 at every checkpoint, before, during and after the run: the cadence does not depend on the input.
 [[check]]
@@ -51,3 +51,16 @@ values = ["sora.pos"]
 tol = { "sora.pos" = 2.0 }
 informational = true
 note = "the run of tt-run-06 differs from k 60 on (the port's wall and turn handling, DEVIATIONS); here the release is checked informationally"
+
+# The counters at the pad stops: nothing is waiting for a vblank when the pad is read, and the speed is the default.
+[[check]]
+at = [20, 40, 60, 120, 200, 300, 400, 500, 600]
+values = ["frame.since_step", "frame.speed"]
+tol = { "frame.since_step" = 0.0, "frame.speed" = 0.0 }
+note = "0x356f38 is 0 at every pad stop and 0x356f3c is 1.0 (the step resets the first; nothing changes the second in the field)"
+
+[[check]]
+at = [20, 100, 300, 600]
+values = ["frame.vblanks"]
+informational = true
+note = "0x356f34 counts since init: the original's value is the state's counter (3368 at k 0 in the recorded run) plus k, the port's counts from 0; the rate (1 per vsync) is what both show"

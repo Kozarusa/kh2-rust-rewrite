@@ -155,3 +155,30 @@ note = "low 32 bits of the generator word (reent +0xa8)"
 path = [0x373cf0, 0xac]
 type = "u32"
 note = "high 32 bits of the generator word (reent +0xac); the draw is this word and 0x7fffffff"
+
+# The frame counters of the vsync block (0x356f18, core-runtime/runtime.md "Frame step"): the vblank handler adds 1 to both words,
+# the frame step resets the second to 0. Read at a pad stop.
+[frame.vblanks]
+path = [0x356f34]
+type = "u32"
+unit = "vblanks"
+note = "vblanks since init (the handler adds 1 every vblank); the absolute value depends on the session, so scenarios compare it informationally or by difference"
+
+[frame.since_step]
+path = [0x356f38]
+type = "u32"
+unit = "vblanks"
+note = "vblanks since the last frame step; the step resets it to 0"
+
+[frame.speed]
+path = [0x356f3c]
+type = "f32"
+unit = "factor"
+note = "the game speed the step is scaled by (1.0 after init)"
+
+[place.programs]
+path = [0x33e833]
+type = "u8"
+count = 3
+unit = "program ids"
+note = "the area record's map, btl and evt program ids (bytes 3..5 of the record at 0x33e830)"

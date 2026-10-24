@@ -116,7 +116,7 @@ $set = @{
 }
 if ($shotTicks) {
     # The shot is requested one tick ahead and saved over the next frames: run a few ticks past the last checkpoint.
-    $set.KH2_SHOT_TICKS = $shotTicks; $set.KH2_SHOT_SIZE = '640x448'; $set.KH2_TRACE_END = [string]([int]$plan.frames + 10)
+    $set.KH2_SHOT_TICKS = $shotTicks; $set.KH2_SHOT_SIZE = '640x448'; $set.KH2_DEBUGHUD = '0'; $set.KH2_TRACE_END = [string]([int]$plan.frames + 10)
     Get-ChildItem -Path $out -Filter 'shot-*.png' | Where-Object { $_.Name -notlike 'shot-orig-*' } | Remove-Item -ErrorAction SilentlyContinue
 }
 if ($plan['seed.drive']) { $set.KH2_DRIVE_SEED = $plan['seed.drive'] }

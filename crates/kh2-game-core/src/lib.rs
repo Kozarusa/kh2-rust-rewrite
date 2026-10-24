@@ -36,6 +36,7 @@ pub mod task;
 pub mod shared;
 pub mod skel;
 pub mod status_pool;
+pub mod system_tables;
 pub mod texanim;
 pub mod world;
 

@@ -48,6 +48,23 @@ pub fn iso_path() -> Result<PathBuf, String> {
         .map_err(|_| "No disc configured. Run: cargo run -p kh2 -- set-iso \"<your Kingdom Hearts II (USA).iso>\"".into())
 }
 
+/// The file-name list (`kh2idx.txt`, written by `kh2 fetch-names`) that lets the world sub-indexes expand. Looked up next
+/// to the executable, then in the config folder (`KH2_CONFIG_DIR`, else `%APPDATA%\kh2-rs`), then in `local/` of the
+/// source tree this was built from.
+pub fn names_file() -> Option<PathBuf> {
+    let mut places = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        places.push(dir);
+    }
+    if let Some(d) = std::env::var_os("KH2_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        places.push(d.into());
+    } else if let Some(d) = std::env::var_os("APPDATA").filter(|d| !d.is_empty()) {
+        places.push(PathBuf::from(d).join("kh2-rs"));
+    }
+    places.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local"));
+    places.into_iter().map(|d| d.join("kh2idx.txt")).find(|f| f.is_file())
+}
+
 #[derive(Resource)]
 pub struct Disc(pub Mutex<Archive>);
 
@@ -58,8 +75,7 @@ impl Disc {
             std::process::exit(1);
         });
         // World sub-indexes (maps live there) are only listed once their names are known.
-        let names = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/kh2idx.txt");
-        let list = std::fs::read_to_string(&names).unwrap_or_default();
+        let list = names_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
         let subs: Vec<&str> = list.lines().filter(|l| l.ends_with(".idx")).collect();
         if a.apply_names(if subs.is_empty() { vec!["000tt.idx"] } else { subs }).is_err() {
             eprintln!("warning: could not expand world indexes");

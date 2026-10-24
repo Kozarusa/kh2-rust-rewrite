@@ -10,7 +10,7 @@ renderer. The sound viewer (F10, `docs/systems/audio/audio.md` "Sound viewer") s
 ## Start
 
 ```
-target\debug\kh2-game.exe tt04          then press F11
+target\debug\kh2-game.exe tt04          then press F12
 $env:KH2_ASSETS='1'; target\debug\kh2-game.exe tt04      (starts open)
 ```
 
@@ -26,7 +26,7 @@ files the app itself uses are listed.
 
 | key | does |
 |---|---|
-| F11 | open / close |
+| F12 | open / close |
 | Tab / Shift+Tab | next / previous kind: model, motion, texture, effect, audio |
 | Left / Right | previous / next item (Shift: 100) |
 | PageUp / PageDown | 10 items back / forward |

@@ -303,6 +303,32 @@ fn stick(x: f32, y: f32, mag: f32) -> (Vec2, f32) {
     if v == Vec2::ZERO { (Vec2::ZERO, 0.0) } else { (v.normalize(), mag) }
 }
 
+/// The camera's view of a scripted pad (`rig::PadState`): both sticks through the original's dead zone and scale
+/// (`rig::stick_vector`, `FUN_00167198`) as the camera's `Sticks` (direction with y down like the pad, magnitude 0..1), with the Config
+/// menu's reverse options applied to the right stick, and R3 and Select as edges against `prev` (the buttons of the last call, which
+/// this call replaces): `(sticks, reset, select)`.
+fn pad_input(pad: &crate::rig::PadState, scale: &crate::rig::StickScale, options: &crate::shared::ui::Options, prev: &mut u16) -> (Sticks, bool, bool) {
+    let stick = |x: u8, y: u8| {
+        let (d, m) = crate::rig::stick_vector(x, y, scale);
+        (Vec2::new(d.x, -d.y), m)
+    };
+    let (left, left_mag) = stick(pad.lx, pad.ly);
+    let (mut right, right_mag) = stick(pad.rx, pad.ry);
+    if options.camera_lr_reverse {
+        right.x = -right.x;
+    }
+    if options.camera_ud_reverse {
+        right.y = -right.y;
+    }
+    let edge = |name: &str| {
+        let i = kh2_rig::pad::BUTTONS.iter().position(|b| *b == name).unwrap_or(0);
+        pad.buttons >> i & 1 != 0 && *prev >> i & 1 == 0
+    };
+    let (reset, select) = (edge("r3"), edge("select"));
+    *prev = pad.buttons;
+    (Sticks { left, left_mag, right, right_mag }, reset, select)
+}
+
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn tick(
     keys: Res<ButtonInput<KeyCode>>,
@@ -326,10 +352,13 @@ fn tick(
     // the factor of every per-frame rate; the app runs the logic that many 60 Hz ticks per frame, so at a step above 1 the camera
     // runs on the frame's last tick only (the springs take no step: two springs per frame would pull the camera in twice as fast).
     let step = frame_clock.as_deref().map_or(1.0, |c| c.step()).max(1.0);
+    // The frame's logic ticks are `FrameClock::runs` of this vblank; the camera takes the last of them (the count restarts there).
+    let runs = frame_clock.as_deref().map_or(1, |c| c.runs.max(1));
     local.1 += 1;
-    if !local.1.is_multiple_of((step.round() as u32).max(1)) {
+    if local.1 < runs {
         return;
     }
+    local.1 = 0;
     let options = options.map(|o| *o).unwrap_or_default();
     let (Some(params), Ok(mut s), Ok((mut t, mut o, mut proj))) = (params, sora.single_mut(), cam.single_mut()) else { return };
     let (Some(mode0), false) = (st.mode, st.area.is_none()) else { return };
@@ -433,34 +462,13 @@ fn tick(
         }
         let p = std::mem::take(&mut st.pending);
         if p.yaw != 0.0 {
-            let y = rig.yaw + p.yaw;
+            let y = rules::app_yaw(rig.yaw) + p.yaw;
             rig.set_yaw(y);
         }
         let (sticks, pad_reset, pad_select) = match pad_state.as_deref().filter(|p| p.scripted) {
             // A rig pad script is running: the sticks are the pad's, through the original's dead zone and scale (`FUN_00167198`), so
             // the auto-camera (`FUN_00140128`) sees the left stick the player runs with. R3 and Select arrive as button edges.
-            Some(pad) => {
-                let scale = scale.as_deref().copied().unwrap_or_default();
-                let stick = |x: u8, y: u8| {
-                    let (d, m) = crate::rig::stick_vector(x, y, &scale);
-                    (Vec2::new(d.x, -d.y), m)
-                };
-                let (left, left_mag) = stick(pad.lx, pad.ly);
-                let (mut right, right_mag) = stick(pad.rx, pad.ry);
-                if options.camera_lr_reverse {
-                    right.x = -right.x;
-                }
-                if options.camera_ud_reverse {
-                    right.y = -right.y;
-                }
-                let edge = |name: &str| {
-                    let i = kh2_rig::pad::BUTTONS.iter().position(|b| *b == name).unwrap_or(0);
-                    pad.buttons >> i & 1 != 0 && local.0 >> i & 1 == 0
-                };
-                let (reset, select) = (edge("r3"), edge("select"));
-                local.0 = pad.buttons;
-                (Sticks { left, left_mag, right, right_mag }, reset, select)
-            }
+            Some(pad) => pad_input(pad, &scale.as_deref().copied().unwrap_or_default(), &options, &mut local.0),
             None => {
                 let pressed = |k: KeyCode| keys.pressed(k) as i32 as f32;
                 let (left, left_mag) = stick(
@@ -518,7 +526,7 @@ fn tick(
         info!("camera: talk view placed (FUN_001592d8, a cut): pos {:.0} look {:.0} sora {:.0}", view.pos, view.look, pos);
     }
     if matches!(talk_req, Some(TalkCam::End)) && event.active.is_none() {
-        info!("camera: back to the follow camera: pos {:.0} look {:.0} yaw {:.2} radius {:.0}", view.pos, view.look, rig.yaw, rig.radius);
+        info!("camera: back to the follow camera: pos {:.0} look {:.0} yaw {:.2} radius {:.0}", view.pos, view.look, rules::app_yaw(rig.yaw), rig.radius);
     }
     if (mode_before == Mode::Look) != (rig.mode == Mode::Look) {
         info!("camera: look-around {} (mode {:?} -> {:?})", if rig.mode == Mode::Look { "on" } else { "off" }, mode_before, rig.mode);
@@ -533,7 +541,7 @@ fn tick(
                 st.row,
                 view.pos,
                 view.look,
-                rig.yaw,
+                rules::app_yaw(rig.yaw),
                 rig.radius,
                 view.fov,
                 rig.look_yaw,
@@ -545,7 +553,7 @@ fn tick(
             );
         }
     }
-    o.yaw = rig.yaw;
+    o.yaw = rules::wrap(rules::app_yaw(rig.yaw));
     o.pitch = rig.pitch();
     o.distance = rig.radius * SCALE;
     o.first_person = rig.mode == Mode::Look;
@@ -598,6 +606,87 @@ mod tests {
             let out = Vec3::new(w.max.x + 1000.0, c.y, c.z);
             assert!(cast_world(&w, c, out).is_some(), "{area}: no wall on the way out");
         }
+    }
+
+    fn pad(buttons: u16, l: (u8, u8), r: (u8, u8)) -> crate::rig::PadState {
+        crate::rig::PadState { buttons, lx: l.0, ly: l.1, rx: r.0, ry: r.1, scripted: true }
+    }
+
+    const R3: u16 = 1 << 2;
+    const SELECT: u16 = 1;
+
+    /// The pad branch of the camera tick: a stick pushed up is a small byte (the pad's y grows downward), and the camera's sticks keep that
+    /// sign (y down), with the direction a unit vector and the magnitude capped.
+    #[test]
+    fn the_pad_branch_keeps_the_pads_y_down_and_caps_the_magnitude() {
+        let (scale, options) = (crate::rig::StickScale::default(), crate::shared::ui::Options::default());
+        let mut prev = 0;
+        // Right stick pushed up: y -1, no x.
+        let (s, _, _) = pad_input(&pad(0, (127, 127), (127, 0)), &scale, &options, &mut prev);
+        assert_eq!((s.right, s.right_mag), (Vec2::new(0.0, -1.0), 1.0));
+        assert_eq!((s.left, s.left_mag), (Vec2::ZERO, 0.0), "the left stick at rest");
+        // Left stick pushed down and right past the rim: the direction is the diagonal, the magnitude stops at the cap 1.
+        let (s, _, _) = pad_input(&pad(0, (255, 255), (127, 127)), &scale, &options, &mut prev);
+        assert!((s.left - Vec2::splat(std::f32::consts::FRAC_1_SQRT_2)).length() < 1e-6, "{:?}", s.left);
+        assert_eq!(s.left_mag, 1.0);
+        // Pushed left: x -1 (the right stick's left bit is the game's yaw increase).
+        let (s, _, _) = pad_input(&pad(0, (127, 127), (0, 127)), &scale, &options, &mut prev);
+        assert_eq!((s.right, s.right_mag), (Vec2::new(-1.0, 0.0), 1.0));
+    }
+
+    /// The dead zone swallows a push inside it and takes its width off a push outside it; a smaller cap lowers the magnitude.
+    #[test]
+    fn the_pad_branch_applies_the_dead_zone_and_the_scale() {
+        let options = crate::shared::ui::Options::default();
+        let mut prev = 0;
+        let scale = crate::rig::StickScale { centre: 127.0, dead_zone: 10.0, cap: 1.0 };
+        let (s, _, _) = pad_input(&pad(0, (137, 127), (127, 117)), &scale, &options, &mut prev);
+        assert_eq!((s.left, s.left_mag, s.right, s.right_mag), (Vec2::ZERO, 0.0, Vec2::ZERO, 0.0), "a push of exactly the dead zone is no push");
+        let (s, _, _) = pad_input(&pad(0, (147, 127), (127, 127)), &scale, &options, &mut prev);
+        assert_eq!(s.left, Vec2::X);
+        assert!((s.left_mag - 10.0 / 117.0).abs() < 1e-6, "{}", s.left_mag);
+        let capped = crate::rig::StickScale { cap: 0.5, ..crate::rig::StickScale::default() };
+        let (s, _, _) = pad_input(&pad(0, (127, 127), (255, 127)), &capped, &options, &mut prev);
+        assert_eq!((s.right, s.right_mag), (Vec2::X, 0.5));
+    }
+
+    /// The Config menu's reverse options flip the right stick's axes and leave the left stick alone.
+    #[test]
+    fn the_pad_branch_reverses_only_the_right_stick() {
+        let scale = crate::rig::StickScale::default();
+        let mut prev = 0;
+        let both = crate::shared::ui::Options { camera_lr_reverse: true, camera_ud_reverse: true, ..default() };
+        let p = pad(0, (0, 0), (254, 0));
+        let (s, _, _) = pad_input(&p, &scale, &both, &mut prev);
+        assert!((s.left - Vec2::new(-1.0, -1.0).normalize()).length() < 1e-6, "the left stick keeps its sign: {:?}", s.left);
+        assert!((s.right - Vec2::new(-1.0, 1.0).normalize()).length() < 1e-6, "{:?}", s.right);
+        let lr = crate::shared::ui::Options { camera_lr_reverse: true, ..default() };
+        let (s, _, _) = pad_input(&pad(0, (127, 127), (255, 127)), &scale, &lr, &mut prev);
+        assert_eq!(s.right, -Vec2::X);
+        let ud = crate::shared::ui::Options { camera_ud_reverse: true, ..default() };
+        let (s, _, _) = pad_input(&pad(0, (127, 127), (254, 0)), &scale, &ud, &mut prev);
+        assert!((s.right - Vec2::new(1.0, 1.0).normalize()).length() < 1e-6, "{:?}", s.right);
+    }
+
+    /// R3 and Select reach the camera as edges: a button held over several ticks counts once, a release and a new press count again, and
+    /// the two buttons do not stand for each other.
+    #[test]
+    fn the_pad_branch_turns_r3_and_select_into_edges() {
+        let (scale, options) = (crate::rig::StickScale::default(), crate::shared::ui::Options::default());
+        let mut prev = 0;
+        let mut run = |buttons: u16| {
+            let (_, reset, select) = pad_input(&pad(buttons, (127, 127), (127, 127)), &scale, &options, &mut prev);
+            (reset, select)
+        };
+        assert_eq!(run(0), (false, false));
+        assert_eq!(run(R3), (true, false), "R3 pressed");
+        assert_eq!(run(R3), (false, false), "R3 held");
+        assert_eq!(run(0), (false, false), "R3 released");
+        assert_eq!(run(R3), (true, false), "R3 pressed again");
+        assert_eq!(run(R3 | SELECT), (false, true), "Select pressed while R3 is held");
+        assert_eq!(run(SELECT), (false, false), "Select held, R3 released");
+        assert_eq!(run(0b1111_1111_1111_1010), (false, false), "no other button is R3 or Select");
+        assert_eq!(prev, 0b1111_1111_1111_1010, "the buttons of the call are kept for the next edge");
     }
 
     #[test]

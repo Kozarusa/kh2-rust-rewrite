@@ -11,9 +11,12 @@
 //! the stride). The slot policy (lowest free slot first) is the port's own: the original's allocator is a separate unit (0x105fd8,
 //! not ported here), and the oracle test translates handles to the addresses its stand-in allocator gave.
 //!
-//! What is NOT here: running one task (`FUN_00102340`, with the coroutine threads of 0x102340..0x102460 and 0x105440..0x105618), the
-//! creation of a coroutine task (`FUN_00102808`) and the allocator. The pass hands each task to a [`TaskHost`], which stands for
-//! `FUN_00102340`; the frame-order package wires a real host. Nothing in the app uses this module yet.
+//! The runner (`FUN_00102340`, [`Tasks::run_task`]), the coroutine create (`FUN_00102808`), yield and wait (`FUN_00102438`,
+//! `FUN_00102460`), the game modes (`FUN_00101e98`..`FUN_00102268`, [`modes`]) and the field mode block (`FUN_00102a60`..`FUN_00102c30`,
+//! [`field`]) came with WP-L1-P20. What is NOT here: the allocator behind the manager blocks, and the context switch itself
+//! (`FUN_00105440`, `FUN_001054a8`, `FUN_00105510`: register save and load, hardware), which a [`RunHost`] stands for. The pass hands
+//! each task to a [`TaskHost`] ([`Runner`] makes one from a [`RunHost`]); the frame-order package wires a real host. Nothing in
+//! the app uses this module yet.
 
 /// Size of a task block.
 pub const TASK_SIZE: usize = 0x48;
@@ -54,6 +57,14 @@ impl Task {
     }
     pub fn set_function(&mut self, v: u32) {
         put(&mut self.0, 0, v)
+    }
+    /// The word at +4: a coroutine task keeps its argument here (the game mode of a mode task, `FUN_00102070`); other users keep other
+    /// state in the same bytes.
+    pub fn arg(&self) -> u32 {
+        get(&self.0, 4)
+    }
+    pub fn set_arg(&mut self, v: u32) {
+        put(&mut self.0, 4, v)
     }
     /// The manager that owns the task (its free routine releases the task).
     pub fn owner(&self) -> u32 {
@@ -204,6 +215,9 @@ impl TaskHost for NoHost {
 pub struct Tasks {
     tasks: Vec<Option<Task>>,
     managers: Vec<Option<Manager>>,
+    threads: Vec<Option<Thread>>,
+    /// The jump-buffer stack of the runner (`0x3b21d8`, index `0x33e858`): the entries are the owner's buffer addresses, newest last.
+    jmp: Vec<u32>,
     /// The running task (the original keeps it in the word at 0x33e6c0 and restores the old value after each run).
     pub running: u32,
 }
@@ -371,6 +385,11 @@ impl Tasks {
         }
         if thread != 0 {
             host.free_thread(thread);
+            if let Some(i) = slot_of(thread, THREAD_BASE)
+                && let Some(s) = self.threads.get_mut(i)
+            {
+                *s = None;
+            }
         }
         host.task_freed(task);
         if let Some(i) = slot_of(task, TASK_BASE) {
@@ -602,6 +621,683 @@ pub const SITES: &[Site] = &[
     site(0x2f4930, On::Dynamic, 0, 2000, 0x2f4ba8),
     site(0x2f49e0, On::Dynamic, 0, 2000, 0x2f4ba8),
 ];
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// WP-L1-P20: coroutine threads, the task runner, game modes and the field mode block.
+
+/// What a unit asks of the rest of the game when it only needs to call original functions by address: the arguments are the low
+/// registers, the return value is v0. Every implementor of [`crate::area::ctl::AreaHost`] is one.
+pub trait CallHost {
+    fn call(&mut self, callee: u32, args: &[u64]) -> u64;
+}
+
+impl<T: crate::area::ctl::AreaHost + ?Sized> CallHost for T {
+    fn call(&mut self, callee: u32, args: &[u64]) -> u64 {
+        crate::area::ctl::AreaHost::call(self, callee, args)
+    }
+}
+
+/// Size of the header of a coroutine thread block; the thread's stack follows it (`FUN_00102808` allocates `stack + 0x100`).
+pub const THREAD_HEADER: usize = 0x100;
+/// First thread handle; slot `n` is `THREAD_BASE + n * HANDLE_STRIDE`.
+pub const THREAD_BASE: u32 = 0x0b00_0000;
+
+/// The header of a coroutine thread block (0x100 bytes). Bytes below +0xf0 hold the saved registers of the context switch (hardware,
+/// not ported); the four fields at the end are the task runner's.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Thread(pub [u8; THREAD_HEADER]);
+
+impl Default for Thread {
+    fn default() -> Self {
+        Thread([0; THREAD_HEADER])
+    }
+}
+
+impl Thread {
+    /// +0xf0 (a byte): 0 until the function has been started once.
+    pub fn first_run(&self) -> u8 {
+        self.0[0xf0]
+    }
+    pub fn set_first_run(&mut self, v: u8) {
+        self.0[0xf0] = v
+    }
+    /// +0xf4: frames the thread still waits (`FUN_00102438` sets it, the runner counts it down), compared as a signed number.
+    pub fn wait(&self) -> i32 {
+        get(&self.0, 0xf4) as i32
+    }
+    pub fn set_wait(&mut self, v: i32) {
+        put(&mut self.0, 0xf4, v as u32)
+    }
+    /// +0xf8: time the thread still waits, in frame steps (`FUN_00102460` sets it, the runner reduces it by the frame step).
+    pub fn timer(&self) -> f32 {
+        f32::from_bits(get(&self.0, 0xf8))
+    }
+    pub fn set_timer(&mut self, v: f32) {
+        put(&mut self.0, 0xf8, v.to_bits())
+    }
+    /// +0xfc: the stack size the thread was made with.
+    pub fn stack(&self) -> u32 {
+        get(&self.0, 0xfc)
+    }
+    pub fn set_stack(&mut self, v: u32) {
+        put(&mut self.0, 0xfc, v)
+    }
+}
+
+/// How a coroutine's run ended when the runner switched into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    /// The function returned: the task is finished (the runner sets its function to 0).
+    Returned,
+    /// The thread yielded (`FUN_00102438` or `FUN_00102460`, then the switch back).
+    Yielded,
+}
+
+/// What the runner `FUN_00102340` needs from the game: the function calls and the two context switches (hardware: the original saves
+/// and loads registers with `FUN_00105440`, `FUN_001054a8` and `FUN_00105510`; here the host runs the function to its next yield).
+/// The finalizer and free events are those of [`TaskHost`].
+pub trait RunHost {
+    /// A task without a thread: its function is called with the task.
+    fn call(&mut self, tasks: &mut Tasks, function: u32, task: u32);
+    /// The first run of a coroutine task: the function runs on the thread until it returns or yields.
+    fn start(&mut self, tasks: &mut Tasks, function: u32, task: u32) -> Switch;
+    /// A later run: the thread continues behind its last yield until it returns or yields again.
+    fn resume(&mut self, tasks: &mut Tasks, task: u32) -> Switch;
+    fn finalize(&mut self, _tasks: &mut Tasks, _task: u32, _finalizer: u32) {}
+    fn free_thread(&mut self, _thread: u32) {}
+    fn task_freed(&mut self, _task: u32) {}
+    fn manager_freed(&mut self, _manager: u32) {}
+}
+
+/// A [`TaskHost`] that runs each task through [`Tasks::run_task`] with the frame step `step`.
+pub struct Runner<'a, H: RunHost> {
+    pub host: &'a mut H,
+    pub step: f32,
+}
+
+impl<H: RunHost> TaskHost for Runner<'_, H> {
+    fn run(&mut self, tasks: &mut Tasks, task: u32) {
+        tasks.run_task(task, self.step, self.host)
+    }
+    fn finalize(&mut self, tasks: &mut Tasks, task: u32, finalizer: u32) {
+        self.host.finalize(tasks, task, finalizer)
+    }
+    fn free_thread(&mut self, thread: u32) {
+        self.host.free_thread(thread)
+    }
+    fn task_freed(&mut self, task: u32) {
+        self.host.task_freed(task)
+    }
+    fn manager_freed(&mut self, manager: u32) {
+        self.host.manager_freed(manager)
+    }
+}
+
+impl Tasks {
+    /// The thread block of a handle.
+    pub fn thread(&self, h: u32) -> Option<&Thread> {
+        self.threads.get(slot_of(h, THREAD_BASE)?)?.as_ref()
+    }
+    pub fn thread_mut(&mut self, h: u32) -> Option<&mut Thread> {
+        self.threads.get_mut(slot_of(h, THREAD_BASE)?)?.as_mut()
+    }
+    /// The top of the runner's jump-buffer stack (what `FUN_00105618` reads), 0 when no task is running through the runner.
+    pub fn jump_top(&self) -> u32 {
+        self.jmp.last().copied().unwrap_or(0)
+    }
+
+    /// Creates a coroutine task: a thread block of `stack + 0x100` bytes, then the task (`FUN_00102778`), then the thread's stack size
+    /// at +0xfc, the first-run byte at +0xf0, the wait counter at +0xf4 and the wait time at +0xf8 cleared, and the thread in the
+    /// task's word +0x34. Returns the task.
+    ///
+    /// orig 0x102808
+    pub fn create_coroutine(&mut self, mgr: u32, bits: u32, priority: i32, function: u32, stack: u32) -> u32 {
+        let mut th = Thread::default();
+        th.set_stack(stack);
+        let h = THREAD_BASE + alloc_slot(&mut self.threads, th) as u32 * HANDLE_STRIDE;
+        let task = self.create_task(mgr, bits, priority, function);
+        self.tk_mut(task).set_thread(h);
+        task
+    }
+
+    /// The task's thread waits `frames` runs of the runner (the original then switches back out of the thread).
+    ///
+    /// orig 0x102438
+    pub fn yield_frames(&mut self, task: u32, frames: u32) {
+        let th = self.tk(task).thread();
+        self.thread_mut(th).unwrap_or_else(|| panic!("task {task:#x} has no thread")).set_wait(frames as i32);
+    }
+
+    /// The task's thread waits `time` frame steps less the current step `step` (the original then switches back out of the thread).
+    ///
+    /// orig 0x102460
+    pub fn wait_time(&mut self, task: u32, time: f32, step: f32) {
+        let th = self.tk(task).thread();
+        self.thread_mut(th).unwrap_or_else(|| panic!("task {task:#x} has no thread")).set_timer(crate::pad::ee::sub(time, step));
+    }
+
+    /// Runs one task of a pass. Without a thread its function is called. With one, the runner pushes the owner's jump buffer
+    /// (`owner + 0x20`) and then: on the first run the function starts on the thread; later runs count the wait down by one frame
+    /// while it is above 0, then reduce the wait time by `step` while it is above 0.0, and otherwise continue the thread. A function
+    /// that returned finishes the task (its function word becomes 0). Only the context switch is hardware.
+    ///
+    /// orig 0x102340
+    pub fn run_task(&mut self, task: u32, step: f32, host: &mut impl RunHost) {
+        let (function, thread, owner) = {
+            let t = self.tk(task);
+            (t.function(), t.thread(), t.owner())
+        };
+        if thread == 0 {
+            host.call(self, function, task);
+            return;
+        }
+        self.jmp.push(owner.wrapping_add(0x20));
+        let th = self.thread_mut(thread).unwrap_or_else(|| panic!("thread handle {thread:#x} is not live"));
+        let switch = if th.first_run() == 0 {
+            th.set_first_run(1);
+            Some(host.start(self, function, task))
+        } else if th.wait() > 0 {
+            let w = th.wait();
+            th.set_wait(w - 1);
+            None
+        } else if th.timer() > 0.0 {
+            let t = th.timer();
+            th.set_timer(crate::pad::ee::sub(t, step));
+            None
+        } else {
+            Some(host.resume(self, task))
+        };
+        if switch == Some(Switch::Returned)
+            && let Some(t) = self.task_mut(task)
+        {
+            t.set_function(0);
+        }
+        self.jmp.pop();
+    }
+
+    /// The manager of `FUN_001024f8`: an allocator over `region` (`size` bytes, `FUN_00105fd8`, a call of the host), then the manager.
+    ///
+    /// orig 0x1024f8
+    pub fn create_manager_over(&mut self, host: &mut impl CallHost, region: u32, size: u32) -> u32 {
+        let allocator = host.call(0x105fd8, &[region as u64, size as u64]) as u32;
+        self.create_manager(allocator)
+    }
+}
+
+/// The game modes: objects of 0x30 bytes in a singly linked list (newest first, head word `0x3990c0`, tail word `0x3990c4`). A mode
+/// runs as a coroutine task of the root manager (`FUN_00102070` makes it, `FUN_00101e98` is its body) and owns a task manager for its
+/// own tasks. Fields (offsets from the object): +0 the virtual table (slot at +4 enters the mode, +8 exits it), +4 the manager, +0xc the
+/// next mode, +0x14 the class bits (two modes with a common bit cannot run together), +0x18 the task priority, +0x1c the state (0 off,
+/// 1 running, 3 asked to stop), +0x20 and +0x24 callback addresses, +0x28 the thread's stack size.
+pub mod modes {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    pub const MODE_SIZE: usize = 0x30;
+    /// The head and tail words of the list and the thread body's address.
+    pub const HEAD_WORD: u32 = 0x3990c0;
+    pub const TAIL_WORD: u32 = 0x3990c4;
+    pub const BODY: u32 = 0x101e98;
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub struct Mode(pub [u8; MODE_SIZE]);
+
+    impl Default for Mode {
+        fn default() -> Self {
+            Mode([0; MODE_SIZE])
+        }
+    }
+
+    macro_rules! field {
+        ($get:ident, $set:ident, $off:expr, $doc:literal) => {
+            #[doc = $doc]
+            pub fn $get(&self) -> u32 {
+                get(&self.0, $off)
+            }
+            pub fn $set(&mut self, v: u32) {
+                put(&mut self.0, $off, v)
+            }
+        };
+    }
+
+    impl Mode {
+        field!(vtable, set_vtable, 0, "+0: the address of the virtual table.");
+        field!(manager, set_manager, 4, "+4: the mode's own task manager (0 while off).");
+        field!(next, set_next, 0xc, "+0xc: the next mode of the list.");
+        field!(mask, set_mask, 0x14, "+0x14: class bits.");
+        field!(priority, set_priority, 0x18, "+0x18: priority of the mode's task.");
+        field!(state, set_state, 0x1c, "+0x1c: 0 off, 1 running, 3 asked to stop.");
+        field!(callback20, set_callback20, 0x20, "+0x20: a callback address, 0 for none.");
+        field!(callback24, set_callback24, 0x24, "+0x24: a callback address, 0 for none.");
+        field!(stack, set_stack, 0x28, "+0x28: the thread's stack size.");
+    }
+
+    /// What the mode thread needs from the game besides the list: the mode's own manager and the two virtual methods of the mode.
+    pub trait ModeEnv {
+        /// One pass over every task of the manager (`FUN_001029d8`).
+        fn pass_all(&mut self, mgr: u32);
+        /// Frees every task of the manager (`FUN_00102720`).
+        fn kill_all(&mut self, mgr: u32);
+        /// The number of tasks of the manager (`FUN_001029f8`, a 64-bit result compared as a signed number).
+        fn count(&mut self, mgr: u32) -> i64;
+        /// Frees the manager (`FUN_00102740`).
+        fn destroy(&mut self, mgr: u32);
+        /// Virtual method 1 of the mode (the table slot at +4), called with the mode and the thread's task. It may change the mode's
+        /// fields (it makes the mode's manager); `modes` holds the mode objects.
+        fn enter(&mut self, modes: &mut Modes, mode: u32, task: u32);
+        /// Virtual method 2 (the slot at +8).
+        fn exit(&mut self, modes: &mut Modes, mode: u32, task: u32);
+    }
+
+    /// Where the mode thread stands (the resume points of `FUN_00101e98`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum Phase {
+        /// Waiting for the modes with a common class bit to leave the list, then entering.
+        #[default]
+        Claim,
+        /// The mode runs: its manager is passed every frame while the state is 1, until the state is 3.
+        Running,
+        /// The mode asked to stop: its manager is passed until it has no tasks left.
+        Drain,
+    }
+
+    /// What one step of the thread ends with.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Step {
+        /// The thread yields with this frame count (`FUN_00102438(task, n)`).
+        Yield(u32),
+        /// The function returned.
+        Done,
+    }
+
+    /// The thread body `FUN_00101e98` as a state machine: [`ModeThread::step`] runs it to its next yield.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct ModeThread {
+        pub phase: Phase,
+    }
+
+    /// The mode objects and the list words.
+    #[derive(Clone, Default, Debug)]
+    pub struct Modes {
+        blocks: BTreeMap<u32, Mode>,
+        /// `DAT_003990c0`, the first mode of the list.
+        pub head: u32,
+        /// `DAT_003990c4`, the last mode of the list.
+        pub tail: u32,
+    }
+
+    impl Modes {
+        pub fn new() -> Modes {
+            Modes::default()
+        }
+        /// Puts a mode object at `id` (an address of the original; any distinct non-zero number in the port).
+        pub fn insert(&mut self, id: u32, m: Mode) {
+            self.blocks.insert(id, m);
+        }
+        pub fn mode(&self, id: u32) -> &Mode {
+            self.blocks.get(&id).unwrap_or_else(|| panic!("mode {id:#x} is not known"))
+        }
+        pub fn mode_mut(&mut self, id: u32) -> &mut Mode {
+            self.blocks.get_mut(&id).unwrap_or_else(|| panic!("mode {id:#x} is not known"))
+        }
+        /// The list from the head.
+        pub fn list(&self) -> Vec<u32> {
+            let mut out = Vec::new();
+            let mut p = self.head;
+            while p != 0 {
+                out.push(p);
+                p = self.mode(p).next();
+            }
+            out
+        }
+
+        /// The static init of the list words: only the call `(1, 0xffff)` of the constructor list does anything, it empties the list.
+        ///
+        /// orig 0x102240
+        pub fn static_init(&mut self, a: u64, b: u64) {
+            if b == 0xffff && a == 1 {
+                self.head = 0;
+                self.tail = 0;
+            }
+        }
+
+        /// The constructor-list wrapper: `static_init(1, 0xffff)`.
+        ///
+        /// orig 0x102268
+        pub fn static_init_wrapper(&mut self) {
+            self.static_init(1, 0xffff)
+        }
+
+        /// Writes the running modes (state 1), newest first, into `out` and returns how many.
+        ///
+        /// orig 0x102170
+        pub fn running(&self, out: &mut Vec<u32>) -> i32 {
+            let mut n = 0;
+            for m in self.list() {
+                if self.mode(m).state() == 1 {
+                    out.push(m);
+                    n += 1;
+                }
+            }
+            n
+        }
+
+        /// The newest running mode, 0 for none.
+        ///
+        /// orig 0x102200
+        pub fn first_running(&self) -> u32 {
+            self.list().into_iter().find(|&m| self.mode(m).state() == 1).unwrap_or(0)
+        }
+
+        /// Calls the mode's callback at +0x20 with `arg` when it has one.
+        ///
+        /// orig 0x102120
+        pub fn call_callback20(&self, mode: u32, arg: u64, host: &mut impl CallHost) {
+            let cb = self.mode(mode).callback20();
+            if cb != 0 {
+                host.call(cb, &[arg]);
+            }
+        }
+
+        /// Calls the mode's callback at +0x24 with `arg` when it has one.
+        ///
+        /// orig 0x102148
+        pub fn call_callback24(&self, mode: u32, arg: u64, host: &mut impl CallHost) {
+            let cb = self.mode(mode).callback24();
+            if cb != 0 {
+                host.call(cb, &[arg]);
+            }
+        }
+
+        /// Starts a mode: unless it is already asked to stop (state 3), every mode of the list that shares a class bit with it is
+        /// asked to stop (state 3, and [`disable`] runs for each) and the mode's thread is made on the root manager `root`.
+        /// Returns the thread's task, with the mode in its word +4.
+        ///
+        /// orig 0x102070
+        pub fn start(&mut self, mode: u32, tasks: &mut Tasks, root: u32, host: &mut impl CallHost) -> Option<u32> {
+            if self.mode(mode).state() == 3 {
+                return None;
+            }
+            let mask = self.mode(mode).mask();
+            for m in self.list() {
+                if self.mode(m).mask() & mask != 0 {
+                    self.mode_mut(m).set_state(3);
+                    disable(host);
+                }
+            }
+            let (prio, stack) = (self.mode(mode).priority() as i32, self.mode(mode).stack());
+            let task = tasks.create_coroutine(root, mask, prio, BODY, stack);
+            tasks.task_mut(task).expect("the new task").set_arg(mode);
+            Some(task)
+        }
+
+        /// Whether a mode of the list shares a class bit with `mode`.
+        fn conflicts(&self, mode: u32) -> bool {
+            let mask = self.mode(mode).mask();
+            self.list().into_iter().any(|m| self.mode(m).mask() & mask != 0)
+        }
+
+        /// Puts the mode at the head of the list.
+        fn push_front(&mut self, mode: u32) {
+            if self.head == 0 {
+                self.head = mode;
+                self.tail = mode;
+                self.mode_mut(mode).set_next(0);
+            } else {
+                let h = self.head;
+                self.mode_mut(mode).set_next(h);
+                self.head = mode;
+            }
+        }
+
+        /// Takes the mode out of the list.
+        fn unlink(&mut self, mode: u32) {
+            let prev = if mode == self.head {
+                self.head = self.mode(mode).next();
+                0
+            } else {
+                let mut p = self.head;
+                while self.mode(p).next() != mode {
+                    p = self.mode(p).next();
+                }
+                let n = self.mode(mode).next();
+                self.mode_mut(p).set_next(n);
+                p
+            };
+            if mode == self.tail {
+                self.tail = prev;
+            }
+            self.mode_mut(mode).set_next(0);
+        }
+    }
+
+    /// The mode switch-off: soft reset off (`FUN_00167878`, `FUN_0014a220`).
+    ///
+    /// orig 0x1021c0
+    pub fn disable(host: &mut impl CallHost) {
+        host.call(0x167878, &[]);
+        host.call(0x14a220, &[]);
+    }
+
+    /// The mode switch-on: soft reset on (`FUN_001678b0`, `FUN_0014a230`).
+    ///
+    /// orig 0x1021e0
+    pub fn enable(host: &mut impl CallHost) {
+        host.call(0x1678b0, &[]);
+        host.call(0x14a230, &[]);
+    }
+
+    impl ModeThread {
+        /// Runs the thread body `FUN_00101e98` of `task` (its mode is the word +4) to its next yield or its end.
+        ///
+        /// The body: waits (yield 0) while a mode of the list shares a class bit; puts the mode into the list with state 1; calls the
+        /// mode's enter method; then every frame passes the mode's manager while the state is 1, until the state is 3; frees all its
+        /// tasks and calls the exit method; passes the manager each frame until it has no task left; frees the manager and takes the
+        /// mode out of the list (state 0, manager 0).
+        ///
+        /// orig 0x101e98
+        pub fn step(&mut self, task: u32, mode: u32, modes: &mut Modes, env: &mut impl ModeEnv) -> Step {
+            if self.phase == Phase::Claim {
+                if modes.conflicts(mode) {
+                    return Step::Yield(0);
+                }
+                modes.mode_mut(mode).set_state(1);
+                modes.push_front(mode);
+                env.enter(modes, mode, task);
+                self.phase = Phase::Running;
+            }
+            let mgr = modes.mode(mode).manager();
+            if self.phase == Phase::Running {
+                let s = modes.mode(mode).state();
+                if s != 3 {
+                    if s == 1 {
+                        env.pass_all(mgr);
+                    }
+                    return Step::Yield(0);
+                }
+                env.kill_all(mgr);
+                env.exit(modes, mode, task);
+                self.phase = Phase::Drain;
+            }
+            if env.count(mgr) > 0 {
+                env.pass_all(mgr);
+                return Step::Yield(0);
+            }
+            env.destroy(mgr);
+            let m = modes.mode_mut(mode);
+            m.set_manager(0);
+            m.set_state(0);
+            modes.unlink(mode);
+            Step::Done
+        }
+    }
+}
+
+/// The field mode: the field's task manager and the start and exit functions of the field mode block (`0x33e6e0..0x33e710`).
+pub mod field {
+    use super::*;
+    use crate::area::ctl::{AreaCtl, AreaHost};
+
+    /// Addresses of the words of the block.
+    pub const BLOCK: u32 = 0x33e6e0;
+    pub const START_WORD: u32 = 0x33e700;
+    pub const EXIT_WORD: u32 = 0x33e704;
+    pub const NEXT_WORD: u32 = 0x33e70c;
+    pub const SAVE: u32 = 0x33e860;
+    /// The code addresses the table init stores: the start function and the exit function.
+    pub const START_FN: u32 = 0x102a60;
+    pub const EXIT_FN: u32 = 0x102b50;
+
+    /// The address of the field mode block.
+    ///
+    /// orig 0x102c30
+    pub const fn mode_block() -> u32 {
+        BLOCK
+    }
+
+    /// Stores the start function, the exit function and a cleared "next" word into the block's table.
+    ///
+    /// orig 0x102b98
+    pub fn table_init(host: &mut impl AreaHost) {
+        host.write32(EXIT_WORD, EXIT_FN);
+        host.write32(START_WORD, START_FN);
+        host.write32(NEXT_WORD, 0);
+    }
+
+    /// The three audio resets of the field mode (`FUN_002c10b0`, `FUN_00136b90`, `FUN_00136c40`).
+    ///
+    /// orig 0x102b28
+    pub fn audio_reset(host: &mut impl CallHost) {
+        host.call(0x2c10b0, &[]);
+        host.call(0x136b90, &[]);
+        host.call(0x136c40, &[]);
+    }
+
+    /// Starts the field mode: pad button set 1, the field's task manager (an allocator over 0x3990d0, 0x10000 bytes; stored in the
+    /// control record, `0x33e6e4`), the area-state clear, the audio reset, the field task and the other unit starts, then the area
+    /// thread: the area given by the save block's place bytes, or the Gummi thread when the "next" word is set (and that word is
+    /// cleared). The previous place's world byte becomes 0xff.
+    ///
+    /// orig 0x102a60
+    pub fn start(host: &mut impl AreaHost, tasks: &mut Tasks, ctl: &mut AreaCtl) {
+        host.call(0x167908, &[1]);
+        ctl.task_mgr = tasks.create_manager_over(host, 0x3990d0, 0x10000);
+        host.call(0x104f88, &[]);
+        audio_reset(host);
+        host.call(0x149f70, &[]);
+        host.call(0x1078f0, &[]);
+        host.call(0x168928, &[]);
+        let next = host.read32(NEXT_WORD);
+        if next == 0 {
+            let w = host.read8(SAVE + 12) as u64;
+            let a = host.read8(SAVE + 13) as u64;
+            let e = host.read8(SAVE + 14) as u64;
+            host.call(0x104ca8, &[w, a, e]);
+        } else {
+            host.call(0x104c68, &[next as u64]);
+            host.write32(NEXT_WORD, 0);
+        }
+        host.call(0x223278, &[]);
+        host.call(0x13ee88, &[]);
+        host.call(0x13ef68, &[1]);
+        ctl.prev[0] = 0xff;
+    }
+
+    /// The field mode's exit task: the field music and area data are released (`FUN_00136be0`, `FUN_00136c90`, `FUN_00104ce0`,
+    /// `FUN_002c10b0`), then the task waits one frame.
+    ///
+    /// orig 0x102b50
+    pub fn exit(host: &mut impl CallHost, tasks: &mut Tasks, task: u32) {
+        host.call(0x136be0, &[]);
+        host.call(0x136c90, &[]);
+        host.call(0x104ce0, &[]);
+        host.call(0x2c10b0, &[]);
+        tasks.yield_frames(task, 1);
+    }
+
+    /// Makes a coroutine task on the field manager.
+    ///
+    /// orig 0x102bf8
+    pub fn create_coroutine(tasks: &mut Tasks, ctl: &AreaCtl, bits: u32, priority: i32, function: u32, stack: u32) -> u32 {
+        tasks.create_coroutine(ctl.task_mgr, bits, priority, function, stack)
+    }
+}
+
+/// The camp and pause poll task.
+pub mod camp {
+    use crate::area::ctl::{self, AreaCtl, AreaHost};
+    use crate::frame::Vsync;
+
+    /// The task body, called once per pass of the root manager. It returns at once when the stop flag (`0x356398`) is set. While the
+    /// camp menu is open it keeps the game stopped: the first frame it sees the menu it notes whether the timer was already paused
+    /// (`FUN_0014c780`), calls `FUN_0023e860(1)`, pauses the timer twice with bit 1 unless it was paused, and calls
+    /// `FUN_002f5f08(1)`; every frame of the menu it steps the pad and the frame (`FUN_001674f8`, the frame step `FUN_0014cdd0`)
+    /// itself. When the menu closes it sets the pause flag (`0x356399`) and steps frames until the pause is released
+    /// (`FUN_002fee00(1) == 2`), then clears the flag, lifts the timer pause if it had set it, calls `FUN_002f5f08(0)` and
+    /// `FUN_0023e8b0`, and returns. With no menu and no pause pending it returns without stepping.
+    ///
+    /// orig 0x14a080
+    pub fn poll_task(host: &mut impl AreaHost, ctl: &mut AreaCtl, v: &mut Vsync) {
+        let mut menu = false;
+        let mut active = false;
+        let mut was_paused = 0u64;
+        loop {
+            if ctl::poll_stop_set(ctl) != 0 {
+                return;
+            }
+            if ctl::camp_open(host) {
+                menu = true;
+            }
+            if ctl::camp_idle(host) {
+                menu = false;
+            }
+            if !active && menu {
+                was_paused = v.paused() as u64;
+                host.call(0x23e860, &[1]);
+                if was_paused == 0 {
+                    v.pause_on(1);
+                    v.pause_on(1);
+                }
+                active = true;
+                host.call(0x2f5f08, &[1]);
+            }
+            let mut closed = !active;
+            if active {
+                if menu {
+                    ctl::pause_step(host);
+                    continue;
+                }
+                ctl.poll_paused = 1;
+                active = false;
+                closed = true;
+            }
+            if closed {
+                if menu {
+                    ctl::pause_step(host);
+                    continue;
+                }
+                if ctl.poll_paused == 0 {
+                    return;
+                }
+                loop {
+                    if ctl::pause_released(host) {
+                        ctl.poll_paused = 0;
+                        if was_paused == 0 {
+                            v.pause_off(1);
+                        }
+                        host.call(0x2f5f08, &[0]);
+                        host.call(0x23e8b0, &[]);
+                        return;
+                    }
+                    ctl::pause_step(host);
+                    if ctl.poll_paused == 0 {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

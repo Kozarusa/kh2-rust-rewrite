@@ -1,0 +1,53 @@
+# The frame step and the first tick of movement over 600 vsyncs (state .06, Mansion: Computer Room; WP-L1-P20, the L1 close-out
+# scenario "frame-step-600" of docs/systems/core-runtime/runtime.md "Frame step").
+#
+# What it checks: the original's frame task (0x14ccf8, priority 800000, the last task of every pass) calls the frame step 0x14cdd0,
+# which stores the step in 0x356f40: 2.0 in the field (frame type 1, limit 1, game speed 1.0: two vblanks per game frame, one pad stop
+# per second vsync), whatever the input does. The port runs the same cadence since L1-P4 (schedule::FrameClock). The first tick of
+# movement is the one DEVIATIONS 2026-10-23 names: the original moves a full 16 cm per game frame from the frame after the input frame,
+# so Sora's position at k 42 (input written at k 40) is one full step along the stick direction.
+#
+# What it does NOT check, and why: the frame counters (0x356f34 vblanks since init, 0x356f38 vblanks since the last step) and the game
+# speed (0x356f3c) have no entry in scenarios/values.toml (not part of this package's files); add `frame.vblanks` (u32 at 0x356f34),
+# `frame.since_step` (u32 at 0x356f38) and `frame.speed` (f32 at 0x356f3c) there, with getters in rig_values.rs, and add them to the
+# [trace] list and the checks below. The counters read at a pad stop are 0 and 1 or 2 in the original (the step resets the second to 0
+# and the stop comes before the next wait ends) [inferred from docs/systems/core-runtime/runtime.md].
+#
+# The port was not run against this scenario by the package that wrote it (see its report): the original's trace for it is not
+# recorded, so every check is a prediction from the tt-run-06 trace until `tools\rig.ps1 core-runtime/frame-step-600` has run.
+[scenario]
+name = "frame-step-600"
+state = "06"
+port_area = "tt21"
+pad = "frame-step-600.pad"
+frames = 600
+
+[seeds]
+drive = 1
+auto_limit = 1
+
+[trace]
+every = 20
+values = ["frame.step", "sora.pos"]
+
+# The field's step is 2.0 at every checkpoint, before, during and after the run: the cadence does not depend on the input.
+[[check]]
+at = [0, 20, 40, 42, 60, 120, 122, 200, 300, 400, 500, 600]
+values = ["frame.step"]
+tol = { "frame.step" = 0.0 }
+note = "limit 1, frame type 1, speed 1.0 gives 2.0 at every stop of the field"
+
+# The first tick of movement: still at k 40 (the input of k 40 is not applied yet), a full game frame along the stick at k 42.
+[[check]]
+at = [0, 20, 40, 42, 44]
+values = ["sora.pos"]
+tol = { "sora.pos" = 2.0 }
+note = "DEVIATIONS 2026-10-23: the original moves 16 cm in the first tick after the input; the port was 6.7 units off before L1-P4"
+
+# After the stick is released the original stops in the first frame without input (RIG.md 1.2).
+[[check]]
+at = [120, 122, 124, 300, 600]
+values = ["sora.pos"]
+tol = { "sora.pos" = 2.0 }
+informational = true
+note = "the run of tt-run-06 differs from k 60 on (the port's wall and turn handling, DEVIATIONS); here the release is checked informationally"

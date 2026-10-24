@@ -31,10 +31,14 @@ fn every_shipped_scenario_loads_and_validates() {
     for f in files {
         let (sc, values, pad) = load_scenario(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
         assert!(!sc.checks.is_empty() || sc.every > 0);
-        let pad = pad.unwrap_or_else(|| panic!("{}: no pad script", f.display()));
-        assert_eq!(pad.end, Some(sc.frames), "{}: the pad script ends where the scenario does", f.display());
-        assert!(pad.odd_changes().is_empty(), "{}: pad changes at odd k {:?}", f.display(), pad.odd_changes());
-        assert!(pad.entries.first().is_some_and(|e| e.0 == 0), "{}: the script starts at k 0", f.display());
+        // A scenario that only watches (no input, e.g. a frame comparison) has no pad script.
+        if let Some(pad) = pad {
+            assert_eq!(pad.end, Some(sc.frames), "{}: the pad script ends where the scenario does", f.display());
+            assert!(pad.odd_changes().is_empty(), "{}: pad changes at odd k {:?}", f.display(), pad.odd_changes());
+            assert!(pad.entries.first().is_some_and(|e| e.0 == 0), "{}: the script starts at k 0", f.display());
+        } else {
+            assert!(sc.pad.is_none(), "{}: the pad script is named but not loaded", f.display());
+        }
         assert!(sc.value_names().iter().all(|n| values.defs.contains_key(n)));
     }
 }
@@ -58,4 +62,14 @@ fn the_menu_scenario_presses_start_cross_circle_start() {
         assert!(pad.at(k).unwrap().pressed(name), "{name} at {k}");
         assert!(!pad.at(k + 4).unwrap().pressed(name));
     }
+}
+
+#[test]
+fn the_sky_scenario_compares_two_shots_with_masks() {
+    let (sc, _, pad) = load_scenario(&scenarios().join("core-runtime/render-sky.toml")).unwrap();
+    assert!(pad.is_none());
+    assert_eq!((sc.name.as_str(), sc.state.as_str(), sc.frames), ("render-sky", "04", 70));
+    let names: Vec<(&str, u32)> = sc.shots.iter().map(|s| (s.name.as_str(), s.at)).collect();
+    assert_eq!(names, [("sky-band", 40), ("full", 60)]);
+    assert!(sc.shots.iter().all(|s| !s.mask.is_empty() && s.at % 2 == 0), "the field has a pad stop at even k only");
 }

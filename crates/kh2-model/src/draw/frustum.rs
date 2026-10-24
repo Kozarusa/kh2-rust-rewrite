@@ -87,11 +87,11 @@ fn box_corners(b: &FBox) -> [V4; 8] {
 pub fn clip_bits(q: V4) -> u32 {
     let w = q[3].abs();
     let mut bits = 0;
-    for k in 0..3 {
-        if q[k] > w {
+    for (k, v) in q.iter().take(3).enumerate() {
+        if *v > w {
             bits |= 1 << (2 * k);
         }
-        if q[k] < -w {
+        if *v < -w {
             bits |= 2 << (2 * k);
         }
     }

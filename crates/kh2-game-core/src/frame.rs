@@ -382,6 +382,126 @@ pub fn to_hms(frames: u32) -> (u32, u32, u32, u32) {
     (hours, minutes, sec / 60, hundredths)
 }
 
+/// `DAT_00379290`: the step a ramp uses when it is given 0.
+pub const RAMP_DEFAULT_STEP: f32 = 1.0;
+/// `DAT_00379180`: the end value of the game-speed ramp after its static init.
+pub const SPEED_RAMP_INIT_END: f32 = 1.0;
+/// Address of the game-speed ramp block.
+pub const SPEED_RAMP_BASE: u32 = 0x0048_43b8;
+
+/// A linear ramp of three floats: the start, the change per step and the end. The game-speed request (the event opcode
+/// `FUN_0014cb50`) keeps one at `0x4843b8`.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Ramp(pub [f32; 3]);
+
+impl Ramp {
+    /// Sets the ramp from `start` to `end` in `steps` steps (a step count of 0 counts as [`RAMP_DEFAULT_STEP`]): the start at +0, the
+    /// end at +8 and `(end - start) / steps` at +4.
+    ///
+    /// orig 0x14eca0
+    pub fn set(&mut self, start: f32, end: f32, steps: f32) {
+        let steps = if steps != 0.0 { steps } else { RAMP_DEFAULT_STEP };
+        self.0[0] = start;
+        self.0[2] = end;
+        self.0[1] = crate::pad::ee::div(crate::pad::ee::sub(end, start), steps);
+    }
+
+    /// The static init of the game-speed ramp: only the constructor-list call `(1, 0xffff)` does anything; it zeroes the start and
+    /// the change and sets the end to 1.0.
+    ///
+    /// orig 0x14cfb0
+    pub fn static_init(&mut self, a: u64, b: u64) {
+        if b == 0xffff && a == 1 {
+            self.0[0] = 0.0;
+            self.0[1] = 0.0;
+            self.0[2] = SPEED_RAMP_INIT_END;
+        }
+    }
+
+    /// The constructor-list wrapper: `static_init(1, 0xffff)`.
+    ///
+    /// orig 0x14cfe8
+    pub fn static_init_wrapper(&mut self) {
+        self.static_init(1, 0xffff)
+    }
+}
+
+/// The identity helper of the clock unit: returns its argument (the play-time splitter passes the count through it).
+///
+/// orig 0x14c7e8
+pub fn clock_pass(x: u64) -> u64 {
+    x
+}
+
+fn save_word(save: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes(save[off..off + 4].try_into().unwrap())
+}
+
+/// The play time in vblanks: the save block's word at +0x1604 (`save` starts at the block, `0x33e860`).
+///
+/// orig 0x14c910
+pub fn play_time(save: &[u8]) -> u32 {
+    save_word(save, 0x1604)
+}
+
+/// The second clock word of the save block (+0x1608), which the vblank handler copies onto itself.
+///
+/// orig 0x14c930
+pub fn second_time(save: &[u8]) -> u32 {
+    save_word(save, 0x1608)
+}
+
+/// The play time as hours, minutes, seconds and hundredths.
+///
+/// orig 0x14c950
+pub fn play_time_hms(save: &[u8]) -> (u32, u32, u32, u32) {
+    to_hms(clock_pass(play_time(save) as u64) as u32)
+}
+
+/// The time spent in one world (the words from save +0x160c, one per world) as hours, minutes, seconds and hundredths.
+///
+/// orig 0x14c9b0
+pub fn world_time_hms(save: &[u8], world: i32) -> (u32, u32, u32, u32) {
+    let off = 0x160cusize.wrapping_add((world as i64 * 4) as usize);
+    to_hms(clock_pass(save_word(save, off) as u64) as u32)
+}
+
+/// The first call of the frame task: it does nothing.
+///
+/// orig 0x14ccf0
+pub fn frame_task_prelude() {}
+
+/// The frame task, the last task of every pass of the root manager: the empty prelude, `FUN_001b6048`, `FUN_002f5ee0`, the frame
+/// step (`wait` as in [`Vsync::step_frame`]), then `FUN_0014ddb0` and its result passed to `FUN_0014e318`.
+///
+/// orig 0x14ccf8
+pub fn frame_task(v: &mut Vsync, host: &mut impl crate::area::ctl::AreaHost, wait: impl FnMut(&mut Vsync)) {
+    frame_task_prelude();
+    host.call(0x1b6048, &[]);
+    host.call(0x2f5ee0, &[]);
+    v.step_frame(wait);
+    let r = host.call(0x14ddb0, &[]);
+    host.call(0x14e318, &[r]);
+}
+
+/// The frame unit's set-up: the frame state (`FUN_0014cd38`, [`Vsync::init`]), the timer task (`FUN_0014c678`), the vblank handler
+/// `FUN_0014cc88` installed (`FUN_002f9db0`, hardware), the vblank thread (`FUN_0014d0a0`, hardware), and the frame task made on the
+/// root manager `root` at priority 800000.
+///
+/// orig 0x14cd78
+pub fn frame_unit_start(
+    v: &mut Vsync,
+    host: &mut impl crate::area::ctl::AreaHost,
+    tasks: &mut crate::task::Tasks,
+    root: u32,
+) -> u32 {
+    v.init();
+    host.call(0x14c678, &[]);
+    host.call(0x2f9db0, &[0x14cc88]);
+    host.call(0x14d0a0, &[]);
+    tasks.create_task(root, 0, crate::task::FRAME_PRIORITY, crate::task::FRAME_TASK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

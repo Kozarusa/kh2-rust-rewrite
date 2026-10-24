@@ -19,7 +19,7 @@
 //! - `FUN_001832b8` (the jump mover's step) in the test of 0x17b040.
 //! - `FUN_0030fe80` (exit handler registry) in the test of 0x179718.
 //! The test of 0x179880 runs the whole initialiser, base constructors included.
-//! Floats are compared within the rounding of the two FPUs (relative 1e-5) unless bit equal.
+//! Floats are compared bit for bit.
 //!
 //! Skips without a disc (KH2_ISO or local/iso.txt); fails without one when KH2_REQUIRE_DISC=1.
 
@@ -50,7 +50,7 @@ fn call(ee: &mut Ee, addr: u32, args: &[u64], fargs: &[f32]) -> u64 {
 }
 
 fn feq(a: f32, b: f32) -> bool {
-    a.to_bits() == b.to_bits() || (a == 0.0 && b == 0.0) || (a - b).abs() <= 1e-5 * (1.0 + a.abs().max(b.abs()))
+    a.to_bits() == b.to_bits()
 }
 
 fn assert_f(case: u32, what: &str, game: f32, port: f32) {

@@ -59,7 +59,7 @@ How the USA executable turns the left stick into a heading, a facing, a speed an
   `FUN_0017e2d8` when +0x160 has bit 4, or bit 0x10 and the class is not 0 (the free-move ranges).
 - Displacement slot +0x1c `FUN_0017b040`: unless +0x160 bit 0x40 (then `FUN_001832b8` with +0xf0 twice) or +0x164 bit 1 (then
   `FUN_001832b8` with the row at +0x12c, +0x28 / +0x2c by +0x810): with speed w > 0 the step is normalise(+0x10) * w * frame step and
-  the velocity +0x20 = normalise(+0x10) * w; without, both are 0. The fourth word of the result is 1.0 (0x37a4ec).
+  actor +0x20 = that displacement times w again (oracle, WP-L2-P3; not a plain velocity); without speed, both are 0. The fourth word of the result is 1.0 (0x37a4ec).
 - Rig numbers (state .06, frame step 2): 16.00 cm per game frame at full stick (Roxas run speed 8), first move on the frame after the
   input, no acceleration, stop on the first frame without input (`local/specs/RIG.md` 1.2).
 

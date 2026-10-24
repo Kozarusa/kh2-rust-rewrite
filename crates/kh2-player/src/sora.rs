@@ -80,6 +80,14 @@ mod mid {
 /// tagged `A180`. `None` when the motion set has no such motion (the USA disc's has none [FM-only]): the caller then shows the Quick
 /// Run start motion.
 pub const DODGE_ROLL_ID: usize = 209;
+
+/// The dodge roll is Final Mix content (the USA executable has no roll branch and no motion 209, docs/systems/foundations/final-mix.md):
+/// scrapped by default (user, 2026-10-24); `KH2_FM_ROLL=1` keeps the code reachable. Without it a Square press while moving is the USA
+/// rule: Quick Run at the press when learned, else the guard (FUN_00178108, FUN_00178080), whatever the Dodge Roll level.
+pub fn fm_roll() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KH2_FM_ROLL").as_deref() == Ok("1"))
+}
 pub const DODGE_ROLL_TAG: &str = "A180";
 
 pub fn dodge_roll_slot(mset: &kh2_anim::Mset, state: PlayerState) -> Option<usize> {
@@ -233,6 +241,11 @@ pub fn square_ground(moving: bool, dodge_roll: u8, quick_run: u8) -> SquareGroun
     } else {
         SquareGround::Guard
     }
+}
+
+/// `square_ground` with the roll switch: without `KH2_FM_ROLL=1` the Dodge Roll level is ignored (the USA rule).
+pub fn square_ground_for(fm_roll: bool, moving: bool, dodge_roll: u8, quick_run: u8) -> SquareGround {
+    square_ground(moving, if fm_roll { dodge_roll } else { 0 }, quick_run)
 }
 
 /// One tick of a Square dash: `held` is the button, `ticks` the ticks since the press, `quick_run`
@@ -1340,7 +1353,7 @@ pub fn tick(
                 // Dodge Roll learned = the roll (a hold of `TAP_TICKS` ticks becomes the Quick Run when
                 // that is learned); moving with only Quick Run learned = Quick Run at the press (USA
                 // FUN_00178108); moving with neither = the guard (USA FUN_00178080, no stick test).
-                let act = square_ground(move_speed > 0.0, growth.dodge_roll, growth.quick_run);
+                let act = square_ground_for(fm_roll(), move_speed > 0.0, growth.dodge_roll, growth.quick_run);
                 if square_explicit(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false) {
                     // An explicit action started.
                 } else if act != SquareGround::Guard
@@ -1439,7 +1452,7 @@ pub fn tick(
             let stopping = body.slot == motion(mid::QUICK_RUN_END);
             // The roll plays A180 (dodge_roll_slot): a tap lets it play out; a hold past the tap window turns it into the Quick Run
             // (the original's frame trigger 34 at tick 10 starts the Quick Run from the roll).
-            let roll_slot = dodge_roll_slot(&rig.mset, pstate);
+            let roll_slot = if fm_roll() { dodge_roll_slot(&rig.mset, pstate) } else { None };
             let rolling = roll_slot.is_some() && body.slot == roll_slot;
             if !stopping {
                 let (phase, stop) = dash_step(s.dash, pad.square_held, s.timer, growth.quick_run, s.dash_time);
@@ -2359,6 +2372,18 @@ mod tests {
         assert_eq!(dodge_roll_slot(&m, PlayerState::FieldNoWeapon), Some(1200));
         // No A180 (the USA disc): none, the caller keeps the Quick Run start motion.
         assert_eq!(dodge_roll_slot(&mset_with(&[(203 * 4 + 2, "A150")]), PlayerState::FieldNoWeapon), None);
+    }
+
+    #[test]
+    fn a_tap_while_moving_never_rolls_by_default() {
+        use SquareGround::{Guard, QuickRun, Roll};
+        for roll in [0u8, 1, 5] {
+            assert_eq!(square_ground_for(false, true, roll, 0), Guard, "roll level {roll}: the USA guard");
+            assert_eq!(square_ground_for(false, true, roll, 1), QuickRun, "roll level {roll}: Quick Run at the press");
+            assert_eq!(square_ground_for(false, false, roll, 1), Guard, "still: the guard");
+        }
+        assert_eq!(square_ground_for(true, true, 1, 0), Roll, "KH2_FM_ROLL=1 keeps the roll");
+        assert_eq!(square_ground_for(true, true, 1, 1), Roll);
     }
 
     #[test]

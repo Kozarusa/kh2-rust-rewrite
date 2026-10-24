@@ -32,6 +32,7 @@ pub mod rig_values;
 pub mod rng;
 pub mod save_block;
 pub mod schedule;
+pub mod screen;
 pub mod task;
 pub mod shared;
 pub mod skel;

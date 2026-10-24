@@ -131,6 +131,137 @@ fn follow_progress(p: Option<Res<crate::progress::Progress>>, mut a: ResMut<Abil
     }
 }
 
+// ---- Developer aids (`KH2_DEV=1`) ---------------------------------------------------------------------------------------------
+
+/// Ability ids with a reader in the port that is not an attack-table gate: Guard, the growth abilities, the stat abilities of
+/// `Block::apply`, and Second Chance, Once More, Leaf Bracer, Auto Limit and Auto Healing. Auto Change (418) has a rule but no
+/// port (the app has no reserve members), so it is not listed. The attack-table gates are added from the moveset itself.
+pub const FIXED_IMPLEMENTED: &[u16] = &[
+    id::GUARD, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+    id::COMBO_PLUS, id::AIR_COMBO_PLUS, id::FINISHING_PLUS, id::NEGATIVE_COMBO, id::COMBO_BOOST, id::AIR_COMBO_BOOST,
+    id::REACTION_BOOST, id::BERSERK_CHARGE, id::DAMAGE_DRIVE, id::DRIVE_BOOST, id::FORM_BOOST, id::SUMMON_BOOST,
+    id::COMBINATION_BOOST, id::EXPERIENCE_BOOST, id::DRAW, id::JACKPOT, id::LUCKY_LUCKY, id::FIRE_BOOST, id::BLIZZARD_BOOST,
+    id::THUNDER_BOOST, id::ITEM_BOOST, id::MP_RAGE, id::MP_HASTE, id::MP_HASTERA, id::MP_HASTEGA, id::DEFENDER,
+    id::HYPER_HEALING, 402, 415, 416, 417, 420,
+];
+
+/// The Dodge Roll level the aid grants (the app's fifth growth kind, `Progress::dodge_roll`; it has no ability row).
+pub const DEV_DODGE_ROLL: u8 = 4;
+
+/// Every ability id the port implements: `FIXED_IMPLEMENTED`, the abilities the attack table gates its records with (a record with
+/// a motion and an ability bit), Scan (bit 19) and Aerial Recovery (bit 20), each only when the disc has a row for it.
+pub fn implemented_abilities(rules: &AbilityRules, moves: &kh2_anim::moveset::Moveset) -> Vec<u16> {
+    let mut ids: Vec<u16> = FIXED_IMPLEMENTED.iter().copied().filter(|i| rules.abilities.contains_key(i)).collect();
+    let bits = moves.actions.iter().filter(|a| a.motion != 0 && a.ability != 0).map(|a| a.ability).chain([BIT_SCAN, 20]);
+    ids.extend(bits.filter_map(|b| rules.id_of_bit(b)));
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// The developer aids are on: `KH2_DEV=1`, and not in a turbo (accept) run, so no scenario result can change.
+pub fn dev_enabled() -> bool {
+    dev_flag(std::env::var("KH2_DEV").ok().as_deref(), crate::harness::turbo())
+}
+
+/// `dev_enabled` from its inputs.
+pub fn dev_flag(kh2_dev: Option<&str>, turbo: bool) -> bool {
+    kh2_dev == Some("1") && !turbo
+}
+
+/// What a developer key does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DevAid {
+    /// Learn every implemented ability and the Dodge Roll (they then show on the Abilities page).
+    Grant,
+    /// Grant, equip all and raise the AP bonus to its maximum.
+    EquipAll,
+    /// Back to the state before the first aid.
+    Reset,
+}
+
+/// Applies one aid to Sora's record. `before` keeps the real state: taken at the first aid, put back by `Reset`. Returns the line
+/// for the screen.
+pub fn apply_dev_aid(p: &mut crate::progress::Progress, aid: DevAid, ids: &[u16], before: &mut Option<crate::progress::AbilitySnapshot>) -> String {
+    let sora = crate::progress::SORA;
+    if aid != DevAid::Reset && before.is_none() {
+        *before = p.ability_snapshot(sora);
+    }
+    match aid {
+        DevAid::Grant => {
+            let n = p.grant_abilities(sora, ids, false);
+            p.dodge_roll = p.dodge_roll.max(DEV_DODGE_ROLL);
+            format!("KH2_DEV: {n} abilities learned ({} implemented, Dodge Roll level {}); equip them on the Abilities page", ids.len(), p.dodge_roll)
+        }
+        DevAid::EquipAll => {
+            let n = p.grant_abilities(sora, ids, true);
+            p.set_ap_bonus(sora, 255);
+            p.dodge_roll = p.dodge_roll.max(DEV_DODGE_ROLL);
+            format!("KH2_DEV: {n} learned, all {} implemented abilities equipped, AP bonus 255, Dodge Roll level {}", ids.len(), p.dodge_roll)
+        }
+        DevAid::Reset => match before.take() {
+            Some(s) => {
+                p.restore_ability_snapshot(sora, &s);
+                "KH2_DEV: abilities back to the real state of the save".to_string()
+            }
+            None => "KH2_DEV: nothing to reset".to_string(),
+        },
+    }
+}
+
+/// The aid's key: Insert learns, Home equips all, End resets (F1..F12 are all taken by other aids).
+fn dev_key(keys: &ButtonInput<KeyCode>) -> Option<DevAid> {
+    if keys.just_pressed(KeyCode::Insert) {
+        Some(DevAid::Grant)
+    } else if keys.just_pressed(KeyCode::Home) {
+        Some(DevAid::EquipAll)
+    } else if keys.just_pressed(KeyCode::End) {
+        Some(DevAid::Reset)
+    } else {
+        None
+    }
+}
+
+/// The 2-second line of the developer aids.
+#[derive(Component)]
+struct DevNote(f32);
+
+fn dev_note_setup(mut commands: Commands) {
+    commands.spawn((
+        DevNote(0.0),
+        Text::new(""),
+        TextFont { font_size: bevy::text::FontSize::Px(15.0), ..default() },
+        TextColor(Color::srgb(1.0, 0.9, 0.5)),
+        Node { position_type: PositionType::Absolute, left: Val::Px(12.0), top: Val::Px(10.0), ..default() },
+        Visibility::Hidden,
+    ));
+}
+
+fn dev_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    a: Res<Abilities>,
+    sora: Query<&sora::Sora>,
+    mut progress: Option<ResMut<crate::progress::Progress>>,
+    mut note: Query<(&mut DevNote, &mut Text, &mut Visibility)>,
+    mut before: Local<Option<crate::progress::AbilitySnapshot>>,
+) {
+    let Ok((mut n, mut text, mut vis)) = note.single_mut() else { return };
+    if n.0 > 0.0 {
+        n.0 -= time.delta_secs();
+        if n.0 <= 0.0 {
+            *vis = Visibility::Hidden;
+        }
+    }
+    let (Some(aid), Some(p), Ok(s)) = (dev_key(&keys), progress.as_mut(), sora.single()) else { return };
+    let ids = implemented_abilities(&a.rules, &s.moves);
+    let line = apply_dev_aid(p, aid, &ids, &mut before);
+    info!("{line}");
+    text.0 = line;
+    n.0 = 2.0;
+    *vis = Visibility::Inherited;
+}
+
 /// Registers `Abilities`. Needs `Disc`, so add it after `AssetsPlugin`.
 pub struct AbilitiesPlugin;
 
@@ -162,6 +293,9 @@ impl Plugin for AbilitiesPlugin {
                     .before(Sim::Sora),
             )
             .add_systems(FixedUpdate, apply_damage_rewards.in_set(Sim::SoraHurt).after(sora::receive_hits));
+        if dev_enabled() {
+            app.add_systems(Startup, dev_note_setup).add_systems(Update, dev_keys);
+        }
     }
 }
 
@@ -317,6 +451,58 @@ mod tests {
         assert_eq!(a.growth(0), 0);
         assert!(a.has(id::COMBO_PLUS) && a.ground_combo() == 4, "the harness's Combo Plus stays");
         assert_eq!(a.learned.len(), 4);
+    }
+
+    fn fake_rules() -> AbilityRules {
+        let abilities = [(82u16, 1u16, 3u8), (94, 2, 1), (162, 21, 3), (500, 77, 2), (999, 300, 1)]
+            .into_iter()
+            .map(|(id, bit, kind)| (id, Info { id, bit, ap: 1, kind }))
+            .collect();
+        AbilityRules { abilities, equip: Default::default(), items: Default::default(), tuning: Tuning::default(), growth_bits: [[0; 4]; 4], ap_by_level: vec![10] }
+    }
+
+    #[test]
+    fn implemented_set_is_fixed_ids_plus_attack_table_gates_with_a_row() {
+        use kh2_anim::moveset::{Action, Moveset};
+        let act = |motion, ability| Action { key: 1, group: 0, alt: 0, arg: 0, flags: 0, motion, next_motion: 0, distance: [0.0; 2], height: [0.0; 2], angle: [0.0; 2], ability };
+        let moves = Moveset { actions: vec![act(5, 77), act(0, 300), act(6, 0), act(7, 12345)] };
+        // 82, 94 and 162 are fixed ids with rows; 500 is gated by a record with a motion; 999 only by a record without one.
+        assert_eq!(implemented_abilities(&fake_rules(), &moves), vec![82, 94, 162, 500]);
+    }
+
+    #[test]
+    fn dev_aids_need_kh2_dev_and_no_turbo() {
+        assert!(dev_flag(Some("1"), false));
+        assert!(!dev_flag(None, false));
+        assert!(!dev_flag(Some("0"), false));
+        assert!(!dev_flag(Some("1"), true), "inert in turbo (accept) runs");
+    }
+
+    #[test]
+    fn dev_aids_grant_equip_and_reset_sora_record() {
+        let mut p = crate::progress::Progress::from_block(&[], Arc::new(crate::progress::ItemIndex::default()));
+        p.apply_json(r#"{"abilities": [82], "abilities_off": [], "dodge_roll": 0}"#).unwrap();
+        let sora = crate::progress::SORA;
+        let real = p.ability_snapshot(sora).unwrap();
+        let ids = [82u16, 94, 162, 402];
+        let mut before = None;
+        // F: learn. Guard was already there and stays equipped; the others arrive unequipped, as a level-up's gift does.
+        apply_dev_aid(&mut p, DevAid::Grant, &ids, &mut before);
+        let slots = p.ability_slots(sora);
+        assert_eq!(slots.iter().map(|s| s.1).collect::<Vec<_>>(), vec![82, 94, 162, 402]);
+        assert!(slots[0].2 && slots[1..].iter().all(|s| !s.2));
+        assert_eq!(p.dodge_roll, DEV_DODGE_ROLL);
+        apply_dev_aid(&mut p, DevAid::Grant, &ids, &mut before);
+        assert_eq!(p.ability_slots(sora).len(), 4, "a second grant learns nothing twice");
+        // Equip all: the same slot write as the Abilities page, and the AP bonus raised.
+        apply_dev_aid(&mut p, DevAid::EquipAll, &ids, &mut before);
+        assert!(p.ability_slots(sora).iter().all(|s| s.2));
+        assert_eq!(p.sora().ap, 255);
+        // Reset: the real state of the save, exactly.
+        apply_dev_aid(&mut p, DevAid::Reset, &ids, &mut before);
+        assert_eq!(p.ability_snapshot(sora).unwrap(), real);
+        assert_eq!(p.ability_slots(sora).len(), 1);
+        assert!(before.is_none());
     }
 
     #[test]

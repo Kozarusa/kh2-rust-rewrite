@@ -3510,6 +3510,7 @@ dependencies = [
  "kh2-bar",
  "kh2-ee",
  "kh2-factory",
+ "kh2-model",
 ]
 
 [[package]]

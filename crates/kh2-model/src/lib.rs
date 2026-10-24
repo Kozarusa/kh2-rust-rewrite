@@ -9,12 +9,10 @@
 
 pub mod collision;
 pub mod light;
+pub mod draw;
 pub mod texanim;
 pub mod texture;
 
-pub mod draw {
-    pub mod shadow;
-}
 
 use glam::{Mat4, Quat, Vec3, Vec4};
 use kh2_ps2::{dma, vif::Vif, vpu::VpuPacket};

@@ -27,7 +27,7 @@ use crate::combat::{Fighter, Hit, IneffectiveHit, ReactionData, ReactionStatus, 
 use crate::controller_rules::{stick_through_view, view_matrix};
 use crate::data::GameData;
 use crate::enemy::Enemy;
-use crate::motor::{wrap_angle, Jump, Motor};
+use crate::motor::{ground_motion, ground_step, wrap_angle, GroundConsts, GroundMotionIn, GroundStep, GroundStepIn, Jump, Motor};
 use crate::reaction_rules::{self as rules, Blow, Push, ReflectFields, VictimAction, VictimCtx};
 use crate::schedule::{Frame, Sim};
 use crate::skel::{spawn_skinned, Animator, Rig};
@@ -1345,7 +1345,14 @@ pub fn tick(
         State::Ground => {
             s.hits = 0;
             s.finishers = 1;
-            s.motor.ground_velocity(dir, move_speed);
+            // FUN_0017b040 / FUN_0017af10 (kh2_game_core::motor::ground_step / ground_motion): the step is the unit move vector times the
+            // speed times the frame step (one tick here), the motion class comes from the speed against (walk + run) / 2.
+            let ground_in = GroundStepIn { dir: [dir.x, 0.0, dir.z, move_speed], ..Default::default() };
+            s.motor.vel = match ground_step(&ground_in, &GroundConsts::USA, 1.0) {
+                GroundStep::Walk { out, .. } if move_speed > 0.0 && dir.xz().length_squared() > 1e-12 => Vec3::new(out[0], 0.0, out[2]),
+                _ => Vec3::ZERO,
+            };
+            let class = ground_motion(&GroundMotionIn { speed: move_speed, walk: prty.walk_speed, run: prty.run_speed, ..Default::default() }, &GroundConsts::USA).class;
             if move_speed > 0.0 {
                 // FUN_0016a2f0: the facing turns by the turn speed times the frame step. The app runs one tick per vblank of the
                 // frame, so a frame of step 2 is two ticks of step 1.0: the same turn per frame.
@@ -1353,7 +1360,7 @@ pub fn tick(
             }
             let landing = body.slot == motion(id::LAND) && !body.finished;
             if move_speed > 0.0 || !landing {
-                let id = if move_speed <= 0.0 { id::IDLE } else if move_speed < prty.run_speed { id::WALK } else { id::RUN };
+                let id = match class { 0 => id::IDLE, 1 => id::WALK, _ => id::RUN };
                 body.play(motion(id), true, BLEND_LOCOMOTION);
             }
             weapon.play(None, true, BLEND_LOCOMOTION);

@@ -31,3 +31,10 @@ at = [40, 60, 80, 120, 160, 200, 320]
 values = ["cam.pos", "cam.look"]
 tol = { "cam.pos" = 5.0, "cam.look" = 5.0 }
 note = "the camera object's wanted position (+0x60) and look-at point (+0x80); the pad's sticks drive the auto-camera since L2-P2"
+
+# Sora's motion id (FUN_0017af10 class: 0 idle, 1 walk, 2 run; L2-P3). Exact.
+[[check]]
+at = [40, 42, 120, 200]
+values = ["sora.motion"]
+tol = { "sora.motion" = 0.0 }
+note = "the motion class of the ground mover"

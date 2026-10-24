@@ -172,6 +172,7 @@ pub fn gauge_carry(frac: u8, points: u8, max: u8) -> (u8, u8) {
 /// `FUN_001b50c0(member, level)`: the `lvup` row of a member's level. The table is the member's own (ids 14 and
 /// 15 use 1 and 6), the first one when his is missing or empty, and the level is held at the table's length
 /// (row `level - 1`); level 0 counts as 1 [inferred, as `menu_equipment::member_ap_max`].
+/// orig 0x1b50c0
 pub fn lvup_row(tables: &[Vec<t::Lvup>], member: u16, level: u8) -> Option<&t::Lvup> {
     let k = match member {
         14 => 1,
@@ -1291,6 +1292,7 @@ impl Progress {
     }
 
     /// `FUN_001d36e8(n)`: the minigame record `n` as (state byte, score word); (0, 0) for one nothing has set.
+    /// orig 0x1d36e8
     pub fn minigame(&self, n: u16) -> (u8, u32) {
         self.minigames.get(&n).copied().unwrap_or((0, 0))
     }
@@ -1382,11 +1384,13 @@ impl Progress {
     }
 
     /// `FUN_001d2590`: the best count of the limit with `limt` slot `slot` (0 for one never used).
+    /// orig 0x1d2590
     pub fn limit_best(&self, slot: u8) -> u16 {
         self.limit_best.get(&slot).copied().unwrap_or(0)
     }
 
     /// `FUN_001d25b0`: raises the limit's best count to `n` when it is below (the slot never goes down).
+    /// orig 0x1d25b0
     pub fn raise_limit_best(&mut self, slot: u8, n: u16) {
         if n > self.limit_best(slot) {
             self.limit_best.insert(slot, n);
@@ -1479,6 +1483,7 @@ impl Progress {
     /// `FUN_001a1cc8`: how many of an item the player owns. A key item answers 0 or 1 (its bit);
     /// an ability (type 0x13) is not counted here (0); everything else is the count byte of the
     /// item's slot. A spell's count is its level.
+    /// orig 0x1a1cc8
     pub fn item_count(&self, id: u16) -> u8 {
         let Some(it) = self.items.get(id) else { return 0 };
         if it.is_key() {
@@ -1581,6 +1586,7 @@ impl Progress {
     }
 
     /// `FUN_001a1c30(id, n)`: remove `n` copies (to 0 at least); a key item loses its bit.
+    /// orig 0x1a1c30
     pub fn use_item(&mut self, id: u16, n: u8) {
         let Some(it) = self.items.get(id).copied() else { return };
         if it.is_key() {
@@ -1606,6 +1612,7 @@ impl Progress {
     /// (`FUN_001a2010`); a spell obtained for the first time puts its command into the first
     /// empty shortcut 1..3. Not ported: item 0x20's `FUN_001803b0` and the spell's tutorial
     /// prompts `FUN_00180450` (both act outside this block).
+    /// orig 0x1a1a18
     fn add_count(&mut self, id: u16, n: u8) {
         let Some(it) = self.items.get(id).copied() else { return };
         let mut before = 0;
@@ -1632,6 +1639,7 @@ impl Progress {
 
     /// `FUN_001a2120`: the first consumable also becomes shortcut 0 (its command,
     /// `FUN_001a1f78`); the id joins the 8-entry list if not there.
+    /// orig 0x1a2120
     fn note_recent(&mut self, id: u16) {
         if self.u16_at(off::RECENT) == 0 && self.u16_at(off::SHORTCUTS) == 0 {
             let cmd = self.shortcut_command(id);
@@ -1651,6 +1659,7 @@ impl Progress {
 
     /// `FUN_001a1f78`: a consumable's command; a spell's command comes from the loaded magic
     /// resources (`FUN_001a4dd0`, empty until an area loads them), answered 0 here.
+    /// orig 0x1a1f78
     fn shortcut_command(&self, id: u16) -> u16 {
         match self.items.get(id) {
             Some(it) if it.kind == item_type::CONSUMABLE => it.command,
@@ -1661,6 +1670,7 @@ impl Progress {
     /// `FUN_001a2010`: obtaining a form item resets the Anti counter (form record 5 `+4`) and,
     /// for Valor, Master and Final with no second keyblade yet, takes the first keyblade the
     /// inventory holds (`FUN_001a20b0(2)`, table order) for the form's left hand.
+    /// orig 0x1a2010
     fn form_takes_keyblade(&mut self, it: &ItemInfo) {
         self.set_form_exp(5, 0);
         let form = self.items.cmd_arg.get(&it.command).copied().unwrap_or(0);
@@ -1671,6 +1681,7 @@ impl Progress {
     }
 
     /// `FUN_001a20b0(type)`: the first item of the type (table order) with a count, minus one.
+    /// orig 0x1a20b0
     fn take_first_of_type(&mut self, kind: u8) -> u16 {
         let found = self.items.rows.iter().find(|r| r.kind == kind && self.item_count(r.id) >= 1).map(|r| r.id);
         match found {
@@ -1739,6 +1750,7 @@ impl Progress {
     /// (the byte `(row - 1) * 6 + 2` of the page's list table): the list entry's count byte
     /// (`FUN_00283a70` stores the stock count there; the recent items `FUN_00283e50` adds with 0 are not carried).
     /// False when the member or the slot does not exist.
+    /// orig 0x26c698
     pub fn equip_battle_item(&mut self, member: u16, slot: usize, item: u16, carried: bool) -> bool {
         let Some(r) = Self::member_off(member) else { return false };
         if slot >= 8 {
@@ -2918,6 +2930,7 @@ impl Story {
     /// after the list (`FUN_001803b0`, `FUN_00180450`, `FUN_001805d0`, `FUN_00180558`, `FUN_001d39d0`,
     /// `FUN_001d3238`, `FUN_001b6da0`, `FUN_001be9c8`, `FUN_001d5718`, `FUN_0019d890` for 0x8d0,
     /// `FUN_00195130`).
+    /// orig 0x17ff60
     pub fn set(&mut self, id: u16) {
         self.ensure();
         let Some((w, m)) = Self::slot(id) else { return };
@@ -3002,6 +3015,7 @@ impl Story {
     }
 
     /// `FUN_001b4e80(w)`: the 4-byte record of world `w`.
+    /// orig 0x1b4e80
     pub fn world_record(&self, w: usize) -> [u8; 4] {
         let a = world::RECORDS + 4 * w as u32;
         [0, 1, 2, 3].map(|k| self.world_byte(a + k))
@@ -3043,6 +3057,7 @@ impl Story {
     }
 
     /// `FUN_001b6da0(flag)`: every `wldf` record that follows story flag `flag` sets its world flag.
+    /// orig 0x1b6da0
     fn world_flags_follow(&mut self, flag: u16) {
         let table = self.world_table.clone();
         for r in table.following(u32::from(flag)) {
@@ -3053,6 +3068,7 @@ impl Story {
     /// `FUN_001b68f8(i)`: sets world flag `i` (four indexes are skipped while their rival flag is set) and queues it unless the
     /// record is kind 1 with story flag `0x102b` set. A flag already set changes nothing. A key the table lacks reads the
     /// kind from address 1 in the game, which is taken as 0 [inferred], so it queues.
+    /// orig 0x1b68f8
     pub fn world_flag_set(&mut self, i: u8) {
         let rival = match i {
             0x25 => Some(0x73),
@@ -3168,6 +3184,7 @@ impl Story {
     /// start-up state of the process, so it is the new game's world state; a loaded save replaces the whole region afterwards.
     /// No other caller exists (scan of `jal` to 0x1b6870 and 0x1b6e60: none; the save block's static initialiser `FUN_001057b8`
     /// clears the region without calling it). Returns the flags the drain ran.
+    /// orig 0x1b6870
     pub fn world_boot(&mut self) -> Vec<u8> {
         for k in 0..8 {
             self.world_set_word(world::FLAGS + 4 * k, 0);

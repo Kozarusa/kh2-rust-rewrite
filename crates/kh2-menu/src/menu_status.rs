@@ -262,6 +262,7 @@ impl StatRules {
     }
 
     /// `FUN_001b50c0(character, level)`: the row of `level` (the table is clamped to its length).
+    /// orig 0x1b50c0
     pub fn level_row(&self, level: i32) -> LevelRow {
         Self::row_of(&self.levels, level)
     }

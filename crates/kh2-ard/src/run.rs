@@ -240,6 +240,7 @@ pub struct Exit {
 
 impl Exit {
     /// The destination (world, area) for the current world (FUN_00198e10).
+    /// orig 0x198e10
     pub fn destination(&self, world: u8) -> (u8, u8) {
         match self.area {
             100 => (0x12, 1),

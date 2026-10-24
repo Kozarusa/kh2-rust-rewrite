@@ -472,6 +472,7 @@ impl Data {
     }
 
     /// The world's name (`FUN_00105de0`): the id is in the wm table or else the system table.
+    /// orig 0x105de0
     fn world_name(&self, world: u8, sys: Option<&Messages>) -> Option<Vec<Token>> {
         if world as usize >= WORLD_COUNT {
             return None;

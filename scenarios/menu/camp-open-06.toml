@@ -47,10 +47,15 @@ values = ["menu.scene", "menu.next_page"]
 informational = true
 note = "constants in the port (rig_values.rs)"
 
-# The port keeps its own frame step (1.0 everywhere); the original's is 2.0 in the field. This is an L1-P5 gap (the frame step is
-# not ported yet), not a menu deviation.
+# The frame step: 2.0 in the field, 1.0 while the menu runs (the menu sets limit 0, L1-P4). At k 202 the port's menu is already open
+# (it opens at k 200, the original at k 203: an L8 deviation), so that stop is shown and not counted.
 [[check]]
-at = [202, 203, 260, 382]
+at = [203, 260, 382]
+values = ["frame.step"]
+tol = { "frame.step" = 0.0 }
+
+[[check]]
+at = [202]
 values = ["frame.step"]
 informational = true
-note = "L1-P5 gap"
+note = "the port's menu opens 3 vsyncs early (L8)"

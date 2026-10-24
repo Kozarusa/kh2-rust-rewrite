@@ -196,10 +196,9 @@ pub fn completion_pass(q: &mut Queue, host: &mut impl QueueHost) {
             _ => {}
         }
         let next = host.read32(cur);
-        let prev;
-        if cur == q.head {
+        let prev = if cur == q.head {
             q.head = next;
-            prev = 0;
+            0
         } else {
             let mut pr = q.head;
             let mut at = host.read32(pr);
@@ -209,8 +208,8 @@ pub fn completion_pass(q: &mut Queue, host: &mut impl QueueHost) {
             }
             let after = host.read32(cur);
             host.write32(pr, after);
-            prev = pr;
-        }
+            pr
+        };
         if cur == q.tail {
             q.tail = prev;
         }

@@ -560,13 +560,16 @@ impl Mem {
     }
 }
 
+/// The stand-ins' return policy: (tag, call number, arguments, hash) to v0.
+type RetFn = Box<dyn Fn(u32, u32, &[u64], u64) -> u64>;
+
 /// How the stand-ins behave: which addresses are hooked (and how many argument words each logs), how many words each virtual method
 /// logs after the object, what they return, and which logged arguments are pointers whose target words are logged instead.
 struct Cfg {
     standins: Vec<(u32, usize)>,
     vargs: Vec<usize>,
     /// (tag, k, arguments, hash) -> v0. The tag is the callee address, or `VTAG | slot` for a virtual call.
-    ret: Box<dyn Fn(u32, u32, &[u64], u64) -> u64>,
+    ret: RetFn,
     /// (tag, argument index, words): that argument is logged as the words it points at.
     deref: Vec<(u32, usize, usize)>,
     /// Stand-ins whose last logged word is the float register f12 (the port passes it as bits after the register arguments).
@@ -1174,7 +1177,7 @@ fn orig_16e1e0_matches_the_game() {
                 m.w32(0x1d6a930 + 4 * k, 0);
             }
         }
-        let (g, p) = d.run(&m, n, |ee| call(ee, 0x16e1e0, &[]), |p| t::objentry_load(p));
+        let (g, p) = d.run(&m, n, |ee| call(ee, 0x16e1e0, &[]), t::objentry_load);
         assert_eq!(g, p, "case {n}: return value");
     }
 }
@@ -1704,14 +1707,13 @@ fn orig_168d30_matches_the_game() {
         };
         let args = CtorArgs { rot: if args.rot.is_finite() { args.rot } else { 0.5 }, ..args };
         let a_game = [to_game(this) as u64, args.id, args.entry as u64, args.priority as u64, args.pos as u64];
-        let (_, cost) = d.run_cost(&m, n, &a_game, args.rot, &mut list, this, args);
+        d.run_cost(&m, n, &a_game, args.rot, &mut list, this, args);
         compare_objects(&mut d, &list, this, "orig_168d30", n);
         let log = d.sh.borrow().log.clone();
         knm_cases += log.iter().any(|e| e.0 == VTAG | 9) as u32;
         timer += log.iter().any(|e| e.0 == 0x11e018) as u32;
         shadow += log.iter().any(|e| e.0 == 0x1934c0) as u32;
         file_hit += log.iter().any(|e| e.0 == 0x169af0) as u32;
-        let _ = cost;
     }
     assert!(knm_cases > 200 && timer > 50 && shadow > 400 && file_hit > 50, "branches: {knm_cases} with a model object, {timer} with a timer entry, {shadow} shadow queries, {file_hit} file passes");
 }

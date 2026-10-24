@@ -19,6 +19,8 @@ use kh2_model::draw::pass::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const TREE: u32 = 0x0181_0000;
 const TREE_LEN: u32 = 0x5400;
@@ -101,13 +103,13 @@ fn mix(a: u32, b: u32) -> u32 {
 }
 
 /// The projection update stand-in: the first 0x40 bytes become a function of the block's other words (the field of view
-/// words +0x44 and +0x48 and the unwritten word +0x7c are left out: the first holds the library arctangent's result, the
+/// words +0x44 and +0x48 and the unwritten word +0x7c are left out (the focal length +0x40 is in): the first holds the library arctangent's result, the
 /// second is stack garbage in the original), the whole fourth row is 0 (the billboard draw with a projection pointer adds a stack word it never wrote to the translation row
 /// before the multiply; a zero fourth row makes the answer independent of that word).
 fn proj_stand_in(blk: &mut [u8; 0x100], seed: u32) {
     let mut h = mix(seed, 0x106a68);
     for (i, b) in blk.iter().enumerate() {
-        if i >= 0x4c && !(0x7c..0x80).contains(&i) {
+        if !(0x44..0x4c).contains(&i) && !(0x7c..0x80).contains(&i) {
             h = mix(h, *b as u32);
         }
     }
@@ -192,7 +194,7 @@ impl PassHost for CaseHost {
     fn projection_update(&mut self, _m: &mut dyn Words, proj: &mut [u8; 0x100]) {
         let mut v = vec![0x106a68];
         for (i, c) in proj.chunks(4).enumerate() {
-            if !(0x10..0x13).contains(&i) && i != 0x1f {
+            if !(0x11..0x13).contains(&i) && i != 0x1f {
                 v.push(u32::from_le_bytes(c.try_into().unwrap()));
             }
         }
@@ -300,7 +302,7 @@ impl W {
                 }
                 let mut v = vec![0x106a68];
                 for (i, c) in blk.chunks(4).enumerate() {
-                    if !(0x10..0x13).contains(&i) && i != 0x1f {
+                    if !(0x11..0x13).contains(&i) && i != 0x1f {
                         v.push(u32::from_le_bytes(c.try_into().unwrap()));
                     }
                 }
@@ -641,10 +643,40 @@ fn pick_obj(r: &mut Rng, s: &Scene) -> u32 {
     obj_addr(r.below(s.n.max(1) as u64) as u32)
 }
 
+/// Stops the watchdog when the test ends, by return or by panic.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 fn cases(name: &str, n: u32, opt: Opt, mut each: impl FnMut(&mut W, &mut Rng, &Scene, u32)) -> Option<()> {
     let mut w = W::new(name)?;
+    // A comparison that hangs (a loop in the port on an inconsistent scene) must fail with a message, not run for ever.
+    let progress = Arc::new(AtomicU64::new(0));
+    let done = Arc::new(AtomicBool::new(false));
+    {
+        let (p, d, nm) = (progress.clone(), done.clone(), name.to_string());
+        std::thread::spawn(move || {
+            let mut last = (u64::MAX, std::time::Instant::now());
+            while !d.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let c = p.load(Ordering::Relaxed);
+                if c != last.0 {
+                    last = (c, std::time::Instant::now());
+                } else if last.1.elapsed().as_secs() > 30 {
+                    eprintln!("{nm}: case {c} did not finish in 30 s (a loop in the port or the original); aborting");
+                    std::process::exit(101);
+                }
+            }
+        });
+    }
+    let _stop = StopOnDrop(done);
     let mut r = Rng::new(0x25b ^ name.len() as u64 ^ (name.as_bytes()[2] as u64) << 8);
     for case in 0..n {
+        progress.store(case as u64, Ordering::Relaxed);
         let s = scene(&mut r, opt);
         let params = Params { scene_event: chance(&mut r, 4), seed: r.word() as u32 };
         w.reset(params);

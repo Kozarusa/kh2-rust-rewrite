@@ -401,7 +401,7 @@ pub fn quicksort(m: &mut dyn Words, slots: u32, keys: u32, lo: i32, hi: i32) {
 // fades, level of detail and the sort key
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// orig 0x148550: picks the level of detail byte `+0x10d` from the distance `d` and the four distances of the record at
+/// Address 0x148550 (the level-of-detail select; its `/// orig` claim is `kh2_factory::ported::threshold_band`): picks the level of detail byte `+0x10d` from the distance `d` and the four distances of the record at
 /// `+0x114` (`+0x44`, `+0x40`, `+0x3c`, `+0x38`): beyond the first the level is 2; between the first and second it keeps;
 /// between the second and third 1; between the third and fourth it keeps; within the fourth 0.
 pub fn lod_select(m: &mut dyn Words, obj: u32, d: f32) {

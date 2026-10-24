@@ -91,7 +91,6 @@ impl Frame {
 }
 
 /// Byte offset of the footer in a texture container (FUN_00132238), if it has one.
-/// orig 0x132238
 pub fn footer_offset(b: &[u8]) -> Option<usize> {
     if b.len() < 36 || i32_at(b, 0) != 0 {
         return None;

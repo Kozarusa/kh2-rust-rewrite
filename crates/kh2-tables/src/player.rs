@@ -118,7 +118,6 @@ pub fn form_level_cap(owned_forms: u32) -> u8 {
 /// Anti-form roll chance in percent for the current drive counter (FUN_001d4278): the row of form 5
 /// whose threshold the counter has reached. The game multiplies it by a factor (1 unless a special
 /// battle sets it) and compares against a random 0..99.
-/// orig 0x1d4278
 pub fn anti_form_chance(levels: &FormLevels, counter: i32) -> u8 {
     let rows: Vec<&FormLevel> = levels.levels(form::ANTI).collect();
     let mut i = 0;

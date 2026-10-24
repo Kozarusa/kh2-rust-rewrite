@@ -1612,7 +1612,6 @@ impl Progress {
     /// (`FUN_001a2010`); a spell obtained for the first time puts its command into the first
     /// empty shortcut 1..3. Not ported: item 0x20's `FUN_001803b0` and the spell's tutorial
     /// prompts `FUN_00180450` (both act outside this block).
-    /// orig 0x1a1a18
     fn add_count(&mut self, id: u16, n: u8) {
         let Some(it) = self.items.get(id).copied() else { return };
         let mut before = 0;
@@ -1659,7 +1658,6 @@ impl Progress {
 
     /// `FUN_001a1f78`: a consumable's command; a spell's command comes from the loaded magic
     /// resources (`FUN_001a4dd0`, empty until an area loads them), answered 0 here.
-    /// orig 0x1a1f78
     fn shortcut_command(&self, id: u16) -> u16 {
         match self.items.get(id) {
             Some(it) if it.kind == item_type::CONSUMABLE => it.command,
@@ -2930,7 +2928,6 @@ impl Story {
     /// after the list (`FUN_001803b0`, `FUN_00180450`, `FUN_001805d0`, `FUN_00180558`, `FUN_001d39d0`,
     /// `FUN_001d3238`, `FUN_001b6da0`, `FUN_001be9c8`, `FUN_001d5718`, `FUN_0019d890` for 0x8d0,
     /// `FUN_00195130`).
-    /// orig 0x17ff60
     pub fn set(&mut self, id: u16) {
         self.ensure();
         let Some((w, m)) = Self::slot(id) else { return };

@@ -289,7 +289,7 @@ pub mod world_at {
     pub const QUEUE_COUNT: usize = 0x16b;
 }
 
-/// `FUN_001c0950(id)`: the address of route state byte `id`, `0x3419c3 + id` (the bytes the `wldf` list ops 8..=0xb write).
+/// `FUN_001c0950(id)`: the address of route state byte `id`, `0x3419c3 + id` (the bytes the `wldf` list ops 8..=0xb write [inferred]).
 ///
 /// orig 0x1c0950
 pub fn course_address(id: i32) -> u32 {

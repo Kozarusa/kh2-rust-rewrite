@@ -5376,7 +5376,7 @@ mod tests {
     }
 
     /// The oracle for `FUN_001a18b8` (can-get, over the room test `FUN_001a1768`): the game and the port answer the same for every
-    /// item row (ids outside the table are left out: the game falls back to a default record from `FUN_001a66e8`, the port refuses), five targets and counts 0..=3, on the new-game block and again after a sweep of gives that
+    /// item row (ids outside the table are left out: gap: `FUN_001a66e8` returns a null pointer for an absent id and `FUN_001a1768` then reads bytes at addresses 3, 2 and 0x12, so the game's answer depends on low memory contents; the port refuses), five targets and counts 0..=3, on the new-game block and again after a sweep of gives that
     /// fills slots, counts and key bits. Item 0x20 and spell items are left out of the sweep (their side calls act outside the block).
     #[test]
     fn orig_1a18b8_matches_the_game() {

@@ -115,28 +115,49 @@ pub fn wrap_angle(a: f32) -> f32 {
     (a + PI).rem_euclid(TAU) - PI
 }
 
+/// orig 0x17bbc0: an angle wrapped to [-pi, pi] (`fmod` of the angle shifted by pi, shifted back; the two branches keep the sign).
+pub fn fix_radian(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    if a > 0.0 { (a + PI) % TAU - PI } else { PI - (PI - a) % TAU }
+}
+
+/// orig 0x17bc30: `angle` moved toward `wanted` by at most `step` (the shorter way round), wrapped.
+pub fn turn_angle(angle: f32, wanted: f32, step: f32) -> f32 {
+    let d = wanted - angle;
+    let wrapped = fix_radian(d);
+    let moved = if wrapped < -step {
+        angle - step
+    } else if step < wrapped {
+        angle + step
+    } else {
+        angle + wrapped
+    };
+    fix_radian(moved)
+}
+
 impl Motor {
     pub fn forward(&self) -> Vec3 {
         Vec3::new(self.yaw.sin(), 0.0, self.yaw.cos())
     }
 
-    /// Turns toward `dir` by at most `rate` radians; returns true while still turning.
+    /// Turns toward `dir` by at most `rate` radians (one tick of the frame step 1.0); returns true while still turning.
     pub fn turn_to(&mut self, dir: Vec3, rate: f32) -> bool {
+        self.turn_to_step(dir, rate, 1.0)
+    }
+
+    /// The facing turn of the object tick (`FUN_0016a2f0`): the wanted yaw is the direction's `atan2(x, z)` (`FUN_0016a948`), the
+    /// facing moves toward it by at most `rate * step` ([`turn_angle`]). `step` is the frame step of the tick that runs. The app
+    /// runs the game's logic once per vblank of a frame, so a frame of step 2 is two ticks of `step` 1.0 and the turn per frame is
+    /// the same as the original's one turn of `rate * 2`.
+    pub fn turn_to_step(&mut self, dir: Vec3, rate: f32, step: f32) -> bool {
         if dir.xz().length_squared() < 1e-8 {
             return false;
         }
         let target = dir.x.atan2(dir.z);
-        let d = wrap_angle(target - self.yaw);
-        if d > rate {
-            self.yaw = wrap_angle(self.yaw + rate);
-            true
-        } else if d < -rate {
-            self.yaw = wrap_angle(self.yaw - rate);
-            true
-        } else {
-            self.yaw = target;
-            false
-        }
+        let max = rate * step;
+        let turning = fix_radian(target - self.yaw).abs() > max;
+        self.yaw = turn_angle(self.yaw, target, max);
+        turning
     }
 
     /// Ground action: instant velocity along the input.

@@ -9,6 +9,7 @@
 
 pub mod collision;
 pub mod light;
+pub mod projection;
 pub mod draw;
 pub mod texanim;
 pub mod texture;

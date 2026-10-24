@@ -24,6 +24,7 @@ use kh2_model::collision::kind as shape_kind;
 use crate::assets::Disc;
 use crate::camera::OrbitCamera;
 use crate::combat::{Fighter, Hit, IneffectiveHit, ReactionData, ReactionStatus, Team, WallHit};
+use crate::controller_rules::{stick_through_view, view_matrix};
 use crate::data::GameData;
 use crate::enemy::Enemy;
 use crate::motor::{wrap_angle, Jump, Motor};
@@ -278,6 +279,8 @@ const BLEND_GLIDE: f32 = 16.0;
 const BLEND_ATTACK: f32 = 0.0;
 /// Stick magnitude below which Sora walks.
 const WALK_STICK: f32 = 0.8;
+/// The frame step of one tick (`DAT_00356f40` per vblank run, see `schedule::FrameClock::vblank`).
+const TICK_STEP: f32 = 1.0;
 
 /// Growth-ability levels (0 = not learned, 5 = MAX). Written from the ability block's growth
 /// levels (`FUN_001c1340`) whenever the abilities change (`abilities::sync_controller`); in a form
@@ -836,27 +839,32 @@ pub fn read_pad(
     mut pad_state: ResMut<crate::rig::PadState>,
     scale: Res<crate::rig::StickScale>,
 ) {
-    let mut v = Vec2::ZERO;
-    for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
-        if keys.pressed(k) {
-            v += d;
-        }
-    }
-    let yaw = cam.single().map_or(0.0, |c| c.yaw);
-    let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    let right = Vec3::new(-fwd.z, 0.0, fwd.x);
-    pad.dir = (fwd * v.y + right * v.x).normalize_or_zero();
-    pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 };
-    if pad_state.scripted {
+    // The left stick as the original's record: unit direction (x right, y up here) and magnitude. The keyboard is one pad view.
+    let (stick_dir, stick_mag) = if pad_state.scripted {
         // A rig pad script is running: the left stick drives Sora through the original's dead zone and scale (`FUN_00167198`). The
         // buttons already arrived as the keys the script mirrors (`rig::BUTTON_KEYS`).
-        let (d, m) = crate::rig::stick_vector(pad_state.lx, pad_state.ly, &scale);
-        pad.dir = (fwd * d.y + right * d.x).normalize_or_zero();
-        pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else { m };
+        crate::rig::stick_vector(pad_state.lx, pad_state.ly, &scale)
     } else {
-        // The keyboard as one pad view.
+        let mut v = Vec2::ZERO;
+        for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
+            if keys.pressed(k) {
+                v += d;
+            }
+        }
         *pad_state = crate::rig::PadState::from_keyboard(&keys);
-    }
+        let v = v.normalize_or_zero();
+        (v, if v == Vec2::ZERO { 0.0 } else if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 })
+    };
+    // FUN_001774d8 -> FUN_00177360: the stick goes through the DRAWN view (the camera's smoothed position and look-at point,
+    // FUN_00106f78), not through the camera's orbit yaw: where the camera collision holds the camera the two differ. The orbit yaw
+    // (a camera at (sin yaw, ., cos yaw) from the player looking at him) is the fallback before the camera has run.
+    let view = match cam.single() {
+        Ok(c) => c.drawn.map_or_else(|| orbit_view(c.yaw), |(eye, look)| view_matrix(eye.to_array(), look.to_array(), Vec3::Y.to_array())),
+        Err(_) => orbit_view(0.0),
+    };
+    let heading = stick_through_view(&view, [stick_dir.x, -stick_dir.y, 0.0, stick_mag]);
+    pad.dir = Vec3::new(heading[0], 0.0, heading[2]);
+    pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else { stick_mag };
     pad.jump_held = keys.pressed(KeyCode::Space);
     pad.square_held = keys.pressed(KeyCode::KeyK) || keys.pressed(KeyCode::KeyE);
     let bump = |n: &mut u8, p: bool| {
@@ -876,6 +884,11 @@ pub fn read_pad(
         *growth = Growth { high_jump: l, quick_run: l, aerial_dodge: l, glide: l, dodge_roll: l };
         info!("growth abilities: level {l}");
     }
+}
+
+/// The view matrix of a camera orbiting the player at `yaw` (the camera at (sin yaw, ., cos yaw) from him, looking at him).
+fn orbit_view(yaw: f32) -> [f32; 16] {
+    view_matrix([yaw.sin(), 0.0, yaw.cos()], [0.0; 3], Vec3::Y.to_array())
 }
 
 /// FUN_00184498 (the weapon object's update) calls FUN_0019afe8 on the owner and skips the update when it returns 1. Of that
@@ -1334,7 +1347,9 @@ pub fn tick(
             s.finishers = 1;
             s.motor.ground_velocity(dir, move_speed);
             if move_speed > 0.0 {
-                s.motor.turn_to(dir, prty.turn_speed);
+                // FUN_0016a2f0: the facing turns by the turn speed times the frame step. The app runs one tick per vblank of the
+                // frame, so a frame of step 2 is two ticks of step 1.0: the same turn per frame.
+                s.motor.turn_to_step(dir, prty.turn_speed, TICK_STEP);
             }
             let landing = body.slot == motion(id::LAND) && !body.finished;
             if move_speed > 0.0 || !landing {

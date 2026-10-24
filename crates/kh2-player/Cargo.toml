@@ -25,3 +25,4 @@ bevy = "0.19"
 
 [dev-dependencies]
 kh2-ee.workspace = true
+kh2-factory.workspace = true

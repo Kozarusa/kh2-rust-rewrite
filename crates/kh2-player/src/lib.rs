@@ -8,6 +8,7 @@ pub use kh2_enemy::*;
 
 pub mod abilities;
 pub mod clash;
+pub mod controller_rules;
 pub mod drive;
 pub mod magic;
 pub mod player_reaction;

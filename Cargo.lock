@@ -3366,6 +3366,7 @@ dependencies = [
  "kh2-bar",
  "kh2-bdx",
  "kh2-ee",
+ "kh2-factory",
  "kh2-fx",
  "kh2-game-core",
  "kh2-image",
@@ -3389,6 +3390,7 @@ dependencies = [
  "kh2-bdx",
  "kh2-ee",
  "kh2-enemy",
+ "kh2-factory",
  "kh2-fx",
  "kh2-game-core",
  "kh2-image",
@@ -3506,6 +3508,8 @@ name = "kh2-map"
 version = "0.1.0"
 dependencies = [
  "kh2-bar",
+ "kh2-ee",
+ "kh2-factory",
 ]
 
 [[package]]
